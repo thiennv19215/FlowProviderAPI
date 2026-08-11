@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 import boto3
+from botocore.exceptions import ClientError
 
 
 class LocalStorage:
@@ -27,6 +28,11 @@ class LocalStorage:
     async def put_file(self,key:str,path:Path,content_type:str)->None:
         import shutil
         dest=self._path(key);dest.parent.mkdir(parents=True,exist_ok=True);await asyncio.to_thread(shutil.copyfile,path,dest)
+
+    async def delete(self,key:str)->None:
+        path=self._path(key)
+        try:await asyncio.to_thread(path.unlink)
+        except FileNotFoundError:pass
 
     async def read_bytes(self,key:str)->bytes:return await asyncio.to_thread(self._path(key).read_bytes)
 
@@ -56,6 +62,9 @@ class R2Storage:
     async def put_file(self,key:str,path:Path,content_type:str)->None:
         await asyncio.to_thread(self.client.upload_file,str(path),self.bucket,key,ExtraArgs={"ContentType":content_type})
 
+    async def delete(self,key:str)->None:
+        await asyncio.to_thread(self.client.delete_object,Bucket=self.bucket,Key=key)
+
     async def read_bytes(self,key:str)->bytes:
         response=await asyncio.to_thread(self.client.get_object,Bucket=self.bucket,Key=key);return await asyncio.to_thread(response["Body"].read)
 
@@ -63,7 +72,11 @@ class R2Storage:
         try:
             head=await asyncio.to_thread(self.client.head_object,Bucket=self.bucket,Key=key)
             return {"size_bytes":head.get("ContentLength"),"content_type":head.get("ContentType"),"etag":head.get("ETag")}
-        except Exception:return None
+        except ClientError as exc:
+            code=str(exc.response.get("Error",{}).get("Code") or "")
+            status=exc.response.get("ResponseMetadata",{}).get("HTTPStatusCode")
+            if status==404 or code in {"404","NoSuchKey","NotFound"}:return None
+            raise
 
     async def exists(self,key:str)->bool:return await self.stat(key) is not None
     def presign_get(self,key:str,ttl:int)->str:return self.client.generate_presigned_url("get_object",Params={"Bucket":self.bucket,"Key":key},ExpiresIn=ttl)
