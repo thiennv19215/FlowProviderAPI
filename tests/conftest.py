@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.db.models import Base
 from app.providers.base import ProviderDispatch, ProviderMedia, ProviderPollResult
 
 
@@ -35,7 +36,9 @@ def app(tmp_path: Path):
         video_poll_seconds=0,
         local_storage_path=tmp_path / "assets",
     )
-    return create_app(settings, extra_providers=[FakeProvider()])
+    application=create_app(settings, extra_providers=[FakeProvider()])
+    Base.metadata.create_all(application.state.runtime.engine)
+    return application
 
 
 @pytest.fixture
