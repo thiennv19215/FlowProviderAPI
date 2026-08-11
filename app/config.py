@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     worker_concurrency:int=Field(default=8,ge=1,le=64)
     worker_id:str="worker-1"
     lease_seconds:int=Field(default=120,ge=30)
-    video_poll_seconds:int=Field(default=10,ge=1)
+    video_poll_seconds:int=Field(default=10,ge=0)
     max_attempts_before_dispatch:int=Field(default=5,ge=1,le=20)
 
     storage_backend:Literal["local","r2"]="local"
@@ -39,6 +39,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_settings(self):
+        if self.env!="test" and self.video_poll_seconds<1:
+            raise ValueError("Video poll interval must be at least 1 second outside tests")
         if self.storage_backend=="r2":
             required=[self.r2_endpoint_url,self.r2_access_key_id,self.r2_secret_access_key,self.r2_bucket]
             if not all(required):raise ValueError("R2 storage requires endpoint, access key, secret key, and bucket")
