@@ -33,6 +33,7 @@ class GoogleFlowProvider:
         refs=[]
         for ref in payload.get("references") or []:
             refs.append(await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=ref["asset_id"],project_id=pid,sdk=sdk))
+        job.stage="dispatching";db.commit()
         result=await sdk.gen_image(prompt=payload["prompt"],project_id=pid,paygate_tier=conn.paygate_tier,aspect_ratio=IMAGE_ASPECT[payload.get("aspect_ratio","16:9")],ref_media_ids=refs,variant_count=payload.get("output_count",1),image_model=payload.get("model"))
         if result.get("error"):
             self.bridge.mark_provider_failure(account_id,result["error"]);raise RuntimeError(result["error"])
@@ -42,6 +43,7 @@ class GoogleFlowProvider:
         if not account_id: raise RuntimeError("provider_account_required")
         conn,sdk,pid=await self._context(job,db,account_id);p=job.request_payload
         start=await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=p["input"]["start_asset_id"],project_id=pid,sdk=sdk)
+        job.stage="dispatching";db.commit()
         result=await sdk.gen_video(prompt=p["prompt"],project_id=pid,start_media_id=start,aspect_ratio=VIDEO_ASPECT[p.get("aspect_ratio","16:9")],paygate_tier=conn.paygate_tier,video_quality=p.get("quality","lite"))
         if result.get("error"):
             self.bridge.mark_provider_failure(account_id,result["error"]);raise RuntimeError(result["error"])
@@ -53,6 +55,7 @@ class GoogleFlowProvider:
         refs=[]
         for ref in p.get("references") or []:
             refs.append(await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=ref["asset_id"],project_id=pid,sdk=sdk))
+        job.stage="dispatching";db.commit()
         result=await sdk.gen_video_omni(prompt=p["prompt"],project_id=pid,ref_media_ids=refs,duration_s=p.get("duration",8),aspect_ratio=VIDEO_ASPECT[p.get("aspect_ratio","9:16")],paygate_tier=conn.paygate_tier)
         if result.get("error"):
             self.bridge.mark_provider_failure(account_id,result["error"]);raise RuntimeError(result["error"])
