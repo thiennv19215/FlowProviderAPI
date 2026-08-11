@@ -67,6 +67,7 @@ async def complete_upload(asset_id: str,request: Request,db=Depends(get_db),clie
         except ValueError as exc:
             code=str(exc)
             if code=="uploaded_object_too_large":raise APIError(413,"ASSET_TOO_LARGE","Uploaded asset exceeds the configured upload limit.",error_type="validation_error")
+            if code=="uploaded_size_mismatch":raise APIError(409,"UPLOAD_SIZE_MISMATCH","Uploaded object size does not match the declared asset size.",error_type="conflict_error")
             if code=="uploaded_content_type_mismatch":raise APIError(409,"UPLOAD_CONTENT_TYPE_MISMATCH","Uploaded object content type does not match the declared asset content type.",error_type="conflict_error")
             raise
     return asset_dict(request.app.state.runtime,asset)
