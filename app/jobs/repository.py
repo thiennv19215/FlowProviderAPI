@@ -35,13 +35,32 @@ def active_count_for_account(db, account_id: str) -> int:
 
 def claim_next(db, *, worker_id: str, lease_seconds: int):
     now=utcnow()
-    query=(select(GenerationJob).join(ApiClient,ApiClient.id==GenerationJob.client_id).where(GenerationJob.status=="queued",GenerationJob.next_run_at<=now,ApiClient.enabled.is_(True)).order_by(GenerationJob.priority.desc(),GenerationJob.created_at.asc()).with_for_update(skip_locked=True).limit(30))
-    candidates=list(db.scalars(query))
-    for job in candidates:
-        client=db.get(ApiClient,job.client_id)
-        if client and active_count_for_client(db,client.id)>=client.max_concurrent_jobs:continue
-        job.status="running";job.stage="preparing";job.started_at=job.started_at or now;job.lease_owner=worker_id;job.lease_expires_at=now+timedelta(seconds=lease_seconds);job.attempt_count+=1;db.commit();db.refresh(job);return job
-    return None
+    active=(
+        select(GenerationJob.client_id.label("client_id"),func.count().label("active_count"))
+        .where(GenerationJob.status=="running")
+        .group_by(GenerationJob.client_id)
+        .subquery()
+    )
+    query=(
+        select(GenerationJob)
+        .join(ApiClient,ApiClient.id==GenerationJob.client_id)
+        .outerjoin(active,active.c.client_id==GenerationJob.client_id)
+        .where(
+            GenerationJob.status=="queued",
+            GenerationJob.next_run_at<=now,
+            ApiClient.enabled.is_(True),
+            func.coalesce(active.c.active_count,0) < ApiClient.max_concurrent_jobs,
+        )
+        .order_by(GenerationJob.priority.desc(),GenerationJob.created_at.asc())
+        .with_for_update(skip_locked=True)
+        .limit(1)
+    )
+    job=db.scalar(query)
+    if not job:
+        return None
+    job.status="running";job.stage="preparing";job.started_at=job.started_at or now
+    job.lease_owner=worker_id;job.lease_expires_at=now+timedelta(seconds=lease_seconds)
+    job.attempt_count+=1;db.commit();db.refresh(job);return job
 
 
 def due_poll(db, *, worker_id: str, lease_seconds: int):
