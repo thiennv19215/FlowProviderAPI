@@ -28,7 +28,7 @@ async def receive_json(ws: WebSocket,timeout: float):
 
 
 async def _serve(websocket: WebSocket):
-    bridge=websocket.app.state.runtime.bridge
+    runtime=websocket.app.state.runtime;bridge=runtime.bridge;manager=runtime.extension_manager
     await websocket.accept();adapter=SocketAdapter(websocket);conn=None
     try:
         hello=await receive_json(websocket,HELLO_TIMEOUT)
@@ -38,10 +38,11 @@ async def _serve(websocket: WebSocket):
         if not installation:await websocket.close(4400,"installation id required");return
         prior=bridge.get_connection_by_installation(installation)
         if prior:
+            manager.disconnected(prior)
             try:await prior.ws.close(4000,"superseded_by_new_connection")
             except Exception:pass
             bridge.clear(connection_id=prior.id)
-        conn=bridge.register(adapter,hello);await bridge.handle_message(hello,adapter)
+        conn=bridge.register(adapter,hello);manager.connected(conn);await bridge.handle_message(hello,adapter)
         logger.info("provider extension connected installation=%s",installation)
         while True:
             data=await receive_json(websocket,bridge.DEFAULT_TIMEOUT*2)
@@ -58,6 +59,7 @@ async def _serve(websocket: WebSocket):
         try:await websocket.close(1011,"extension gateway failure")
         except Exception:pass
     finally:
+        if conn:manager.disconnected(conn)
         bridge.clear(adapter)
 
 
