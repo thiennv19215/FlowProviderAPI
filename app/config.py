@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     video_poll_seconds:int=Field(default=10,ge=0)
     max_attempts_before_dispatch:int=Field(default=5,ge=1,le=20)
     max_consecutive_poll_errors:int=Field(default=12,ge=1,le=100)
+    max_provider_operation_seconds:int=Field(default=3600,ge=60,le=24*3600)
 
     storage_backend:Literal["local","r2"]="local"
     local_storage_path:Path=Path(".data/assets")
