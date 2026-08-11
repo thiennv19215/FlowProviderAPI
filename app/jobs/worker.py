@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import timedelta
 
-from app.db.models import GenerationJob, utcnow
+from app.db.models import GenerationJob, MediaAsset, utcnow
 from app.jobs import repository
 from app.providers.base import ProviderDispatch
 
@@ -29,41 +29,32 @@ class JobWorker:
         self._stop.set()
         tasks=list(self._tasks)
         self._tasks=[]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks: task.cancel()
+        if tasks: await asyncio.gather(*tasks, return_exceptions=True)
 
     async def loop(self, lane: int):
         while not self._stop.is_set():
             worked=await self.run_once(lane)
-            if not worked:
-                await asyncio.sleep(self.runtime.settings.worker_poll_seconds)
+            if not worked: await asyncio.sleep(self.runtime.settings.worker_poll_seconds)
 
     async def run_once(self, lane: int = 0):
-        db=self.runtime.session_factory()
-        worker_id=f"{self.runtime.settings.worker_id}:{lane}"
+        db=self.runtime.session_factory();worker_id=f"{self.runtime.settings.worker_id}:{lane}"
         try:
             job=repository.due_poll(db,worker_id=worker_id,lease_seconds=self.runtime.settings.lease_seconds)
-            if not job:
-                job=repository.claim_next(db,worker_id=worker_id,lease_seconds=self.runtime.settings.lease_seconds)
-            if not job:
-                return False
-            await self.process(db,job)
-            return True
-        finally:
-            db.close()
+            if not job: job=repository.claim_next(db,worker_id=worker_id,lease_seconds=self.runtime.settings.lease_seconds)
+            if not job:return False
+            await self.process(db,job);return True
+        finally: db.close()
 
     async def process(self, db, job: GenerationJob):
-        if job.cancel_requested:
-            return self._finish_cancel(db,job)
+        if job.cancel_requested:return self._finish_cancel(db,job)
         provider=self.runtime.providers.get(job.provider)
         try:
             if job.stage=="provider_running":
                 await self._poll(db,job,provider);return
             account_id=None
             if provider.requires_account_pool:
-                account_id=self.runtime.scheduler.choose_account(db,kind=job.kind)
+                account_id=self.runtime.scheduler.choose_account(db,kind=job.kind,payload=job.request_payload)
                 job.provider_account_id=account_id;db.commit()
             if job.kind=="image":
                 outputs=await provider.generate_image(job=job,db=db,account_id=account_id)
@@ -80,19 +71,29 @@ class JobWorker:
             raw=json.loads(job.provider_operation_id or "{}")
             dispatch=ProviderDispatch(operation_ids=raw.get("operation_ids") or [],workflows=raw.get("workflows") or [])
             result=await provider.poll_video(job=job,db=db,account_id=job.provider_account_id,dispatch=dispatch)
-            if result.error:
-                job.error_code="PROVIDER_POLL_ERROR";job.error_message=result.error[:1000];job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit();return
-            if not result.done:
+            if result.error and result.done:
+                job.status="failed";job.stage="completed";job.error_code="PROVIDER_TERMINAL_ERROR";job.error_message=result.error[:1000];job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit();return
+            if result.error or not result.done:
+                job.error_code="PROVIDER_POLL_ERROR" if result.error else None
+                job.error_message=result.error[:1000] if result.error else None
                 job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit();return
             await self._store_outputs(db,job,result.outputs,"video")
         except Exception as exc:
-            job.error_code="PROVIDER_POLL_ERROR";job.error_message=str(exc)[:1000];job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit()
+            # Provider operation is already durable. Storage/poll failures are safe to retry without redispatch.
+            job.stage="provider_running";job.error_code="PROVIDER_POLL_ERROR";job.error_message=str(exc)[:1000]
+            job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit()
 
     async def _store_outputs(self,db,job,outputs,asset_type):
-        job.stage="storing_outputs";db.commit();asset_ids=[]
-        for media in outputs:
-            asset=await self.runtime.assets.ingest_provider_media(db,client_id=job.client_id,job_id=job.id,provider=job.provider,media=media,asset_type=asset_type);asset_ids.append(asset.id)
-        if not asset_ids: raise RuntimeError("provider_returned_no_outputs")
+        job.stage="storing_outputs";db.commit()
+        asset_ids=list((job.result_payload or {}).get("asset_ids") or [])
+        existing=list(db.query(MediaAsset).filter(MediaAsset.client_id==job.client_id,MediaAsset.source_job_id==job.id).order_by(MediaAsset.created_at.asc()).all())
+        if not asset_ids and existing:
+            asset_ids=[a.id for a in existing]
+        start_index=len(asset_ids)
+        for media in list(outputs)[start_index:]:
+            asset=await self.runtime.assets.ingest_provider_media(db,client_id=job.client_id,job_id=job.id,provider=job.provider,media=media,asset_type=asset_type)
+            asset_ids.append(asset.id);job.result_payload={"asset_ids":asset_ids};db.commit()
+        if not asset_ids:raise RuntimeError("provider_returned_no_outputs")
         job.status="succeeded";job.stage="completed";job.result_payload={"asset_ids":asset_ids};job.completed_at=utcnow();job.error_code=None;job.error_message=None;job.lease_owner=None;job.lease_expires_at=None;db.commit()
 
     async def _handle_error(self,db,job,exc):
