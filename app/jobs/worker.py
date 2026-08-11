@@ -59,8 +59,7 @@ class JobWorker:
                 outputs=await provider.generate_image(job=job,db=db,account_id=account_id)
                 await self._store_outputs(db,job,outputs,"image");return
             dispatch=await (provider.dispatch_video(job=job,db=db,account_id=account_id) if job.kind=="video" else provider.dispatch_omni(job=job,db=db,account_id=account_id))
-            job.provider_operation_id=json.dumps({"operation_ids":dispatch.operation_ids,"workflows":dispatch.workflows})
-            payload=dict(job.result_payload or {});payload["_provider_dispatched_at"]=utcnow().isoformat();job.result_payload=payload
+            job.provider_operation_id=json.dumps({"operation_ids":dispatch.operation_ids,"workflows":dispatch.workflows,"dispatched_at":utcnow().isoformat()})
             job.stage="provider_running";job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit()
         except Exception as exc:
             db.rollback();fresh=db.get(GenerationJob,job_id)
@@ -81,8 +80,15 @@ class JobWorker:
         job.result_payload=payload or None
 
     @staticmethod
-    def _provider_dispatched_at(job:GenerationJob):
-        raw=(job.result_payload or {}).get("_provider_dispatched_at")
+    def _operation_metadata(job:GenerationJob)->dict:
+        try:
+            raw=json.loads(job.provider_operation_id or "{}")
+            return raw if isinstance(raw,dict) else {}
+        except (TypeError,ValueError,json.JSONDecodeError):return {}
+
+    @classmethod
+    def _provider_dispatched_at(cls,job:GenerationJob):
+        raw=cls._operation_metadata(job).get("dispatched_at")
         if isinstance(raw,str):
             try:return datetime.fromisoformat(raw)
             except ValueError:pass
@@ -90,7 +96,10 @@ class JobWorker:
 
     def _operation_timed_out(self,job:GenerationJob)->bool:
         started=self._provider_dispatched_at(job)
-        return bool(started and utcnow()>=started+timedelta(seconds=self.runtime.settings.max_provider_operation_seconds))
+        if not started:return False
+        now=utcnow()
+        if started.tzinfo is None:started=started.replace(tzinfo=now.tzinfo)
+        return now>=started+timedelta(seconds=self.runtime.settings.max_provider_operation_seconds)
 
     def _finish_operation_timeout(self,db,job:GenerationJob):
         job.status="failed";job.stage="completed";job.error_code="PROVIDER_OPERATION_TIMEOUT";job.error_message="Provider operation exceeded the configured maximum runtime.";job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit()
@@ -100,7 +109,7 @@ class JobWorker:
         if self._operation_timed_out(job):return self._finish_operation_timeout(db,job)
         job_id=job.id
         try:
-            raw=json.loads(job.provider_operation_id or "{}")
+            raw=self._operation_metadata(job)
             dispatch=ProviderDispatch(operation_ids=raw.get("operation_ids") or [],workflows=raw.get("workflows") or [])
             result=await provider.poll_video(job=job,db=db,account_id=job.provider_account_id,dispatch=dispatch)
             if result.error and result.done:
@@ -128,7 +137,7 @@ class JobWorker:
 
     async def _store_outputs(self,db,job,outputs,asset_type):
         job.stage="storing_outputs";db.commit()
-        payload=dict(job.result_payload or {});payload.pop("_poll_error_count",None);payload.pop("_provider_dispatched_at",None)
+        payload=dict(job.result_payload or {});payload.pop("_poll_error_count",None)
         asset_ids=list(payload.get("asset_ids") or [])
         existing=list(db.scalars(select(MediaAsset).where(MediaAsset.client_id==job.client_id,MediaAsset.source_job_id==job.id).order_by(MediaAsset.created_at.asc())))
         if not asset_ids and existing:asset_ids=[a.id for a in existing]
