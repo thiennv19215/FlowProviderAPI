@@ -5,17 +5,18 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../background.js', import.meta.url), 'utf8');
 
-function buildHarness() {
-  let alarmListener = null;
+function buildHarness(initialStorage = {}) {
   const sockets = [];
   const fetchSignals = [];
+  const storage = { ...initialStorage };
 
   class MockWebSocket {
     static CONNECTING = 0;
     static OPEN = 1;
     static CLOSED = 3;
-    constructor(url) {
+    constructor(url, protocols = []) {
       this.url = url;
+      this.protocols = protocols;
       this.readyState = MockWebSocket.CONNECTING;
       this.sent = [];
       sockets.push(this);
@@ -25,38 +26,36 @@ function buildHarness() {
   }
 
   const chrome = {
-    storage: { local: { get: async () => ({}), set: async () => {} } },
+    storage: { local: {
+      get: async (keys) => {
+        if (typeof keys === 'string') return { [keys]: storage[keys] };
+        if (Array.isArray(keys)) return Object.fromEntries(keys.map((key) => [key, storage[key]]));
+        return { ...storage };
+      },
+      set: async (values) => Object.assign(storage, values),
+    } },
     permissions: { contains: async () => true, request: async () => true },
     identity: { getProfileUserInfo: async () => ({ email: '' }) },
     runtime: {
-      getURL: (p) => `chrome-extension://test/${p}`,
       getManifest: () => ({ version: '1.0.0' }),
-      getContexts: async () => [{ contextType: 'OFFSCREEN_DOCUMENT' }],
       onMessage: { addListener: () => {} },
       onInstalled: { addListener: () => {} },
       onStartup: { addListener: () => {} },
     },
-    offscreen: { createDocument: async () => {} },
     tabs: {
       query: async () => [],
       get: async () => null,
       create: async () => ({ id: 1 }),
-      reload: async () => {},
     },
     scripting: { executeScript: async () => [{ result: { ok: true, data: 'token' } }] },
-    downloads: { download: async () => 1 },
     declarativeNetRequest: { updateDynamicRules: async () => {} },
-    alarms: {
-      create: () => {},
-      clear: async () => {},
-      onAlarm: { addListener: (fn) => { alarmListener = fn; } },
-    },
   };
 
   const context = {
     self: {}, chrome, WebSocket: MockWebSocket,
-    URL, AbortController, Uint8Array, btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
-    setTimeout, clearTimeout, console, Date, Math,
+    URL, AbortController, Uint8Array, TextEncoder,
+    btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+    setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {}, console, Date, Math,
     crypto: globalThis.crypto,
     navigator: {},
     fetch: (_url, options = {}) => new Promise((_resolve, reject) => {
@@ -69,7 +68,7 @@ function buildHarness() {
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(source, context, { filename: 'background.js' });
-  return { context, sockets, fetchSignals, getAlarmListener: () => alarmListener };
+  return { context, sockets, fetchSignals, storage };
 }
 
 async function flush() {
@@ -77,17 +76,26 @@ async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-test('keepalive alarm sends a websocket heartbeat instead of being a no-op', async () => {
-  const h = buildHarness();
+test('connect sends gateway auth as websocket subprotocol without putting the token in the URL', async () => {
+  const h = buildHarness({
+    'flow-provider-server-url-v1': 'https://provider.example.com',
+    'flow-provider-gateway-token-v1': 'secret-value',
+  });
   await flush();
   assert.equal(h.sockets.length, 1);
   const ws = h.sockets[0];
-  ws.readyState = h.context.WebSocket.OPEN;
-  const alarm = h.getAlarmListener();
-  assert.equal(typeof alarm, 'function');
-  alarm({ name: 'flow-provider-keepalive' });
+  assert.equal(ws.url, 'wss://provider.example.com/api/extensions/ws');
+  assert.ok(ws.protocols.includes('flow-provider-v7'));
+  assert.ok(ws.protocols.some((value) => value.startsWith('flow-token.')));
+  assert.equal(ws.url.includes('secret-value'), false);
+});
+
+test('legacy /ext/token server setting is migrated to sanitized server plus token storage', async () => {
+  const h = buildHarness({ 'flow-provider-server-url-v1': 'https://provider.example.com/ext/old-secret' });
   await flush();
-  assert.ok(ws.sent.some((frame) => frame.type === 'pong'), 'expected pong heartbeat frame');
+  assert.equal(h.storage['flow-provider-server-url-v1'], 'https://provider.example.com');
+  assert.equal(h.storage['flow-provider-gateway-token-v1'], 'old-secret');
+  assert.equal(h.sockets[0].url, 'wss://provider.example.com/api/extensions/ws');
 });
 
 test('CANCEL_RPC aborts an in-flight SW_FETCH', async () => {
@@ -109,4 +117,11 @@ test('CANCEL_RPC aborts an in-flight SW_FETCH', async () => {
   await rpcPromise;
   assert.equal(h.fetchSignals[0].aborted, true);
   assert.ok(ws.sent.some((frame) => frame.id === 'rpc-1' && typeof frame.error === 'string'));
+});
+
+test('legacy unused RPC handlers are removed', () => {
+  assert.equal(source.includes('ENSURE_TAB'), false);
+  assert.equal(source.includes('RELOAD_TAB'), false);
+  assert.equal(source.includes('DOWNLOAD_FILE'), false);
+  assert.equal(source.includes('ensureOffscreen'), false);
 });
