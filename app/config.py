@@ -32,15 +32,21 @@ class Settings(BaseSettings):
     r2_bucket:str|None=None
     r2_region:str="auto"
     asset_url_ttl_seconds:int=Field(default=1800,ge=60,le=86400)
+    max_upload_bytes:int=Field(default=50*1024*1024,ge=1024,le=2*1024*1024*1024)
+    max_reference_bytes:int=Field(default=25*1024*1024,ge=1024,le=512*1024*1024)
 
     flow_api_key:str|None=None
     account_slot_capacity:int=Field(default=2,ge=1,le=8)
     account_rate_limit_cooldown_seconds:int=Field(default=180,ge=10)
+    extension_heartbeat_seconds:int=Field(default=20,ge=5,le=120)
+    extension_heartbeat_grace_seconds:int=Field(default=15,ge=5,le=120)
 
     @model_validator(mode="after")
     def validate_settings(self):
         if self.env!="test" and self.video_poll_seconds<1:
             raise ValueError("Video poll interval must be at least 1 second outside tests")
+        if self.max_reference_bytes>self.max_upload_bytes:
+            raise ValueError("Reference asset limit cannot exceed upload limit")
         if self.storage_backend=="r2":
             required=[self.r2_endpoint_url,self.r2_access_key_id,self.r2_secret_access_key,self.r2_bucket]
             if not all(required):raise ValueError("R2 storage requires endpoint, access key, secret key, and bucket")
