@@ -14,6 +14,7 @@ from app.api.generations import router as generations_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.config import Settings, get_settings
+from app.auth.api_keys import ensure_bootstrap_client
 from app.extension.gateway import router as extension_router
 from app.jobs.repository import recover_expired
 from app.runtime import build_runtime
@@ -26,7 +27,9 @@ def create_app(settings: Settings|None=None, *, extra_providers: list|None=None)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        with runtime.session_factory() as db: recover_expired(db)
+        with runtime.session_factory() as db:
+            ensure_bootstrap_client(db,settings.bootstrap_api_key)
+            recover_expired(db)
         if settings.worker_enabled and runtime.worker:await runtime.worker.start()
         yield
         if runtime.worker:await runtime.worker.stop()
