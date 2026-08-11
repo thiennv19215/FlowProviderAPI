@@ -21,6 +21,7 @@ class ApiClient(Base):
     key_prefix: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
     max_concurrent_jobs: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=120, nullable=False)
