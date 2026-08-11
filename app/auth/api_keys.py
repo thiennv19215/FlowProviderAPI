@@ -23,10 +23,13 @@ def ensure_bootstrap_client(session, api_key: str | None) -> None:
     digest = hash_api_key(api_key)
     existing = session.scalar(select(ApiClient).where(ApiClient.key_hash == digest))
     if existing:
+        if not existing.is_admin:
+            existing.is_admin = True
+            session.commit()
         return
     session.add(ApiClient(
         id=new_id("cli"), name="Bootstrap client", key_prefix=key_prefix(api_key), key_hash=digest,
-        priority=50, max_concurrent_jobs=10, rate_limit_per_minute=600,
+        is_admin=True, priority=50, max_concurrent_jobs=10, rate_limit_per_minute=600,
     ))
     session.commit()
 
