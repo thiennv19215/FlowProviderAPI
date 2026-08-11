@@ -10,8 +10,7 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class Base(DeclarativeBase):
-    pass
+class Base(DeclarativeBase):pass
 
 
 class ApiClient(Base):
@@ -26,6 +25,14 @@ class ApiClient(Base):
     max_concurrent_jobs: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     rate_limit_per_minute: Mapped[int] = mapped_column(Integer, default=120, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class RateLimitBucket(Base):
+    __tablename__="rate_limit_buckets"
+    client_id: Mapped[str]=mapped_column(ForeignKey("api_clients.id",ondelete="CASCADE"),primary_key=True)
+    window_started_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),nullable=False)
+    request_count: Mapped[int]=mapped_column(Integer,default=0,nullable=False)
+    updated_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=utcnow,onupdate=utcnow,nullable=False)
 
 
 class GenerationJob(Base):
