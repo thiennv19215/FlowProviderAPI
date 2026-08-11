@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -32,9 +33,9 @@ def test_stuck_provider_operation_hits_deadline(client,app,auth):
     assert asyncio.run(app.state.runtime.worker.run_once())
     with app.state.runtime.session_factory() as db:
         job=db.get(GenerationJob,job_id)
-        payload=dict(job.result_payload or {})
-        payload["_provider_dispatched_at"]=(utcnow()-timedelta(seconds=app.state.runtime.settings.max_provider_operation_seconds+1)).isoformat()
-        job.result_payload=payload;job.next_run_at=utcnow();db.commit()
+        metadata=json.loads(job.provider_operation_id or "{}")
+        metadata["dispatched_at"]=(utcnow()-timedelta(seconds=app.state.runtime.settings.max_provider_operation_seconds+1)).isoformat()
+        job.provider_operation_id=json.dumps(metadata);job.next_run_at=utcnow();db.commit()
     assert asyncio.run(app.state.runtime.worker.run_once())
     done=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
     assert done["status"]=="failed"
