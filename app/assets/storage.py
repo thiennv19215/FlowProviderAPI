@@ -15,6 +15,12 @@ class LocalStorage:
         if self.root.resolve() not in path.parents and path!=self.root.resolve():raise ValueError("invalid storage key")
         return path
 
+    async def healthcheck(self)->bool:
+        try:
+            await asyncio.to_thread(self.root.mkdir,parents=True,exist_ok=True)
+            return await asyncio.to_thread(self.root.is_dir)
+        except Exception:return False
+
     async def put_bytes(self,key:str,data:bytes,content_type:str)->None:
         path=self._path(key);path.parent.mkdir(parents=True,exist_ok=True);await asyncio.to_thread(path.write_bytes,data)
 
@@ -38,6 +44,11 @@ class R2Storage:
     def __init__(self,settings):
         self.bucket=settings.r2_bucket
         self.client=boto3.client("s3",endpoint_url=settings.r2_endpoint_url,aws_access_key_id=settings.r2_access_key_id,aws_secret_access_key=settings.r2_secret_access_key,region_name=settings.r2_region)
+
+    async def healthcheck(self)->bool:
+        try:
+            await asyncio.to_thread(self.client.head_bucket,Bucket=self.bucket);return True
+        except Exception:return False
 
     async def put_bytes(self,key:str,data:bytes,content_type:str)->None:
         await asyncio.to_thread(self.client.put_object,Bucket=self.bucket,Key=key,Body=data,ContentType=content_type)
