@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from app.assets.service import AssetService
+from app.assets.storage import build_storage
+from app.auth.api_keys import ensure_bootstrap_client
+from app.auth.rate_limit import RateLimiter
+from app.db.models import Base
+from app.db.session import build_engine, build_session_factory
+from app.jobs.scheduler import GlobalScheduler
+from app.jobs.worker import JobWorker
+from app.providers.google_flow.client import FlowBridge
+from app.providers.google_flow.provider import GoogleFlowProvider
+from app.providers.registry import ProviderRegistry
+
+
+@dataclass
+class Runtime:
+    settings: object
+    engine: object
+    session_factory: object
+    storage: object
+    assets: AssetService
+    bridge: FlowBridge
+    providers: ProviderRegistry
+    scheduler: GlobalScheduler
+    rate_limiter: RateLimiter
+    worker: JobWorker | None = None
+
+
+def build_runtime(settings, *, extra_providers: list | None = None) -> Runtime:
+    engine=build_engine(settings.database_url);session_factory=build_session_factory(engine);Base.metadata.create_all(engine)
+    with session_factory() as db: ensure_bootstrap_client(db,settings.bootstrap_api_key)
+    storage=build_storage(settings);assets=AssetService(storage,settings)
+    bridge=FlowBridge(flow_api_key=settings.flow_api_key,slot_capacity=settings.account_slot_capacity,cooldown_seconds=settings.account_rate_limit_cooldown_seconds)
+    providers=ProviderRegistry();providers.register(GoogleFlowProvider(bridge,assets))
+    for provider in extra_providers or []: providers.register(provider)
+    runtime=Runtime(settings,engine,session_factory,storage,assets,bridge,providers,GlobalScheduler(bridge),RateLimiter())
+    runtime.worker=JobWorker(runtime);return runtime

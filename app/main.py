@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+import logging
+import uuid
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+
+from app.api.accounts import router as accounts_router
+from app.api.assets import router as assets_router
+from app.api.errors import APIError, api_error_handler, validation_error_handler
+from app.api.generations import router as generations_router
+from app.api.health import router as health_router
+from app.api.jobs import router as jobs_router
+from app.config import Settings, get_settings
+from app.extension.gateway import router as extension_router
+from app.jobs.repository import recover_expired
+from app.runtime import build_runtime
+
+logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+
+def create_app(settings: Settings|None=None, *, extra_providers: list|None=None) -> FastAPI:
+    settings=settings or get_settings();runtime=build_runtime(settings,extra_providers=extra_providers)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        with runtime.session_factory() as db: recover_expired(db)
+        if settings.worker_enabled and runtime.worker:await runtime.worker.start()
+        yield
+        if runtime.worker:await runtime.worker.stop()
+        runtime.engine.dispose()
+
+    app=FastAPI(title="Flow Provider API",version="1.0.0",description="Developer-facing asynchronous AI media generation API.",lifespan=lifespan)
+    app.state.runtime=runtime
+
+    @app.middleware("http")
+    async def request_id_middleware(request: Request,call_next):
+        request.state.request_id=request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
+        response=await call_next(request);response.headers["X-Request-Id"]=request.state.request_id
+        if hasattr(request.state,"rate_limit"):
+            limit,remaining,reset=request.state.rate_limit
+            response.headers["X-RateLimit-Limit"]=str(limit);response.headers["X-RateLimit-Remaining"]=str(remaining);response.headers["X-RateLimit-Reset"]=str(reset)
+        return response
+
+    app.add_exception_handler(APIError,api_error_handler)
+    app.add_exception_handler(RequestValidationError,validation_error_handler)
+    for router in (health_router,generations_router,jobs_router,assets_router,accounts_router,extension_router):app.include_router(router)
+    return app
+
+app=create_app()
