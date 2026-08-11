@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Flow Provider Connector",
+  "version": "1.0.0",
+  "description": "Connects a signed-in Google Flow browser profile to FlowProviderAPI.",
+  "background": {
+    "service_worker": "background-loader.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Flow Provider"
+  },
+  "permissions": [
+    "alarms",
+    "downloads",
+    "storage",
+    "tabs",
+    "scripting",
+    "identity",
+    "offscreen",
+    "declarativeNetRequest",
+    "identity.email"
+  ],
+  "host_permissions": [
+    "https://labs.google/*",
+    "https://flow.google/*",
+    "https://aisandbox-pa.googleapis.com/*",
+    "https://flow-content.google/*",
+    "https://storage.googleapis.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*"
+  ],
+  "minimum_chrome_version": "116"
+}
