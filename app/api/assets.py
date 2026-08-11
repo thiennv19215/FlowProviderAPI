@@ -5,13 +5,13 @@ from fastapi.responses import RedirectResponse
 
 from app.api.deps import get_client, get_db
 from app.api.errors import APIError
-from app.api.schemas import AssetUploadRequest
+from app.api.schemas import AssetOutput, AssetUploadRequest, AssetUploadResponse
 from app.api.serializers import asset_dict
 
 router=APIRouter(prefix="/v1/assets",tags=["Assets"])
 
 
-@router.post("/uploads",status_code=201)
+@router.post("/uploads",status_code=201,response_model=AssetUploadResponse)
 def create_upload(payload: AssetUploadRequest,request: Request,db=Depends(get_db),client=Depends(get_client)):
     asset=request.app.state.runtime.assets.create_pending(db,client_id=client.id,filename=payload.filename,mime_type=payload.content_type,asset_type=payload.type,size_bytes=payload.size_bytes)
     return {"asset":asset_dict(request.app.state.runtime,asset),"upload":request.app.state.runtime.assets.upload_descriptor(asset)}
@@ -26,7 +26,7 @@ async def upload_content(asset_id: str,request: Request,data: bytes=Body(media_t
     return Response(status_code=204)
 
 
-@router.post("/{asset_id}/complete")
+@router.post("/{asset_id}/complete",response_model=AssetOutput)
 async def complete_upload(asset_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
     asset=request.app.state.runtime.assets.get_owned(db,asset_id,client.id)
     if not asset:raise APIError(404,"ASSET_NOT_FOUND","The requested asset does not exist.",error_type="not_found_error")
@@ -36,7 +36,7 @@ async def complete_upload(asset_id: str,request: Request,db=Depends(get_db),clie
     return asset_dict(request.app.state.runtime,asset)
 
 
-@router.get("/{asset_id}")
+@router.get("/{asset_id}",response_model=AssetOutput)
 def get_asset(asset_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
     asset=request.app.state.runtime.assets.get_owned(db,asset_id,client.id)
     if not asset:raise APIError(404,"ASSET_NOT_FOUND","The requested asset does not exist.",error_type="not_found_error")
