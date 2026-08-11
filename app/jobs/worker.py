@@ -64,7 +64,7 @@ class JobWorker:
             account_id=None
             if provider.requires_account_pool:
                 account_id=self.runtime.scheduler.choose_account(db,kind=job.kind)
-                job.provider_account_id=account_id;job.stage="dispatching";db.commit()
+                job.provider_account_id=account_id;db.commit()
             if job.kind=="image":
                 outputs=await provider.generate_image(job=job,db=db,account_id=account_id)
                 await self._store_outputs(db,job,outputs,"image");return
