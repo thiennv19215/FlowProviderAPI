@@ -74,6 +74,19 @@ class JobWorker:
             if fresh:await self._handle_error(db,fresh,exc)
             else:raise
 
+    @staticmethod
+    def _poll_error_count(job:GenerationJob)->int:
+        payload=job.result_payload or {}
+        try:return max(0,int(payload.get("_poll_error_count",0)))
+        except (TypeError,ValueError):return 0
+
+    @staticmethod
+    def _set_poll_error_count(job:GenerationJob,count:int)->None:
+        payload=dict(job.result_payload or {})
+        if count>0:payload["_poll_error_count"]=count
+        else:payload.pop("_poll_error_count",None)
+        job.result_payload=payload or None
+
     async def _poll(self,db,job,provider):
         if job.cancel_requested:return self._finish_cancel(db,job)
         job_id=job.id
@@ -83,19 +96,29 @@ class JobWorker:
             result=await provider.poll_video(job=job,db=db,account_id=job.provider_account_id,dispatch=dispatch)
             if result.error and result.done:
                 job.status="failed";job.stage="completed";job.error_code="PROVIDER_TERMINAL_ERROR";job.error_message=result.error[:1000];job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit();return
-            if result.error or not result.done:
-                job.error_code="PROVIDER_POLL_ERROR" if result.error else None;job.error_message=result.error[:1000] if result.error else None
+            if result.error:
+                failures=self._poll_error_count(job)+1;self._set_poll_error_count(job,failures)
+                if failures>=self.runtime.settings.max_consecutive_poll_errors:
+                    job.status="failed";job.stage="completed";job.error_code="PROVIDER_POLL_RETRIES_EXHAUSTED";job.error_message=result.error[:1000];job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit();return
+                job.error_code="PROVIDER_POLL_ERROR";job.error_message=result.error[:1000]
                 job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit();return
+            self._set_poll_error_count(job,0)
+            if not result.done:
+                job.error_code=None;job.error_message=None;job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit();return
             await self._store_outputs(db,job,result.outputs,"video")
         except Exception as exc:
             db.rollback();fresh=db.get(GenerationJob,job_id)
             if not fresh:raise
+            failures=self._poll_error_count(fresh)+1;self._set_poll_error_count(fresh,failures)
+            if failures>=self.runtime.settings.max_consecutive_poll_errors:
+                fresh.status="failed";fresh.stage="completed";fresh.error_code="PROVIDER_POLL_RETRIES_EXHAUSTED";fresh.error_message=str(exc)[:1000];fresh.completed_at=utcnow();fresh.lease_owner=None;fresh.lease_expires_at=None;db.commit();return
             fresh.stage="provider_running";fresh.error_code="PROVIDER_POLL_ERROR";fresh.error_message=str(exc)[:1000]
             fresh.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);fresh.lease_owner=None;fresh.lease_expires_at=None;db.commit()
 
     async def _store_outputs(self,db,job,outputs,asset_type):
         job.stage="storing_outputs";db.commit()
-        asset_ids=list((job.result_payload or {}).get("asset_ids") or [])
+        payload=dict(job.result_payload or {});payload.pop("_poll_error_count",None)
+        asset_ids=list(payload.get("asset_ids") or [])
         existing=list(db.scalars(select(MediaAsset).where(MediaAsset.client_id==job.client_id,MediaAsset.source_job_id==job.id).order_by(MediaAsset.created_at.asc())))
         if not asset_ids and existing:asset_ids=[a.id for a in existing]
         start_index=len(asset_ids)
