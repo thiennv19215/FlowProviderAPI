@@ -49,12 +49,16 @@ class AssetService:
     async def write_upload(self,db,asset:MediaAsset,data:bytes)->MediaAsset:
         await self.storage.put_bytes(asset.storage_key,data,asset.mime_type);return await self.complete_pending(db,asset)
 
+    async def write_upload_file(self,db,asset:MediaAsset,path:Path,size_bytes:int)->MediaAsset:
+        await self.storage.put_file(asset.storage_key,path,asset.mime_type)
+        asset.size_bytes=size_bytes;asset.status="ready";db.commit();db.refresh(asset);return asset
+
     async def ingest_provider_media(self,db,*,client_id:str,job_id:str,provider:str,media:ProviderMedia,asset_type:str)->MediaAsset:
         mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png")
         aid=new_id("asset");key=self.storage_key(client_id,aid,None,mime)
-        checksum=hashlib.sha256();size=0
+        checksum=hashlib.sha256();size=0;stored=False
         if media.bytes_data is not None:
-            data=media.bytes_data;checksum.update(data);size=len(data);await self.storage.put_bytes(key,data,mime)
+            data=media.bytes_data;checksum.update(data);size=len(data);await self.storage.put_bytes(key,data,mime);stored=True
         elif media.url:
             if not self._provider_url_allowed(media.url):raise ValueError("provider_output_url_not_allowed")
             tmp_path=None
@@ -69,14 +73,22 @@ class AssetService:
                             async for chunk in resp.aiter_bytes(1024*1024):
                                 if not chunk:continue
                                 tmp.write(chunk);checksum.update(chunk);size+=len(chunk)
-                await self.storage.put_file(key,tmp_path,mime)
+                await self.storage.put_file(key,tmp_path,mime);stored=True
             finally:
                 if tmp_path:
                     try:os.unlink(tmp_path)
                     except FileNotFoundError:pass
         else:raise ValueError("provider_output_has_no_content")
         asset=MediaAsset(id=aid,client_id=client_id,status="ready",type=asset_type,storage_key=key,mime_type=mime,size_bytes=size,width=media.width,height=media.height,duration=media.duration,checksum_sha256=checksum.hexdigest(),source_provider=provider,source_job_id=job_id)
-        db.add(asset);db.commit();db.refresh(asset);return asset
+        db.add(asset)
+        try:db.commit()
+        except Exception:
+            db.rollback()
+            if stored:
+                try:await self.storage.delete(key)
+                except Exception:pass
+            raise
+        db.refresh(asset);return asset
 
     async def bytes_for_asset(self,asset:MediaAsset)->bytes:return await self.storage.read_bytes(asset.storage_key)
 
