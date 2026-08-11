@@ -27,7 +27,7 @@ uvicorn app.main:app --reload
 
 Open `http://localhost:8000/docs` for Swagger. Load `extension/` as an unpacked Chrome extension and point its popup at the Provider URL.
 
-For a live Google Flow test, set `FLOW_PROVIDER_FLOW_API_KEY` in `.env`. Local/test mode may leave the extension gateway token unset. Production requires `FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN` with at least 32 characters. Configure the extension popup server URL as `https://provider.example.com/ext/<same-token>`; the extension appends `/api/extensions/ws` automatically. The legacy unauthenticated WebSocket routes are rejected whenever a gateway token is configured.
+For a live Google Flow test, set `FLOW_PROVIDER_FLOW_API_KEY` in `.env`. Local/test mode may leave the extension gateway token unset. Production requires `FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN` with at least 32 characters. In the extension popup, configure the Provider server as `https://provider.example.com` and put the same secret in the separate **Gateway token** field. The connector sends that secret only in the WebSocket subprotocol during the `/api/extensions/ws` handshake; it is not embedded in the request URL. Existing saved `/ext/<token>` settings are migrated automatically once to the separate token storage.
 
 ## Primary endpoints
 
