@@ -11,13 +11,10 @@
     "default_title": "Flow Provider"
   },
   "permissions": [
-    "alarms",
-    "downloads",
     "storage",
     "tabs",
     "scripting",
     "identity",
-    "offscreen",
     "declarativeNetRequest",
     "identity.email"
   ],
