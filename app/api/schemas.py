@@ -86,8 +86,20 @@ class JobOutput(BaseModel):
     completed_at: datetime | None = None
 
 
-class ListResponse(BaseModel):
+class JobListResponse(BaseModel):
     object: Literal["list"] = "list"
-    data: list[dict]
+    data: list[JobOutput]
     has_more: bool = False
     next_cursor: str | None = None
+
+
+class AssetUploadDescriptor(BaseModel):
+    method: Literal["PUT"] = "PUT"
+    url: str
+    headers: dict[str, str]
+    expires_in: int | None = None
+
+
+class AssetUploadResponse(BaseModel):
+    asset: AssetOutput
+    upload: AssetUploadDescriptor
