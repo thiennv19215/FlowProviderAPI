@@ -55,3 +55,11 @@ def test_structured_auth_error(client):
     assert response.status_code==401
     assert response.json()["error"]["code"]=="INVALID_API_KEY"
     assert response.headers.get("X-Request-Id")
+
+
+def test_openapi_exposes_typed_generation_and_asset_responses(client):
+    schema=client.get("/openapi.json").json()
+    image=schema["paths"]["/v1/images/generations"]["post"]
+    assert image["responses"]["202"]["content"]["application/json"]["schema"]["$ref"].endswith("/JobOutput")
+    upload=schema["paths"]["/v1/assets/uploads"]["post"]
+    assert upload["responses"]["201"]["content"]["application/json"]["schema"]["$ref"].endswith("/AssetUploadResponse")
