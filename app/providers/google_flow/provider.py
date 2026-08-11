@@ -65,10 +65,12 @@ class GoogleFlowProvider:
         if not account_id or not job.provider_project_id:return ProviderPollResult(done=False,error="provider_context_missing")
         sdk=self._sdk(account_id)
         result=await sdk.check_async(operation_names=dispatch.operation_ids,project_id=job.provider_project_id,workflows_data=dispatch.workflows)
-        if result.get("error"): return ProviderPollResult(done=False,error=result["error"])
+        if result.get("error"):
+            self.bridge.mark_provider_failure(account_id,str(result["error"]));return ProviderPollResult(done=False,error=result["error"])
         ops=result.get("operations") or []
         failed=next((op.get("error") for op in ops if op.get("error")),None)
-        if failed:return ProviderPollResult(done=True,error=str(failed))
+        if failed:
+            self.bridge.mark_provider_failure(account_id,str(failed));return ProviderPollResult(done=True,error=str(failed))
         if not ops or not all(op.get("done") for op in ops):return ProviderPollResult(done=False)
         outputs=[]
         for op in ops:
