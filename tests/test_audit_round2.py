@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from app.assets.service import AssetService
+from app.jobs.worker import JobWorker
+from app.providers.base import ProviderMedia
+from app.providers.google_flow.client import FlowBridge
+
+
+class DummyWS:
+    async def send(self,payload):pass
+    async def close(self,*args,**kwargs):pass
+
+
+def test_idempotency_rejects_different_payload(client,auth):
+    headers={**auth,"Idempotency-Key":"same-operation"}
+    first=client.post("/v1/images/generations",headers=headers,json={"prompt":"cat","provider":"fake","workspace":{"key":"idem:conflict"}})
+    assert first.status_code==202
+    second=client.post("/v1/images/generations",headers=headers,json={"prompt":"dog","provider":"fake","workspace":{"key":"idem:conflict"}})
+    assert second.status_code==409
+    assert second.json()["error"]["code"]=="IDEMPOTENCY_CONFLICT"
+
+
+def test_idempotency_key_length_is_validated(client,auth):
+    response=client.post("/v1/images/generations",headers={**auth,"Idempotency-Key":"x"*256},json={"prompt":"cat","provider":"fake","workspace":{"key":"idem:long"}})
+    assert response.status_code==422
+    assert response.json()["error"]["code"]=="VALIDATION_ERROR"
+
+
+def test_video_start_asset_must_be_image(client,auth):
+    created=client.post("/v1/assets/uploads",headers=auth,json={"filename":"clip.mp4","content_type":"video/mp4","type":"video"})
+    assert created.status_code==201
+    aid=created.json()["asset"]["id"]
+    assert client.put(f"/v1/assets/{aid}/content",headers={**auth,"Content-Type":"application/octet-stream"},content=b"video").status_code==204
+    response=client.post("/v1/videos/generations",headers=auth,json={"prompt":"move","provider":"fake","input":{"start_asset_id":aid},"workspace":{"key":"bad-ref"}})
+    assert response.status_code==422
+    assert response.json()["error"]["code"]=="INVALID_ASSET_TYPE"
+
+
+def test_direct_upload_enforces_stream_limit(client,app,auth):
+    previous=app.state.runtime.settings.max_upload_bytes
+    app.state.runtime.settings.max_upload_bytes=4
+    try:
+        created=client.post("/v1/assets/uploads",headers=auth,json={"filename":"tiny.png","content_type":"image/png","type":"image"})
+        aid=created.json()["asset"]["id"]
+        response=client.put(f"/v1/assets/{aid}/content",headers={**auth,"Content-Type":"application/octet-stream"},content=b"12345")
+        assert response.status_code==413
+        assert response.json()["error"]["code"]=="ASSET_TOO_LARGE"
+    finally:
+        app.state.runtime.settings.max_upload_bytes=previous
+
+
+class RecordingDB:
+    def __init__(self):self.events=[]
+    def rollback(self):self.events.append("rollback")
+    def commit(self):self.events.append("commit")
+
+
+def test_worker_error_handler_rolls_back_before_commit(app):
+    db=RecordingDB();job=SimpleNamespace(stage="preparing",attempt_count=1,status="running",error_code=None,error_message=None,next_run_at=None,lease_owner="w",lease_expires_at=object(),completed_at=None)
+    asyncio.run(app.state.runtime.worker._handle_error(db,job,RuntimeError("db trouble")))
+    assert db.events[:2]==["rollback","commit"]
+    assert job.status=="queued"
+
+
+class FailingCommitDB:
+    def __init__(self):self.added=None;self.rolled_back=False
+    def add(self,obj):self.added=obj
+    def commit(self):raise RuntimeError("database unavailable")
+    def rollback(self):self.rolled_back=True
+    def refresh(self,obj):raise AssertionError("not reached")
+
+
+class RecordingStorage:
+    def __init__(self):self.put=[];self.deleted=[]
+    async def put_bytes(self,key,data,content_type):self.put.append(key)
+    async def delete(self,key):self.deleted.append(key)
+
+
+def test_provider_asset_storage_is_cleaned_if_db_commit_fails():
+    storage=RecordingStorage();settings=SimpleNamespace(env="test",max_upload_bytes=1024,max_reference_bytes=1024,asset_url_ttl_seconds=60,public_base_url="http://test")
+    service=AssetService(storage,settings);db=FailingCommitDB()
+    with pytest.raises(RuntimeError,match="database unavailable"):
+        asyncio.run(service.ingest_provider_media(db,client_id="client",job_id="job",provider="fake",media=ProviderMedia(bytes_data=b"output",mime_type="image/png"),asset_type="image"))
+    assert db.rolled_back is True
+    assert storage.put and storage.deleted==storage.put
+
+
+def test_suspect_extension_is_removed_from_ready_pool_until_message_arrives():
+    bridge=FlowBridge(flow_api_key="test");ws=DummyWS();conn=bridge.register(ws,{"installationId":"heartbeat-install"})
+    conn.flow_key="token";conn.account_email="flow@example.test";conn.paygate_tier="PAYGATE_TIER_ONE";conn.credits=100
+    assert conn in bridge.ready_connections()
+    bridge.mark_suspect(conn.id)
+    assert conn.health_status=="suspect"
+    assert conn not in bridge.ready_connections()
+    asyncio.run(bridge.handle_message({"type":"pong"},ws))
+    assert conn.health_status=="online"
+    assert conn in bridge.ready_connections()
