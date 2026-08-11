@@ -54,7 +54,14 @@ class JobWorker:
                 await self._poll(db,job,provider);return
             account_id=None
             if provider.requires_account_pool:
-                account_id=self.runtime.scheduler.choose_account(db,kind=job.kind,payload=job.request_payload)
+                account_id=self.runtime.scheduler.choose_account(
+                    db,
+                    kind=job.kind,
+                    payload=job.request_payload,
+                    client_id=job.client_id,
+                    workspace_key=job.workspace_key,
+                    provider=job.provider,
+                )
                 job.provider_account_id=account_id;db.commit()
             if job.kind=="image":
                 outputs=await provider.generate_image(job=job,db=db,account_id=account_id)
