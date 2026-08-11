@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from types import SimpleNamespace
 
 import pytest
@@ -104,6 +105,7 @@ def test_flow_reference_memory_cap_is_enforced_before_read(client,app,auth):
 
 def test_extension_gateway_requires_configured_token(client,app):
     token="t"*32
+    encoded=base64.urlsafe_b64encode(token.encode()).decode().rstrip("=")
     previous=app.state.runtime.settings.extension_gateway_token
     app.state.runtime.settings.extension_gateway_token=token
     try:
@@ -111,7 +113,7 @@ def test_extension_gateway_requires_configured_token(client,app):
             with client.websocket_connect("/api/extensions/ws") as ws:
                 ws.send_json({"type":"extension_ready","protocolVersion":7,"installationId":"install-token-test"})
                 ws.receive_json()
-        with client.websocket_connect(f"/ext/{token}/api/extensions/ws") as ws:
+        with client.websocket_connect("/api/extensions/ws",subprotocols=["flow-provider-v7",f"flow-token.{encoded}"]) as ws:
             ws.send_json({"type":"extension_ready","protocolVersion":7,"installationId":"install-token-test","runtimeId":"chrome","profileId":"p"})
             assert client.get("/v1/health").json()["extension_connected"] is True
     finally:
