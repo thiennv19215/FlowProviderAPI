@@ -38,13 +38,22 @@ class AssetService:
         asset=MediaAsset(id=aid,client_id=client_id,status="pending",type=asset_type,storage_key=key,filename=filename,mime_type=mime_type,size_bytes=size_bytes)
         db.add(asset);db.commit();db.refresh(asset);return asset
 
+    async def _reject_pending_object(self,asset:MediaAsset,code:str):
+        try:await self.storage.delete(asset.storage_key)
+        except Exception:pass
+        raise ValueError(code)
+
     async def complete_pending(self,db,asset:MediaAsset)->MediaAsset:
         meta=await self.storage.stat(asset.storage_key)
         if not meta:raise FileNotFoundError("uploaded_object_not_found")
         size=meta.get("size_bytes")
-        if isinstance(size,int) and size>self.settings.max_upload_bytes:raise ValueError("uploaded_object_too_large")
+        if isinstance(size,int) and size>self.settings.max_upload_bytes:
+            await self._reject_pending_object(asset,"uploaded_object_too_large")
+        if asset.size_bytes is not None and isinstance(size,int) and size!=asset.size_bytes:
+            await self._reject_pending_object(asset,"uploaded_size_mismatch")
         content_type=meta.get("content_type")
-        if isinstance(content_type,str) and content_type and content_type.split(";",1)[0].strip().lower()!=asset.mime_type.split(";",1)[0].strip().lower():raise ValueError("uploaded_content_type_mismatch")
+        if isinstance(content_type,str) and content_type and content_type.split(";",1)[0].strip().lower()!=asset.mime_type.split(";",1)[0].strip().lower():
+            await self._reject_pending_object(asset,"uploaded_content_type_mismatch")
         if isinstance(size,int):asset.size_bytes=size
         asset.status="ready";db.commit();db.refresh(asset);return asset
 
@@ -70,9 +79,11 @@ class AssetService:
 
     async def ingest_provider_media(self,db,*,client_id:str,job_id:str,provider:str,media:ProviderMedia,asset_type:str)->MediaAsset:
         mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=new_id("asset");key=self.storage_key(client_id,aid,None,mime)
-        checksum=hashlib.sha256();size=0;stored=False
+        checksum=hashlib.sha256();size=0;stored=False;limit=self.settings.max_provider_output_bytes
         if media.bytes_data is not None:
-            data=media.bytes_data;checksum.update(data);size=len(data);await self.storage.put_bytes(key,data,mime);stored=True
+            data=media.bytes_data;size=len(data)
+            if size>limit:raise ValueError("provider_output_too_large")
+            checksum.update(data);await self.storage.put_bytes(key,data,mime);stored=True
         elif media.url:
             if not self._provider_url_allowed(media.url):raise ValueError("provider_output_url_not_allowed")
             tmp_path=None
@@ -83,9 +94,17 @@ class AssetService:
                         async with client.stream("GET",media.url) as resp:
                             resp.raise_for_status();final_url=str(resp.url)
                             if not self._provider_url_allowed(final_url):raise ValueError("provider_output_redirect_not_allowed")
+                            declared=resp.headers.get("content-length")
+                            if declared:
+                                try:
+                                    if int(declared)>limit:raise ValueError("provider_output_too_large")
+                                except ValueError as exc:
+                                    if str(exc)=="provider_output_too_large":raise
                             async for chunk in resp.aiter_bytes(1024*1024):
                                 if not chunk:continue
-                                tmp.write(chunk);checksum.update(chunk);size+=len(chunk)
+                                size+=len(chunk)
+                                if size>limit:raise ValueError("provider_output_too_large")
+                                tmp.write(chunk);checksum.update(chunk)
                 await self.storage.put_file(key,tmp_path,mime);stored=True
             finally:
                 if tmp_path:
