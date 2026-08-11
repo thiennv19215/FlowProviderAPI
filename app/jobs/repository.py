@@ -5,14 +5,22 @@ from datetime import timedelta
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 
+from app.api.errors import APIError
 from app.db.models import ApiClient, GenerationJob, utcnow
 from app.ids import new_id
+
+
+def _assert_idempotency_match(existing:GenerationJob,*,kind:str,provider:str,model:str|None,workspace_key:str,payload:dict)->None:
+    if (existing.kind,existing.provider,existing.model,existing.workspace_key,existing.request_payload)!=(kind,provider,model,workspace_key,payload):
+        raise APIError(409,"IDEMPOTENCY_CONFLICT","This Idempotency-Key was already used with a different request.",error_type="conflict_error",param="Idempotency-Key")
 
 
 def create_job(db, *, client, kind: str, provider: str, model: str|None, workspace_key: str, payload: dict, idempotency_key: str|None):
     if idempotency_key:
         existing=db.scalar(select(GenerationJob).where(GenerationJob.client_id==client.id,GenerationJob.idempotency_key==idempotency_key))
-        if existing:return existing,False
+        if existing:
+            _assert_idempotency_match(existing,kind=kind,provider=provider,model=model,workspace_key=workspace_key,payload=payload)
+            return existing,False
     row=GenerationJob(id=new_id("job"),client_id=client.id,kind=kind,provider=provider,model=model,workspace_key=workspace_key,status="queued",stage="queued",priority=client.priority,request_payload=payload,idempotency_key=idempotency_key,next_run_at=utcnow())
     db.add(row)
     try: db.commit()
@@ -20,7 +28,9 @@ def create_job(db, *, client, kind: str, provider: str, model: str|None, workspa
         db.rollback()
         if idempotency_key:
             existing=db.scalar(select(GenerationJob).where(GenerationJob.client_id==client.id,GenerationJob.idempotency_key==idempotency_key))
-            if existing:return existing,False
+            if existing:
+                _assert_idempotency_match(existing,kind=kind,provider=provider,model=model,workspace_key=workspace_key,payload=payload)
+                return existing,False
         raise
     db.refresh(row);return row,True
 
