@@ -37,10 +37,15 @@ class ExtensionConnection:
     failed_count: int=0
     last_error: str|None=None
     extension_connection_id: str|None=None
+    suspect_since: float|None=None
 
     @property
     def ready(self)->bool:
-        return bool(self.flow_key and self.account_email and self.paygate_tier)
+        return bool(self.flow_key and self.account_email and self.paygate_tier and self.suspect_since is None)
+
+    @property
+    def health_status(self)->str:
+        return "suspect" if self.suspect_since is not None else "online"
 
 
 class FlowBridge:
@@ -57,9 +62,11 @@ class FlowBridge:
     def connected(self)->bool:return bool(self._connections)
 
     @staticmethod
-    def stable_account_id(installation_id:str)->str:
-        # Installation ID survives WebSocket reconnects and browser restarts.
-        return installation_id[:120]
+    def stable_account_id(installation_id:str)->str:return installation_id[:120]
+
+    def connections(self)->list[ExtensionConnection]:return list(self._connections.values())
+    def connected_count(self)->int:return len(self._connections)
+    def pending_count(self,connection_id:str)->int:return sum(1 for _req_id,(_future,cid) in self._pending.items() if cid==connection_id)
 
     def get_connection_by_installation(self,installation_id:str)->ExtensionConnection|None:
         cid=self._installation_to_id.get(installation_id);return self._connections.get(cid) if cid else None
@@ -67,8 +74,7 @@ class FlowBridge:
     def register(self,ws:Any,hello:dict)->ExtensionConnection:
         installation=str(hello.get("installationId") or "").strip()
         if not installation:raise ValueError("installation_id_required")
-        cid=self.stable_account_id(installation)
-        prior=self._connections.get(cid)
+        cid=self.stable_account_id(installation);prior=self._connections.get(cid)
         if prior:self.clear(connection_id=cid)
         conn=ExtensionConnection(id=cid,ws=ws,installation_id=installation,runtime_id=str(hello.get("runtimeId") or "chrome")[:40],profile_id=str(hello.get("profileId") or installation)[:128],profile_name=str(hello.get("profileName") or "Browser extension")[:160],max_slots=self.slot_capacity,extension_connection_id=str(hello.get("connectionId") or "")[:128] or None)
         self._connections[cid]=conn;self._installation_to_id[installation]=cid;self._ws_to_id[id(ws)]=cid;return conn
@@ -86,11 +92,29 @@ class FlowBridge:
 
     def get(self,connection_id:str)->ExtensionConnection|None:return self._connections.get(connection_id)
 
+    def mark_suspect(self,connection_id:str)->ExtensionConnection|None:
+        conn=self.get(connection_id)
+        if conn and conn.suspect_since is None:conn.suspect_since=time.time()
+        return conn
+
+    def mark_healthy(self,connection_id:str)->ExtensionConnection|None:
+        conn=self.get(connection_id)
+        if conn:conn.suspect_since=None;conn.last_seen_at=time.time()
+        return conn
+
+    def invalidate_auth(self,connection_id:str,reason:str|None=None)->None:
+        conn=self.get(connection_id)
+        if conn:self._invalidate_auth(conn,reason)
+
+    async def send_auth_ack(self,connection_id:str)->None:
+        conn=self.get(connection_id)
+        if conn:await self._send_auth_ack(conn)
+
     def list_accounts(self)->list[dict]:
         now=time.time();result=[]
         for c in sorted(self._connections.values(),key=lambda x:x.connected_at):
             cooldown=max(0,int(c.cooldown_until-now)) if c.cooldown_until and c.cooldown_until>now else 0
-            result.append({"id":c.id,"installation_id":c.installation_id,"runtime_id":c.runtime_id,"profile_name":c.profile_name,"profile_id":c.profile_id,"email":c.account_email,"connected":True,"ready":c.ready,"paygate_tier":c.paygate_tier,"sku":c.sku,"credits":c.credits,"slot_capacity":c.max_slots,"cooldown_remaining_s":cooldown,"cooldown_reason":c.cooldown_reason,"last_seen_at":c.last_seen_at,"request_count":c.request_count,"success_count":c.success_count,"failed_count":c.failed_count,"last_error":c.last_error})
+            result.append({"id":c.id,"installation_id":c.installation_id,"runtime_id":c.runtime_id,"profile_name":c.profile_name,"profile_id":c.profile_id,"email":c.account_email,"connected":True,"ready":c.ready,"health_status":c.health_status,"paygate_tier":c.paygate_tier,"sku":c.sku,"credits":c.credits,"slot_capacity":c.max_slots,"cooldown_remaining_s":cooldown,"cooldown_reason":c.cooldown_reason,"last_seen_at":c.last_seen_at,"request_count":c.request_count,"success_count":c.success_count,"failed_count":c.failed_count,"last_error":c.last_error})
         return result
 
     def ready_connections(self,*,min_credits:int=0)->list[ExtensionConnection]:
@@ -107,11 +131,10 @@ class FlowBridge:
 
     async def handle_message(self,data:dict,ws:Any)->None:
         conn_id=self._ws_to_id.get(id(ws));conn=self._connections.get(conn_id) if conn_id else None;msg_type=data.get("type")
-        if conn:conn.last_seen_at=time.time()
+        if conn:conn.last_seen_at=time.time();conn.suspect_since=None
         if msg_type=="token_captured" and conn:
             token=data.get("flowKey")
-            if isinstance(token,str) and token:
-                conn.flow_key=token;asyncio.create_task(self.refresh_account(conn.id))
+            if isinstance(token,str) and token:conn.flow_key=token;asyncio.create_task(self.refresh_account(conn.id))
             return
         if msg_type=="user_info" and conn:
             info=data.get("userInfo")
@@ -120,8 +143,7 @@ class FlowBridge:
             return
         if msg_type=="auth_sync_status" and conn:
             status=str(data.get("status") or "")
-            if status in {"needs_labs_sign_in","signed_out","auth_error"}:
-                self._invalidate_auth(conn,str(data.get("reason") or status));await self._send_auth_ack(conn)
+            if status in {"needs_labs_sign_in","signed_out","auth_error"}:self._invalidate_auth(conn,str(data.get("reason") or status));await self._send_auth_ack(conn)
             return
         if msg_type=="pong":return
         req_id=data.get("id")
@@ -148,10 +170,8 @@ class FlowBridge:
             self._invalidate_auth(conn,str(response["error"]));await self._send_auth_ack(conn);return
         inner=response.get("data") if isinstance(response,dict) else None;payload=inner.get("data") if isinstance(inner,dict) else None
         if isinstance(payload,dict):
-            tier=payload.get("userPaygateTier")
-            conn.paygate_tier=tier if tier in {"PAYGATE_TIER_ONE","PAYGATE_TIER_TWO"} else None
-            conn.credits=payload.get("credits") if isinstance(payload.get("credits"),int) else None
-            conn.sku=payload.get("sku") if isinstance(payload.get("sku"),str) else None
+            tier=payload.get("userPaygateTier");conn.paygate_tier=tier if tier in {"PAYGATE_TIER_ONE","PAYGATE_TIER_TWO"} else None
+            conn.credits=payload.get("credits") if isinstance(payload.get("credits"),int) else None;conn.sku=payload.get("sku") if isinstance(payload.get("sku"),str) else None
         await self._send_auth_ack(conn)
 
     async def send_rpc(self,connection_id:str,rpc_type:str,params:dict,*,timeout:float|None=None)->dict:
