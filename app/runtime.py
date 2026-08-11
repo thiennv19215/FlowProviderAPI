@@ -4,9 +4,7 @@ from dataclasses import dataclass
 
 from app.assets.service import AssetService
 from app.assets.storage import build_storage
-from app.auth.api_keys import ensure_bootstrap_client
 from app.auth.rate_limit import RateLimiter
-from app.db.models import Base
 from app.db.session import build_engine, build_session_factory
 from app.jobs.scheduler import GlobalScheduler
 from app.jobs.worker import JobWorker
@@ -30,8 +28,7 @@ class Runtime:
 
 
 def build_runtime(settings, *, extra_providers: list | None = None) -> Runtime:
-    engine=build_engine(settings.database_url);session_factory=build_session_factory(engine);Base.metadata.create_all(engine)
-    with session_factory() as db: ensure_bootstrap_client(db,settings.bootstrap_api_key)
+    engine=build_engine(settings.database_url);session_factory=build_session_factory(engine)
     storage=build_storage(settings);assets=AssetService(storage,settings)
     bridge=FlowBridge(flow_api_key=settings.flow_api_key,slot_capacity=settings.account_slot_capacity,cooldown_seconds=settings.account_rate_limit_cooldown_seconds)
     providers=ProviderRegistry();providers.register(GoogleFlowProvider(bridge,assets))
