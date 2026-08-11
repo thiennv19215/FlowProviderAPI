@@ -30,3 +30,9 @@ def get_client(request: Request, credentials: HTTPAuthorizationCredentials | Non
     if not allowed:
         raise APIError(429, "RATE_LIMIT_EXCEEDED", "Too many API requests for this client.", error_type="rate_limit_error", retryable=True)
     return client
+
+
+def get_admin_client(client=Depends(get_client)):
+    if not client.is_admin:
+        raise APIError(403, "ADMIN_REQUIRED", "This endpoint is restricted to Provider administrators.", error_type="permission_error")
+    return client
