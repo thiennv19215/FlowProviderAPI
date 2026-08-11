@@ -1,15 +1,14 @@
 const CONFIG = self.FLOW_PROVIDER_EXTENSION_CONFIG || {};
 const PROTOCOL_VERSION = Number(CONFIG.protocolVersion || 7);
 const SERVER_KEY = "flow-provider-server-url-v1";
+const GATEWAY_TOKEN_KEY = "flow-provider-gateway-token-v1";
 const INSTALLATION_KEY = "flow-provider-installation-id-v1";
 const PROFILE_KEY = "flow-provider-profile-id-v1";
-const RECONNECT_ALARM = "flow-provider-reconnect";
-const KEEPALIVE_ALARM = "flow-provider-keepalive";
 const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
-const FLOW_PROJECT_BASE = "https://labs.google/fx/vi/tools/flow/project/";
 const ALLOWED_FETCH_HOSTS = ["labs.google", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
 const AUTH_REFRESH_MS = 5 * 60 * 1000;
+const KEEPALIVE_MS = 20 * 1000;
 
 let socket = null;
 let reconnectTimer = null;
@@ -24,32 +23,59 @@ function id(prefix = "id") {
   return `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
 }
 
-async function getServerUrl() {
-  const data = await chrome.storage.local.get(SERVER_KEY);
-  return normalizeServerUrl(data?.[SERVER_KEY] || CONFIG.defaultServerUrl || "http://127.0.0.1:8000");
-}
-
 function normalizeServerUrl(value) {
   const url = new URL(String(value || "").trim());
   const local = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
   if (url.protocol !== "https:" && !(local && url.protocol === "http:")) {
     throw new Error("Provider server must use HTTPS (HTTP is allowed only for localhost).")
   }
+  let migratedToken = null;
+  const legacy = url.pathname.match(/^\/ext\/([^/]+)(\/.*)?$/);
+  if (legacy) {
+    migratedToken = decodeURIComponent(legacy[1]);
+    url.pathname = legacy[2] || "/";
+  }
+  if (url.hash) {
+    const raw = url.hash.slice(1);
+    if (raw.startsWith("token=")) migratedToken = decodeURIComponent(raw.slice(6));
+    url.hash = "";
+  }
   url.pathname = url.pathname.replace(/\/+$/, "");
   url.search = "";
-  url.hash = "";
-  return url.toString().replace(/\/$/, "");
+  return { serverUrl: url.toString().replace(/\/$/, ""), migratedToken };
 }
 
-async function setServerUrl(value) {
-  const normalized = normalizeServerUrl(value);
-  const origin = `${new URL(normalized).origin}/*`;
+async function getConnectionConfig() {
+  const data = await chrome.storage.local.get([SERVER_KEY, GATEWAY_TOKEN_KEY]);
+  const parsed = normalizeServerUrl(data?.[SERVER_KEY] || CONFIG.defaultServerUrl || "http://127.0.0.1:8000");
+  let gatewayToken = typeof data?.[GATEWAY_TOKEN_KEY] === "string" ? data[GATEWAY_TOKEN_KEY] : "";
+  if (parsed.migratedToken) {
+    gatewayToken ||= parsed.migratedToken;
+    await chrome.storage.local.set({ [SERVER_KEY]: parsed.serverUrl, [GATEWAY_TOKEN_KEY]: gatewayToken });
+  }
+  return { serverUrl: parsed.serverUrl, gatewayToken };
+}
+
+async function setConnectionConfig(serverValue, gatewayTokenValue) {
+  const parsed = normalizeServerUrl(serverValue);
+  const origin = `${new URL(parsed.serverUrl).origin}/*`;
   const granted = await chrome.permissions.contains({ origins: [origin] }) || await chrome.permissions.request({ origins: [origin] });
   if (!granted) throw new Error(`Permission was not granted for ${origin}`);
-  await chrome.storage.local.set({ [SERVER_KEY]: normalized });
+  const updates = { [SERVER_KEY]: parsed.serverUrl };
+  const supplied = typeof gatewayTokenValue === "string" ? gatewayTokenValue.trim() : "";
+  if (supplied) updates[GATEWAY_TOKEN_KEY] = supplied;
+  else if (parsed.migratedToken) updates[GATEWAY_TOKEN_KEY] = parsed.migratedToken;
+  await chrome.storage.local.set(updates);
   disconnect();
   connect();
-  return normalized;
+  return parsed.serverUrl;
+}
+
+function encodeToken(value) {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 async function getInstallationId() {
@@ -73,19 +99,10 @@ async function getProfileMeta() {
   return { runtimeId, profileId, profileName: email || "Browser extension" };
 }
 
-async function ensureOffscreen() {
-  if (!chrome.offscreen?.createDocument) return;
-  const url = chrome.runtime.getURL("offscreen.html");
-  try {
-    const contexts = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"], documentUrls: [url] });
-    if (!contexts.length) await chrome.offscreen.createDocument({ url: "offscreen.html", reasons: ["BLOBS"], justification: "Keep the provider WebSocket available for generation jobs." });
-  } catch (_) {}
-}
-
 function allowedFetchUrl(value) {
   try {
     const u = new URL(value);
-    return ALLOWED_FETCH_HOSTS.some((host) => u.hostname === host || u.hostname.endsWith(`.${host}`));
+    return u.protocol === "https:" && ALLOWED_FETCH_HOSTS.some((host) => u.hostname === host || u.hostname.endsWith(`.${host}`));
   } catch (_) { return false; }
 }
 
@@ -146,16 +163,6 @@ async function openFlowHome() {
   return { tabId: tab.id, isNew: true };
 }
 
-async function ensureProjectTab(projectId) {
-  const encoded = encodeURIComponent(projectId);
-  const tabs = await chrome.tabs.query({ url: "https://labs.google/fx/*/tools/flow/project/*" });
-  const existing = tabs.find((t) => t.id && String(t.url || "").includes(`/project/${encoded}`));
-  if (existing?.id) { await waitForTab(existing.id); return { tabId: existing.id, isNew: false }; }
-  const tab = await chrome.tabs.create({ url: FLOW_PROJECT_BASE + encoded, active: false });
-  await waitForTab(tab.id);
-  return { tabId: tab.id, isNew: true };
-}
-
 async function inject(tabId, operation, payload = {}) {
   await waitForTab(tabId);
   const results = await chrome.scripting.executeScript({
@@ -202,21 +209,22 @@ async function inject(tabId, operation, payload = {}) {
 
 async function swFetch(spec, signal) {
   if (!spec || !allowedFetchUrl(spec.url)) throw new Error("fetch_host_not_allowed");
-  const timeoutController = new AbortController();
-  const abortFromCaller = () => timeoutController.abort();
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
   if (signal) {
-    if (signal.aborted) timeoutController.abort();
+    if (signal.aborted) controller.abort();
     else signal.addEventListener("abort", abortFromCaller, { once: true });
   }
-  const timer = setTimeout(() => timeoutController.abort(), spec.timeoutMs || 45000);
+  const timer = setTimeout(() => controller.abort(), spec.timeoutMs || 45000);
   try {
-    const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: timeoutController.signal });
+    const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: controller.signal });
     const type = spec.responseType || ((resp.headers.get("content-type") || "").includes("json") ? "json" : "text");
     const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url };
     if (type === "json") out.data = await resp.json().catch(() => null);
     else if (type === "base64") {
       const bytes = new Uint8Array(await resp.arrayBuffer());
-      let binary = ""; for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
       out.base64 = btoa(binary);
     } else if (type !== "none") out.text = await resp.text().catch(() => "");
     return out;
@@ -231,18 +239,16 @@ async function handleRpc(msg, signal) {
     case "PING": return { version: chrome.runtime.getManifest().version };
     case "GET_BEARER": return await getBearer({ force: Boolean(msg.force) });
     case "OPEN_FLOW_TAB": return await openFlowHome();
-    case "ENSURE_TAB": return await ensureProjectTab(msg.projectId);
-    case "RELOAD_TAB": await chrome.tabs.reload(msg.tabId); await waitForTab(msg.tabId); return true;
     case "INJECT_RECAPTCHA": return await inject(msg.tabId, "recaptcha", { fallbackKey: msg.fallbackKey, action: msg.action });
     case "INJECT_PAGE_FETCH": return await inject(msg.tabId, "pageFetch", { spec: msg.spec });
     case "SW_FETCH": return await swFetch(msg.spec, signal);
-    case "DOWNLOAD_FILE": return await chrome.downloads.download({ url: msg.url, filename: msg.filename, conflictAction: "uniquify" });
     default: throw new Error(`unknown_rpc_type:${msg.type}`);
   }
 }
 
 async function connectionState() {
-  return { serverUrl: await getServerUrl(), connected: socket?.readyState === WebSocket.OPEN, account: accountState, version: chrome.runtime.getManifest().version };
+  const config = await getConnectionConfig();
+  return { serverUrl: config.serverUrl, gatewayTokenConfigured: Boolean(config.gatewayToken), connected: socket?.readyState === WebSocket.OPEN, account: accountState, version: chrome.runtime.getManifest().version };
 }
 
 function scheduleReconnect() {
@@ -250,7 +256,6 @@ function scheduleReconnect() {
   const delay = Math.min(1000 * 2 ** reconnectAttempt, 15000);
   reconnectAttempt += 1;
   reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
-  chrome.alarms.create(RECONNECT_ALARM, { delayInMinutes: 0.5 });
 }
 
 function disconnect() {
@@ -269,14 +274,16 @@ function disconnect() {
 async function connect() {
   if (socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.readyState)) return;
   try {
-    const server = new URL(await getServerUrl());
+    const config = await getConnectionConfig();
+    const server = new URL(config.serverUrl);
     server.protocol = server.protocol === "https:" ? "wss:" : "ws:";
     server.pathname = `${server.pathname.replace(/\/$/, "")}/api/extensions/ws`;
-    const ws = new WebSocket(server.toString());
+    const protocols = ["flow-provider-v7"];
+    if (config.gatewayToken) protocols.push(`flow-token.${encodeToken(config.gatewayToken)}`);
+    const ws = new WebSocket(server.toString(), protocols);
     socket = ws;
     ws.onopen = async () => {
       reconnectAttempt = 0;
-      chrome.alarms.clear(RECONNECT_ALARM);
       const meta = await getProfileMeta();
       if (ws !== socket || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: "extension_ready", installationId: await getInstallationId(), protocolVersion: PROTOCOL_VERSION, connectionId: id("conn"), ...meta }));
@@ -307,7 +314,10 @@ async function connect() {
     };
     ws.onclose = () => { if (ws === socket) { socket = null; accountState.ready = false; scheduleReconnect(); } };
     ws.onerror = () => {};
-  } catch (error) { console.warn("Flow Provider connect failed", error?.message || error); scheduleReconnect(); }
+  } catch (error) {
+    console.warn("Flow Provider connect failed", error?.message || error);
+    scheduleReconnect();
+  }
 }
 
 async function keepAlive() {
@@ -330,18 +340,14 @@ async function setupDnr() {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === "FLOW_PROVIDER_KEEPALIVE") { keepAlive().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_GET_STATE") { connectionState().then(sendResponse); return true; }
-  if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setServerUrl(msg.serverUrl).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
+  if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setConnectionConfig(msg.serverUrl, msg.gatewayToken).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_OPEN_FLOW") { openFlowHome().then((v) => sendResponse({ ok: true, ...v })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   return false;
 });
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === KEEPALIVE_ALARM) keepAlive();
-  else if (alarm.name === RECONNECT_ALARM) connect();
-});
-chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
-chrome.runtime.onInstalled.addListener(() => { setupDnr(); ensureOffscreen(); connect(); });
-chrome.runtime.onStartup.addListener(() => { setupDnr(); ensureOffscreen(); connect(); });
-ensureOffscreen(); setupDnr(); connect();
+chrome.runtime.onInstalled.addListener(() => { setupDnr(); connect(); });
+chrome.runtime.onStartup.addListener(() => { setupDnr(); connect(); });
+setInterval(() => { keepAlive().catch(() => {}); }, KEEPALIVE_MS);
+setupDnr();
+connect();
