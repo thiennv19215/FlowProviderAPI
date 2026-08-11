@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 
 from app.api.accounts import router as accounts_router
 from app.api.assets import router as assets_router
-from app.api.errors import APIError, api_error_handler, validation_error_handler
+from app.api.errors import APIError, api_error_handler, unexpected_error_handler, validation_error_handler
 from app.api.generations import router as generations_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
@@ -22,14 +22,13 @@ from app.runtime import build_runtime
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
 
-def create_app(settings: Settings|None=None, *, extra_providers: list|None=None) -> FastAPI:
+def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->FastAPI:
     settings=settings or get_settings();runtime=build_runtime(settings,extra_providers=extra_providers)
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app:FastAPI):
         with runtime.session_factory() as db:
-            ensure_bootstrap_client(db,settings.bootstrap_api_key)
-            recover_expired(db)
+            ensure_bootstrap_client(db,settings.bootstrap_api_key);recover_expired(db)
         if settings.worker_enabled and runtime.worker:await runtime.worker.start()
         yield
         if runtime.worker:await runtime.worker.stop()
@@ -39,7 +38,7 @@ def create_app(settings: Settings|None=None, *, extra_providers: list|None=None)
     app.state.runtime=runtime
 
     @app.middleware("http")
-    async def request_id_middleware(request: Request,call_next):
+    async def request_id_middleware(request:Request,call_next):
         request.state.request_id=request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
         response=await call_next(request);response.headers["X-Request-Id"]=request.state.request_id
         if hasattr(request.state,"rate_limit"):
@@ -49,6 +48,7 @@ def create_app(settings: Settings|None=None, *, extra_providers: list|None=None)
 
     app.add_exception_handler(APIError,api_error_handler)
     app.add_exception_handler(RequestValidationError,validation_error_handler)
+    app.add_exception_handler(Exception,unexpected_error_handler)
     for router in (health_router,generations_router,jobs_router,assets_router,accounts_router,extension_router):app.include_router(router)
     return app
 
