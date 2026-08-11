@@ -79,7 +79,7 @@ class AssetService:
 
     async def ingest_provider_media(self,db,*,client_id:str,job_id:str,provider:str,media:ProviderMedia,asset_type:str)->MediaAsset:
         mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=new_id("asset");key=self.storage_key(client_id,aid,None,mime)
-        checksum=hashlib.sha256();size=0;stored=False;limit=self.settings.max_provider_output_bytes
+        checksum=hashlib.sha256();size=0;stored=False;limit=getattr(self.settings,"max_provider_output_bytes",1024*1024*1024)
         if media.bytes_data is not None:
             data=media.bytes_data;size=len(data)
             if size>limit:raise ValueError("provider_output_too_large")
