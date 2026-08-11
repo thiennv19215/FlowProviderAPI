@@ -22,20 +22,19 @@ class JobWorker:
 
     async def start(self):
         self._stop.clear()
-        self._tasks=[
-            asyncio.create_task(self.loop(lane), name=f"flow-provider-worker-{lane}")
-            for lane in range(self.runtime.settings.worker_concurrency)
-        ]
+        self._tasks=[asyncio.create_task(self.loop(lane),name=f"flow-provider-worker-{lane}") for lane in range(self.runtime.settings.worker_concurrency)]
 
     async def stop(self):
-        self._stop.set()
-        tasks=list(self._tasks);self._tasks=[]
+        self._stop.set();tasks=list(self._tasks);self._tasks=[]
         for task in tasks:task.cancel()
         if tasks:await asyncio.gather(*tasks,return_exceptions=True)
 
     async def loop(self,lane:int):
         while not self._stop.is_set():
-            worked=await self.run_once(lane)
+            try:worked=await self.run_once(lane)
+            except asyncio.CancelledError:raise
+            except Exception:
+                logger.exception("worker lane failed lane=%s",lane);worked=False
             if not worked:await asyncio.sleep(self.runtime.settings.worker_poll_seconds)
 
     async def run_once(self,lane:int=0):
@@ -49,7 +48,7 @@ class JobWorker:
 
     async def process(self,db,job:GenerationJob):
         if job.cancel_requested:return self._finish_cancel(db,job)
-        provider=self.runtime.providers.get(job.provider)
+        provider=self.runtime.providers.get(job.provider);job_id=job.id
         try:
             if job.stage=="provider_running":
                 await self._poll(db,job,provider);return
@@ -63,10 +62,14 @@ class JobWorker:
             dispatch=await (provider.dispatch_video(job=job,db=db,account_id=account_id) if job.kind=="video" else provider.dispatch_omni(job=job,db=db,account_id=account_id))
             job.provider_operation_id=json.dumps({"operation_ids":dispatch.operation_ids,"workflows":dispatch.workflows})
             job.stage="provider_running";job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit()
-        except Exception as exc:await self._handle_error(db,job,exc)
+        except Exception as exc:
+            db.rollback();fresh=db.get(GenerationJob,job_id)
+            if fresh:await self._handle_error(db,fresh,exc)
+            else:raise
 
     async def _poll(self,db,job,provider):
         if job.cancel_requested:return self._finish_cancel(db,job)
+        job_id=job.id
         try:
             raw=json.loads(job.provider_operation_id or "{}")
             dispatch=ProviderDispatch(operation_ids=raw.get("operation_ids") or [],workflows=raw.get("workflows") or [])
@@ -78,8 +81,10 @@ class JobWorker:
                 job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit();return
             await self._store_outputs(db,job,result.outputs,"video")
         except Exception as exc:
-            job.stage="provider_running";job.error_code="PROVIDER_POLL_ERROR";job.error_message=str(exc)[:1000]
-            job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit()
+            db.rollback();fresh=db.get(GenerationJob,job_id)
+            if not fresh:raise
+            fresh.stage="provider_running";fresh.error_code="PROVIDER_POLL_ERROR";fresh.error_message=str(exc)[:1000]
+            fresh.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);fresh.lease_owner=None;fresh.lease_expires_at=None;db.commit()
 
     async def _store_outputs(self,db,job,outputs,asset_type):
         job.stage="storing_outputs";db.commit()
@@ -89,13 +94,12 @@ class JobWorker:
         start_index=len(asset_ids)
         for media in list(outputs)[start_index:]:
             asset=await self.runtime.assets.ingest_provider_media(db,client_id=job.client_id,job_id=job.id,provider=job.provider,media=media,asset_type=asset_type)
-            asset_ids=[*asset_ids,asset.id]
-            job.result_payload={"asset_ids":list(asset_ids)};db.commit()
+            asset_ids=[*asset_ids,asset.id];job.result_payload={"asset_ids":list(asset_ids)};db.commit()
         if not asset_ids:raise RuntimeError("provider_returned_no_outputs")
         job.status="succeeded";job.stage="completed";job.result_payload={"asset_ids":list(asset_ids)};job.completed_at=utcnow();job.error_code=None;job.error_message=None;job.lease_owner=None;job.lease_expires_at=None;db.commit()
 
     async def _handle_error(self,db,job,exc):
-        message=str(exc);safe_to_retry=job.stage in {"preparing"} and job.attempt_count<self.runtime.settings.max_attempts_before_dispatch
+        db.rollback();message=str(exc);safe_to_retry=job.stage in {"preparing"} and job.attempt_count<self.runtime.settings.max_attempts_before_dispatch
         if safe_to_retry:
             job.status="queued";job.stage="queued";job.error_code="PROVIDER_UNAVAILABLE";job.error_message=message[:1000];job.next_run_at=utcnow()+timedelta(seconds=min(30,2**job.attempt_count));job.lease_owner=None;job.lease_expires_at=None
         else:
