@@ -24,8 +24,15 @@ class LocalStorage:
     async def read_bytes(self, key: str) -> bytes:
         return await asyncio.to_thread(self._path(key).read_bytes)
 
+    async def stat(self, key: str) -> dict | None:
+        path=self._path(key)
+        if not await asyncio.to_thread(path.exists):
+            return None
+        info=await asyncio.to_thread(path.stat)
+        return {"size_bytes": info.st_size}
+
     async def exists(self, key: str) -> bool:
-        return await asyncio.to_thread(self._path(key).exists)
+        return await self.stat(key) is not None
 
     def presign_get(self, key: str, ttl: int) -> str | None:
         return None
@@ -46,10 +53,15 @@ class R2Storage:
         response=await asyncio.to_thread(self.client.get_object, Bucket=self.bucket, Key=key)
         return await asyncio.to_thread(response["Body"].read)
 
-    async def exists(self, key: str) -> bool:
+    async def stat(self, key: str) -> dict | None:
         try:
-            await asyncio.to_thread(self.client.head_object, Bucket=self.bucket, Key=key); return True
-        except Exception: return False
+            head=await asyncio.to_thread(self.client.head_object, Bucket=self.bucket, Key=key)
+            return {"size_bytes": head.get("ContentLength"), "content_type": head.get("ContentType"), "etag": head.get("ETag")}
+        except Exception:
+            return None
+
+    async def exists(self, key: str) -> bool:
+        return await self.stat(key) is not None
 
     def presign_get(self, key: str, ttl: int) -> str:
         return self.client.generate_presigned_url("get_object", Params={"Bucket":self.bucket,"Key":key}, ExpiresIn=ttl)
