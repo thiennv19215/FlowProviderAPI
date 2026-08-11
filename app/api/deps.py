@@ -25,7 +25,7 @@ def get_client(request: Request, credentials: HTTPAuthorizationCredentials | Non
     client = authenticate_api_key(db, credentials.credentials)
     if not client:
         raise APIError(401, "INVALID_API_KEY", "The supplied API key is invalid.", error_type="authentication_error")
-    allowed, remaining, reset = request.app.state.runtime.rate_limiter.hit(client.id, client.rate_limit_per_minute)
+    allowed, remaining, reset = request.app.state.runtime.rate_limiter.hit(db,client.id,client.rate_limit_per_minute)
     request.state.rate_limit = (client.rate_limit_per_minute, remaining, reset)
     if not allowed:
         raise APIError(429, "RATE_LIMIT_EXCEEDED", "Too many API requests for this client.", error_type="rate_limit_error", retryable=True)
