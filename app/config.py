@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     lease_seconds:int=Field(default=120,ge=30)
     video_poll_seconds:int=Field(default=10,ge=0)
     max_attempts_before_dispatch:int=Field(default=5,ge=1,le=20)
+    max_consecutive_poll_errors:int=Field(default=12,ge=1,le=100)
 
     storage_backend:Literal["local","r2"]="local"
     local_storage_path:Path=Path(".data/assets")
@@ -34,12 +35,15 @@ class Settings(BaseSettings):
     asset_url_ttl_seconds:int=Field(default=1800,ge=60,le=86400)
     max_upload_bytes:int=Field(default=50*1024*1024,ge=1024,le=2*1024*1024*1024)
     max_reference_bytes:int=Field(default=25*1024*1024,ge=1024,le=512*1024*1024)
+    max_reference_in_memory_bytes:int=Field(default=25*1024*1024,ge=1024,le=64*1024*1024)
+    max_provider_output_bytes:int=Field(default=1024*1024*1024,ge=1024,le=4*1024*1024*1024)
 
     flow_api_key:str|None=None
     account_slot_capacity:int=Field(default=2,ge=1,le=8)
     account_rate_limit_cooldown_seconds:int=Field(default=180,ge=10)
     extension_heartbeat_seconds:int=Field(default=20,ge=5,le=120)
     extension_heartbeat_grace_seconds:int=Field(default=15,ge=5,le=120)
+    extension_gateway_token:str|None=None
 
     @model_validator(mode="after")
     def validate_settings(self):
@@ -47,6 +51,8 @@ class Settings(BaseSettings):
             raise ValueError("Video poll interval must be at least 1 second outside tests")
         if self.max_reference_bytes>self.max_upload_bytes:
             raise ValueError("Reference asset limit cannot exceed upload limit")
+        if self.max_reference_in_memory_bytes>self.max_reference_bytes:
+            raise ValueError("In-memory reference limit cannot exceed reference asset limit")
         if self.storage_backend=="r2":
             required=[self.r2_endpoint_url,self.r2_access_key_id,self.r2_secret_access_key,self.r2_bucket]
             if not all(required):raise ValueError("R2 storage requires endpoint, access key, secret key, and bucket")
@@ -59,6 +65,8 @@ class Settings(BaseSettings):
                 raise ValueError("Disable bootstrap seeding or configure a non-development API key")
             if not self.flow_api_key:
                 raise ValueError("FLOW_PROVIDER_FLOW_API_KEY is required in production")
+            if not self.extension_gateway_token or len(self.extension_gateway_token)<32:
+                raise ValueError("Production requires FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN with at least 32 characters")
             parsed=urlparse(self.public_base_url)
             if parsed.scheme!="https" or not parsed.netloc:
                 raise ValueError("Production public base URL must use HTTPS")
