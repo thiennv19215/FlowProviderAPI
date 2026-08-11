@@ -13,34 +13,50 @@ logger=logging.getLogger(__name__)
 
 
 class JobWorker:
-    def __init__(self, runtime): self.runtime=runtime;self._task=None;self._stop=asyncio.Event()
+    def __init__(self, runtime):
+        self.runtime=runtime
+        self._tasks: list[asyncio.Task] = []
+        self._stop=asyncio.Event()
 
     async def start(self):
-        self._stop.clear();self._task=asyncio.create_task(self.loop(),name="flow-provider-worker")
+        self._stop.clear()
+        self._tasks=[
+            asyncio.create_task(self.loop(lane), name=f"flow-provider-worker-{lane}")
+            for lane in range(self.runtime.settings.worker_concurrency)
+        ]
 
     async def stop(self):
         self._stop.set()
-        if self._task:
-            self._task.cancel()
-            try: await self._task
-            except asyncio.CancelledError: pass
+        tasks=list(self._tasks)
+        self._tasks=[]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def loop(self):
+    async def loop(self, lane: int):
         while not self._stop.is_set():
-            worked=await self.run_once()
-            if not worked: await asyncio.sleep(self.runtime.settings.worker_poll_seconds)
+            worked=await self.run_once(lane)
+            if not worked:
+                await asyncio.sleep(self.runtime.settings.worker_poll_seconds)
 
-    async def run_once(self):
+    async def run_once(self, lane: int = 0):
         db=self.runtime.session_factory()
+        worker_id=f"{self.runtime.settings.worker_id}:{lane}"
         try:
-            job=repository.due_poll(db,worker_id=self.runtime.settings.worker_id,lease_seconds=self.runtime.settings.lease_seconds)
-            if not job: job=repository.claim_next(db,worker_id=self.runtime.settings.worker_id,lease_seconds=self.runtime.settings.lease_seconds)
-            if not job:return False
-            await self.process(db,job);return True
-        finally: db.close()
+            job=repository.due_poll(db,worker_id=worker_id,lease_seconds=self.runtime.settings.lease_seconds)
+            if not job:
+                job=repository.claim_next(db,worker_id=worker_id,lease_seconds=self.runtime.settings.lease_seconds)
+            if not job:
+                return False
+            await self.process(db,job)
+            return True
+        finally:
+            db.close()
 
     async def process(self, db, job: GenerationJob):
-        if job.cancel_requested:return self._finish_cancel(db,job)
+        if job.cancel_requested:
+            return self._finish_cancel(db,job)
         provider=self.runtime.providers.get(job.provider)
         try:
             if job.stage=="provider_running":
