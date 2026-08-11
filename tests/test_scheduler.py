@@ -64,3 +64,22 @@ async def test_worker_lanes_can_process_jobs_concurrently(client, app, auth):
     )
     assert worked == [True, True]
     assert provider.peak == 2
+
+
+def test_saturated_high_priority_client_does_not_starve_other_client(app):
+    from app.db.models import ApiClient, GenerationJob, utcnow
+    from app.jobs.repository import claim_next
+
+    with app.state.runtime.session_factory() as db:
+        high=ApiClient(id="cli_high",name="High",key_prefix="high",key_hash="1"*64,priority=100,max_concurrent_jobs=1,rate_limit_per_minute=100)
+        low=ApiClient(id="cli_low",name="Low",key_prefix="low",key_hash="2"*64,priority=10,max_concurrent_jobs=1,rate_limit_per_minute=100)
+        db.add_all([high,low]);db.commit()
+        running=GenerationJob(id="job_high_running",client_id=high.id,kind="image",provider="fake",workspace_key="fair:running",status="running",stage="dispatching",priority=100,request_payload={"prompt":"x"},next_run_at=utcnow(),attempt_count=1)
+        db.add(running)
+        for i in range(40):
+            db.add(GenerationJob(id=f"job_high_{i}",client_id=high.id,kind="image",provider="fake",workspace_key=f"fair:high:{i}",status="queued",stage="queued",priority=100,request_payload={"prompt":"x"},next_run_at=utcnow()))
+        db.add(GenerationJob(id="job_low_1",client_id=low.id,kind="image",provider="fake",workspace_key="fair:low",status="queued",stage="queued",priority=10,request_payload={"prompt":"x"},next_run_at=utcnow()))
+        db.commit()
+        claimed=claim_next(db,worker_id="fairness-test",lease_seconds=30)
+        assert claimed is not None
+        assert claimed.client_id == low.id
