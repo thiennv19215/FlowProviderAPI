@@ -2,12 +2,17 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 
 from app.api.errors import APIError
 from app.db.models import ApiClient, GenerationJob, utcnow
 from app.ids import new_id
+
+
+def _advisory_xact_lock(db,key:str)->None:
+    if db.bind and db.bind.dialect.name=="postgresql":
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),{"key":key})
 
 
 def _assert_idempotency_match(existing:GenerationJob,*,kind:str,provider:str,model:str|None,workspace_key:str,payload:dict)->None:
@@ -66,8 +71,14 @@ def claim_next(db, *, worker_id: str, lease_seconds: int):
         .limit(1)
     )
     job=db.scalar(query)
-    if not job:
-        return None
+    if not job:return None
+    _advisory_xact_lock(db,f"client-capacity:{job.client_id}")
+    client=db.scalar(select(ApiClient).where(ApiClient.id==job.client_id).with_for_update())
+    db.refresh(job)
+    if not client or not client.enabled or job.status!="queued" or job.next_run_at>now:
+        db.rollback();return None
+    if active_count_for_client(db,job.client_id)>=client.max_concurrent_jobs:
+        db.rollback();return None
     job.status="running";job.stage="preparing";job.started_at=job.started_at or now
     job.lease_owner=worker_id;job.lease_expires_at=now+timedelta(seconds=lease_seconds)
     job.attempt_count+=1;db.commit();db.refresh(job);return job
