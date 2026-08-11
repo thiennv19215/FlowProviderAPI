@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from app.assets.service import AssetService
-from app.jobs.worker import JobWorker
 from app.providers.base import ProviderMedia
 from app.providers.google_flow.client import FlowBridge
 
@@ -78,16 +78,29 @@ class FailingCommitDB:
 class RecordingStorage:
     def __init__(self):self.put=[];self.deleted=[]
     async def put_bytes(self,key,data,content_type):self.put.append(key)
+    async def put_file(self,key,path,content_type):self.put.append(key)
     async def delete(self,key):self.deleted.append(key)
 
 
+def _service(storage):
+    settings=SimpleNamespace(env="test",max_upload_bytes=1024,max_reference_bytes=1024,asset_url_ttl_seconds=60,public_base_url="http://test")
+    return AssetService(storage,settings)
+
+
 def test_provider_asset_storage_is_cleaned_if_db_commit_fails():
-    storage=RecordingStorage();settings=SimpleNamespace(env="test",max_upload_bytes=1024,max_reference_bytes=1024,asset_url_ttl_seconds=60,public_base_url="http://test")
-    service=AssetService(storage,settings);db=FailingCommitDB()
+    storage=RecordingStorage();service=_service(storage);db=FailingCommitDB()
     with pytest.raises(RuntimeError,match="database unavailable"):
         asyncio.run(service.ingest_provider_media(db,client_id="client",job_id="job",provider="fake",media=ProviderMedia(bytes_data=b"output",mime_type="image/png"),asset_type="image"))
     assert db.rolled_back is True
     assert storage.put and storage.deleted==storage.put
+
+
+def test_direct_upload_storage_is_cleaned_if_db_commit_fails():
+    storage=RecordingStorage();service=_service(storage);db=FailingCommitDB();asset=SimpleNamespace(storage_key="clients/c/asset.png",mime_type="image/png",size_bytes=None,status="pending")
+    with pytest.raises(RuntimeError,match="database unavailable"):
+        asyncio.run(service.write_upload_file(db,asset,Path("unused"),6))
+    assert db.rolled_back is True
+    assert storage.deleted==[asset.storage_key]
 
 
 def test_suspect_extension_is_removed_from_ready_pool_until_message_arrives():
