@@ -29,8 +29,7 @@ class AssetService:
     def _provider_url_allowed(self,value:str)->bool:
         try:
             parsed=urlparse(value);host=(parsed.hostname or "").lower()
-            if parsed.scheme!="https":
-                return self.settings.env in {"development","test"} and host in {"127.0.0.1","localhost"}
+            if parsed.scheme!="https":return self.settings.env in {"development","test"} and host in {"127.0.0.1","localhost"}
             return any(host==allowed or host.endswith("."+allowed) for allowed in PROVIDER_MEDIA_HOSTS)
         except Exception:return False
 
@@ -43,6 +42,9 @@ class AssetService:
         meta=await self.storage.stat(asset.storage_key)
         if not meta:raise FileNotFoundError("uploaded_object_not_found")
         size=meta.get("size_bytes")
+        if isinstance(size,int) and size>self.settings.max_upload_bytes:raise ValueError("uploaded_object_too_large")
+        content_type=meta.get("content_type")
+        if isinstance(content_type,str) and content_type and content_type.split(";",1)[0].strip().lower()!=asset.mime_type.split(";",1)[0].strip().lower():raise ValueError("uploaded_content_type_mismatch")
         if isinstance(size,int):asset.size_bytes=size
         asset.status="ready";db.commit();db.refresh(asset);return asset
 
@@ -50,12 +52,11 @@ class AssetService:
         await self.storage.put_bytes(asset.storage_key,data,asset.mime_type);return await self.complete_pending(db,asset)
 
     async def write_upload_file(self,db,asset:MediaAsset,path:Path,size_bytes:int)->MediaAsset:
-        await self.storage.put_file(asset.storage_key,path,asset.mime_type)
-        asset.size_bytes=size_bytes;asset.status="ready";db.commit();db.refresh(asset);return asset
+        if size_bytes>self.settings.max_upload_bytes:raise ValueError("uploaded_object_too_large")
+        await self.storage.put_file(asset.storage_key,path,asset.mime_type);asset.size_bytes=size_bytes;asset.status="ready";db.commit();db.refresh(asset);return asset
 
     async def ingest_provider_media(self,db,*,client_id:str,job_id:str,provider:str,media:ProviderMedia,asset_type:str)->MediaAsset:
-        mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png")
-        aid=new_id("asset");key=self.storage_key(client_id,aid,None,mime)
+        mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=new_id("asset");key=self.storage_key(client_id,aid,None,mime)
         checksum=hashlib.sha256();size=0;stored=False
         if media.bytes_data is not None:
             data=media.bytes_data;checksum.update(data);size=len(data);await self.storage.put_bytes(key,data,mime);stored=True
@@ -67,8 +68,7 @@ class AssetService:
                     tmp_path=Path(tmp.name)
                     async with httpx.AsyncClient(timeout=httpx.Timeout(120,connect=20),follow_redirects=True) as client:
                         async with client.stream("GET",media.url) as resp:
-                            resp.raise_for_status()
-                            final_url=str(resp.url)
+                            resp.raise_for_status();final_url=str(resp.url)
                             if not self._provider_url_allowed(final_url):raise ValueError("provider_output_redirect_not_allowed")
                             async for chunk in resp.aiter_bytes(1024*1024):
                                 if not chunk:continue
