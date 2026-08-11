@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from app.api.accounts import router as accounts_router
 from app.api.assets import router as assets_router
 from app.api.errors import APIError, api_error_handler, unexpected_error_handler, validation_error_handler
+from app.api.extensions import router as extensions_admin_router
 from app.api.generations import router as generations_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
@@ -49,7 +50,7 @@ def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->Fa
     app.add_exception_handler(APIError,api_error_handler)
     app.add_exception_handler(RequestValidationError,validation_error_handler)
     app.add_exception_handler(Exception,unexpected_error_handler)
-    for router in (health_router,generations_router,jobs_router,assets_router,accounts_router,extension_router):app.include_router(router)
+    for router in (health_router,generations_router,jobs_router,assets_router,accounts_router,extensions_admin_router,extension_router):app.include_router(router)
     return app
 
 app=create_app()
