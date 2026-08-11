@@ -16,6 +16,12 @@ def _ready_accounts():
     return bridge,a,b
 
 
+def _scheduler_client(db,client_id:str):
+    from app.db.models import ApiClient
+    row=ApiClient(id=client_id,name=client_id,key_prefix=client_id,key_hash=(client_id[-1]*64),priority=20,max_concurrent_jobs=5,rate_limit_per_minute=100)
+    db.add(row);db.commit();return row
+
+
 def test_scheduler_prefers_less_loaded_ready_account(app):
     bridge,a,b=_ready_accounts()
     scheduler=GlobalScheduler(bridge)
@@ -24,13 +30,12 @@ def test_scheduler_prefers_less_loaded_ready_account(app):
 
 
 def test_scheduler_prefers_existing_workspace_project(app):
-    from sqlalchemy import select
-    from app.db.models import ApiClient, WorkspaceProject
+    from app.db.models import WorkspaceProject
 
     bridge,a,b=_ready_accounts()
     scheduler=GlobalScheduler(bridge)
     with app.state.runtime.session_factory() as db:
-        client_row=db.scalar(select(ApiClient).limit(1))
+        client_row=_scheduler_client(db,"cli_sticky")
         db.add(WorkspaceProject(
             id="wsp_sticky",client_id=client_row.id,workspace_key="sticky:workspace",
             provider="google_flow",provider_account_id=a.id,provider_project_id="project-a",
@@ -43,13 +48,12 @@ def test_scheduler_prefers_existing_workspace_project(app):
 
 
 def test_scheduler_spills_over_when_workspace_account_is_saturated(app):
-    from sqlalchemy import select
-    from app.db.models import ApiClient, GenerationJob, WorkspaceProject, utcnow
+    from app.db.models import GenerationJob, WorkspaceProject, utcnow
 
     bridge,a,b=_ready_accounts();a.max_slots=1
     scheduler=GlobalScheduler(bridge)
     with app.state.runtime.session_factory() as db:
-        client_row=db.scalar(select(ApiClient).limit(1))
+        client_row=_scheduler_client(db,"cli_spill")
         db.add(WorkspaceProject(
             id="wsp_spill",client_id=client_row.id,workspace_key="spill:workspace",
             provider="google_flow",provider_account_id=a.id,provider_project_id="project-a",
