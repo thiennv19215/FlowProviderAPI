@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 router=APIRouter();logger=logging.getLogger(__name__)
-PROTOCOL_VERSIONS={7};HELLO_TIMEOUT=10;MAX_FRAME_CHARS=2*1024*1024
+PROTOCOL_VERSIONS={7};HELLO_TIMEOUT=10;MAX_FRAME_CHARS=2*1024*1024;MAX_INSTALLATION_ID_CHARS=120
 
 
 class SocketAdapter:
@@ -44,15 +45,24 @@ async def heartbeat_loop(conn,bridge,manager,settings):
         return
 
 
-async def _serve(websocket:WebSocket):
+def _gateway_token_valid(expected:str|None,presented:str|None)->bool:
+    if not expected:return True
+    if not presented:return False
+    return hmac.compare_digest(expected,presented)
+
+
+async def _serve(websocket:WebSocket,presented_token:str|None=None):
     runtime=websocket.app.state.runtime;bridge=runtime.bridge;manager=runtime.extension_manager
     await websocket.accept();adapter=SocketAdapter(websocket);conn=None;heartbeat_task=None
     try:
+        if not _gateway_token_valid(runtime.settings.extension_gateway_token,presented_token):
+            await websocket.close(4401,"extension gateway authentication failed");return
         hello=await receive_json(websocket,HELLO_TIMEOUT)
         if hello.get("type")!="extension_ready":await websocket.close(4400,"extension_ready frame required");return
         if hello.get("protocolVersion") not in PROTOCOL_VERSIONS:await websocket.close(4400,"extension protocol mismatch");return
         installation=str(hello.get("installationId") or "").strip()
         if not installation:await websocket.close(4400,"installation id required");return
+        if len(installation)>MAX_INSTALLATION_ID_CHARS:await websocket.close(4400,"installation id too long");return
         prior=bridge.get_connection_by_installation(installation)
         if prior:
             manager.disconnected(prior)
@@ -87,3 +97,9 @@ async def extension_ws(websocket:WebSocket):await _serve(websocket)
 
 @router.websocket("/v1/extensions/ws")
 async def extension_ws_v1(websocket:WebSocket):await _serve(websocket)
+
+@router.websocket("/ext/{gateway_token}/api/extensions/ws")
+async def extension_ws_authenticated(websocket:WebSocket,gateway_token:str):await _serve(websocket,gateway_token)
+
+@router.websocket("/ext/{gateway_token}/v1/extensions/ws")
+async def extension_ws_v1_authenticated(websocket:WebSocket,gateway_token:str):await _serve(websocket,gateway_token)
