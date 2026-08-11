@@ -29,10 +29,13 @@ class AssetService:
         db.add(asset);db.commit();db.refresh(asset);return asset
 
     async def complete_pending(self, db, asset: MediaAsset) -> MediaAsset:
-        if not await self.storage.exists(asset.storage_key):
+        meta=await self.storage.stat(asset.storage_key)
+        if not meta:
             raise FileNotFoundError("uploaded_object_not_found")
-        data=await self.storage.read_bytes(asset.storage_key)
-        asset.size_bytes=len(data);asset.checksum_sha256=hashlib.sha256(data).hexdigest();asset.status="ready";db.commit();db.refresh(asset);return asset
+        size=meta.get("size_bytes")
+        if isinstance(size,int):
+            asset.size_bytes=size
+        asset.status="ready";db.commit();db.refresh(asset);return asset
 
     async def write_upload(self, db, asset: MediaAsset, data: bytes) -> MediaAsset:
         await self.storage.put_bytes(asset.storage_key,data,asset.mime_type)
