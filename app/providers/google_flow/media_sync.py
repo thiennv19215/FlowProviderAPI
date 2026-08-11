@@ -34,9 +34,18 @@ class MediaSync:
                 db.rollback();raise ValueError(f"asset_not_ready:{asset_id}")
             if not asset.mime_type.lower().startswith("image/"):
                 db.rollback();raise ValueError(f"asset_not_image:{asset_id}")
-            if asset.size_bytes is not None and asset.size_bytes>self.assets.settings.max_reference_bytes:
+            reference_limit=self.assets.settings.max_reference_bytes
+            memory_limit=self.assets.settings.max_reference_in_memory_bytes
+            if asset.size_bytes is not None and asset.size_bytes>reference_limit:
                 db.rollback();raise ValueError(f"asset_too_large:{asset_id}")
-            db.commit();data=await self.assets.bytes_for_asset(asset)
+            if asset.size_bytes is not None and asset.size_bytes>memory_limit:
+                db.rollback();raise ValueError(f"asset_too_large_for_flow_upload:{asset_id}")
+            db.commit()
+            meta=await self.assets.storage.stat(asset.storage_key)
+            stored_size=meta.get("size_bytes") if isinstance(meta,dict) else None
+            if isinstance(stored_size,int) and stored_size>memory_limit:raise ValueError(f"asset_too_large_for_flow_upload:{asset_id}")
+            data=await self.assets.bytes_for_asset(asset)
+            if len(data)>memory_limit:raise ValueError(f"asset_too_large_for_flow_upload:{asset_id}")
             result=await sdk.upload_image(base64.b64encode(data).decode("ascii"),asset.mime_type,project_id,asset.filename or "reference.png")
             if result.get("error") or not result.get("media_id"):raise RuntimeError(result.get("error") or "flow_upload_failed")
             mapping=ProjectMediaMapping(id=new_id("map"),asset_id=asset_id,provider="google_flow",provider_project_id=project_id,provider_media_id=result["media_id"])
