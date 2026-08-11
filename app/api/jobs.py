@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from app.api.deps import get_client, get_db
 from app.api.errors import APIError
@@ -38,7 +38,8 @@ def list_jobs(request: Request,db=Depends(get_db),client=Depends(get_client),lim
     if type:q=q.where(GenerationJob.kind==type)
     if after:
         cursor=db.scalar(select(GenerationJob).where(GenerationJob.id==after,GenerationJob.client_id==client.id))
-        if cursor:q=q.where(GenerationJob.created_at<cursor.created_at)
-    rows=list(db.scalars(q.order_by(GenerationJob.created_at.desc()).limit(limit+1)))
+        if not cursor:raise APIError(400,"INVALID_CURSOR","The jobs cursor is invalid for this client.",error_type="validation_error",param="after")
+        q=q.where(or_(GenerationJob.created_at<cursor.created_at,and_(GenerationJob.created_at==cursor.created_at,GenerationJob.id<cursor.id)))
+    rows=list(db.scalars(q.order_by(GenerationJob.created_at.desc(),GenerationJob.id.desc()).limit(limit+1)))
     has_more=len(rows)>limit;rows=rows[:limit]
     return {"object":"list","data":[job_dict(request.app.state.runtime,db,j) for j in rows],"has_more":has_more,"next_cursor":rows[-1].id if has_more and rows else None}
