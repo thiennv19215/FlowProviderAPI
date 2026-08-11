@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost:8000"
     worker_enabled: bool = True
     worker_poll_seconds: float = 1.0
+    worker_concurrency: int = Field(default=8, ge=1, le=64)
     worker_id: str = "worker-1"
     lease_seconds: int = 120
     video_poll_seconds: int = 10
