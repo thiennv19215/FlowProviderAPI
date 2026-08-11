@@ -9,13 +9,16 @@ const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
 const FLOW_PROJECT_BASE = "https://labs.google/fx/vi/tools/flow/project/";
 const ALLOWED_FETCH_HOSTS = ["labs.google", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
+const AUTH_REFRESH_MS = 5 * 60 * 1000;
 
 let socket = null;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 let cachedBearer = null;
 let cachedBearerAt = 0;
+let lastAuthSyncAt = 0;
 let accountState = { email: null, credits: null, ready: false };
+const inflightRpcControllers = new Map();
 
 function id(prefix = "id") {
   return `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
@@ -105,17 +108,21 @@ async function getBearer({ force = false } = {}) {
   return (await fetchLabsSession()).access_token;
 }
 
-async function syncAuth() {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+async function syncAuth(targetSocket = socket) {
+  if (!targetSocket || targetSocket.readyState !== WebSocket.OPEN || targetSocket !== socket) return;
   try {
     const session = await fetchLabsSession();
-    socket.send(JSON.stringify({ type: "token_captured", flowKey: session.access_token }));
+    if (targetSocket !== socket || targetSocket.readyState !== WebSocket.OPEN) return;
+    lastAuthSyncAt = Date.now();
+    targetSocket.send(JSON.stringify({ type: "token_captured", flowKey: session.access_token }));
     if (session.user) {
       accountState.email = session.user.email || null;
-      socket.send(JSON.stringify({ type: "user_info", userInfo: { email: session.user.email || "", name: session.user.name || "", picture: session.user.image || "", verified_email: true } }));
+      targetSocket.send(JSON.stringify({ type: "user_info", userInfo: { email: session.user.email || "", name: session.user.name || "", picture: session.user.image || "", verified_email: true } }));
     }
   } catch (error) {
-    socket.send(JSON.stringify({ type: "auth_sync_status", status: "needs_labs_sign_in", reason: error?.message || String(error) }));
+    if (targetSocket === socket && targetSocket.readyState === WebSocket.OPEN) {
+      targetSocket.send(JSON.stringify({ type: "auth_sync_status", status: "needs_labs_sign_in", reason: error?.message || String(error) }));
+    }
   }
 }
 
@@ -193,12 +200,17 @@ async function inject(tabId, operation, payload = {}) {
   return result.data;
 }
 
-async function swFetch(spec) {
+async function swFetch(spec, signal) {
   if (!spec || !allowedFetchUrl(spec.url)) throw new Error("fetch_host_not_allowed");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), spec.timeoutMs || 45000);
+  const timeoutController = new AbortController();
+  const abortFromCaller = () => timeoutController.abort();
+  if (signal) {
+    if (signal.aborted) timeoutController.abort();
+    else signal.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  const timer = setTimeout(() => timeoutController.abort(), spec.timeoutMs || 45000);
   try {
-    const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: controller.signal });
+    const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: timeoutController.signal });
     const type = spec.responseType || ((resp.headers.get("content-type") || "").includes("json") ? "json" : "text");
     const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url };
     if (type === "json") out.data = await resp.json().catch(() => null);
@@ -208,10 +220,13 @@ async function swFetch(spec) {
       out.base64 = btoa(binary);
     } else if (type !== "none") out.text = await resp.text().catch(() => "");
     return out;
-  } finally { clearTimeout(timer); }
+  } finally {
+    clearTimeout(timer);
+    if (signal) signal.removeEventListener("abort", abortFromCaller);
+  }
 }
 
-async function handleRpc(msg) {
+async function handleRpc(msg, signal) {
   switch (msg.type) {
     case "PING": return { version: chrome.runtime.getManifest().version };
     case "GET_BEARER": return await getBearer({ force: Boolean(msg.force) });
@@ -220,7 +235,7 @@ async function handleRpc(msg) {
     case "RELOAD_TAB": await chrome.tabs.reload(msg.tabId); await waitForTab(msg.tabId); return true;
     case "INJECT_RECAPTCHA": return await inject(msg.tabId, "recaptcha", { fallbackKey: msg.fallbackKey, action: msg.action });
     case "INJECT_PAGE_FETCH": return await inject(msg.tabId, "pageFetch", { spec: msg.spec });
-    case "SW_FETCH": return await swFetch(msg.spec);
+    case "SW_FETCH": return await swFetch(msg.spec, signal);
     case "DOWNLOAD_FILE": return await chrome.downloads.download({ url: msg.url, filename: msg.filename, conflictAction: "uniquify" });
     default: throw new Error(`unknown_rpc_type:${msg.type}`);
   }
@@ -241,9 +256,14 @@ function scheduleReconnect() {
 function disconnect() {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
-  if (socket) { try { socket.close(); } catch (_) {} }
+  const oldSocket = socket;
   socket = null;
+  if (oldSocket) { try { oldSocket.close(); } catch (_) {} }
   cachedBearer = null;
+  cachedBearerAt = 0;
+  lastAuthSyncAt = 0;
+  for (const controller of inflightRpcControllers.values()) controller.abort();
+  inflightRpcControllers.clear();
 }
 
 async function connect() {
@@ -258,8 +278,9 @@ async function connect() {
       reconnectAttempt = 0;
       chrome.alarms.clear(RECONNECT_ALARM);
       const meta = await getProfileMeta();
+      if (ws !== socket || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: "extension_ready", installationId: await getInstallationId(), protocolVersion: PROTOCOL_VERSION, connectionId: id("conn"), ...meta }));
-      await syncAuth();
+      await syncAuth(ws);
     };
     ws.onmessage = async (event) => {
       if (ws !== socket) return;
@@ -269,17 +290,34 @@ async function connect() {
           accountState = { email: msg.email || accountState.email, credits: Number.isFinite(msg.credits) ? msg.credits : accountState.credits, ready: msg.status === "synced" };
           return;
         }
-        if (msg.type === "please_resend_userinfo") { await syncAuth(); return; }
-        if (msg.type === "CANCEL_RPC") return;
+        if (msg.type === "please_resend_userinfo") { await syncAuth(ws); return; }
+        if (msg.type === "CANCEL_RPC") {
+          const controller = inflightRpcControllers.get(msg.targetRequestId);
+          if (controller) controller.abort();
+          return;
+        }
         if (msg.id != null) {
-          try { ws.send(JSON.stringify({ id: msg.id, data: await handleRpc(msg) })); }
-          catch (error) { ws.send(JSON.stringify({ id: msg.id, error: error?.message || String(error) })); }
+          const controller = new AbortController();
+          inflightRpcControllers.set(String(msg.id), controller);
+          try { ws.send(JSON.stringify({ id: msg.id, data: await handleRpc(msg, controller.signal) })); }
+          catch (error) { if (ws === socket && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: msg.id, error: error?.message || String(error) })); }
+          finally { inflightRpcControllers.delete(String(msg.id)); }
         }
       } catch (error) { console.error("Flow Provider message error", error); }
     };
     ws.onclose = () => { if (ws === socket) { socket = null; accountState.ready = false; scheduleReconnect(); } };
     ws.onerror = () => {};
   } catch (error) { console.warn("Flow Provider connect failed", error?.message || error); scheduleReconnect(); }
+}
+
+async function keepAlive() {
+  if (socket?.readyState === WebSocket.OPEN) {
+    try { socket.send(JSON.stringify({ type: "pong", ts: Date.now() })); }
+    catch (_) { try { socket.close(); } catch (_) {} return; }
+    if (Date.now() - lastAuthSyncAt >= AUTH_REFRESH_MS) await syncAuth(socket);
+    return;
+  }
+  await connect();
 }
 
 async function setupDnr() {
@@ -292,14 +330,17 @@ async function setupDnr() {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === "FLOW_PROVIDER_KEEPALIVE") { sendResponse({ ok: true }); return true; }
+  if (msg?.type === "FLOW_PROVIDER_KEEPALIVE") { keepAlive().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_GET_STATE") { connectionState().then(sendResponse); return true; }
   if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setServerUrl(msg.serverUrl).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_OPEN_FLOW") { openFlowHome().then((v) => sendResponse({ ok: true, ...v })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   return false;
 });
 
-chrome.alarms.onAlarm.addListener((alarm) => { if ([RECONNECT_ALARM, KEEPALIVE_ALARM].includes(alarm.name)) connect(); });
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === KEEPALIVE_ALARM) keepAlive();
+  else if (alarm.name === RECONNECT_ALARM) connect();
+});
 chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: 0.5 });
 chrome.runtime.onInstalled.addListener(() => { setupDnr(); ensureOffscreen(); connect(); });
 chrome.runtime.onStartup.addListener(() => { setupDnr(); ensureOffscreen(); connect(); });
