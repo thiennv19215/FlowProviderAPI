@@ -27,6 +27,8 @@ uvicorn app.main:app --reload
 
 Open `http://localhost:8000/docs` for Swagger. Load `extension/` as an unpacked Chrome extension and point its popup at the Provider URL.
 
+For a live Google Flow test, set `FLOW_PROVIDER_FLOW_API_KEY` in `.env`. The extension gateway intentionally has no connector authentication during the current local/test phase; add gateway authentication before exposing a production Provider endpoint publicly.
+
 ## Primary endpoints
 
 - `POST /v1/images/generations`
@@ -38,6 +40,15 @@ Open `http://localhost:8000/docs` for Swagger. Load `extension/` as an unpacked 
 - `GET /v1/assets/{asset_id}`
 - `GET /v1/accounts`
 - `GET /v1/health`
+- `GET /health/ready`
+
+## Runtime hardening
+
+The current V1 preserves provider account identity across extension reconnects, invalidates stale signed-out accounts, reserves estimated credits from active jobs, uses duration-aware Omni credit costs, distinguishes terminal provider failures from transient polling failures, and resumes output storage without redispatching a completed provider operation.
+
+Provider output downloads are host-allowlisted and streamed through temporary files into local/R2 storage instead of buffering whole videos in process memory. Readiness checks both the database and configured storage backend.
+
+`POST /v1/jobs/{id}/cancel` is currently cooperative at the Provider job layer. The current Google Flow integration does not contain a verified upstream cancel-generation primitive, so the service deliberately does not invent or call an unverified Google endpoint.
 
 ## Mock extension E2E
 
