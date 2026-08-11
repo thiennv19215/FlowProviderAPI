@@ -49,11 +49,24 @@ class AssetService:
         asset.status="ready";db.commit();db.refresh(asset);return asset
 
     async def write_upload(self,db,asset:MediaAsset,data:bytes)->MediaAsset:
-        await self.storage.put_bytes(asset.storage_key,data,asset.mime_type);return await self.complete_pending(db,asset)
+        await self.storage.put_bytes(asset.storage_key,data,asset.mime_type)
+        try:return await self.complete_pending(db,asset)
+        except Exception:
+            db.rollback()
+            try:await self.storage.delete(asset.storage_key)
+            except Exception:pass
+            raise
 
     async def write_upload_file(self,db,asset:MediaAsset,path:Path,size_bytes:int)->MediaAsset:
         if size_bytes>self.settings.max_upload_bytes:raise ValueError("uploaded_object_too_large")
-        await self.storage.put_file(asset.storage_key,path,asset.mime_type);asset.size_bytes=size_bytes;asset.status="ready";db.commit();db.refresh(asset);return asset
+        await self.storage.put_file(asset.storage_key,path,asset.mime_type)
+        try:
+            asset.size_bytes=size_bytes;asset.status="ready";db.commit();db.refresh(asset);return asset
+        except Exception:
+            db.rollback()
+            try:await self.storage.delete(asset.storage_key)
+            except Exception:pass
+            raise
 
     async def ingest_provider_media(self,db,*,client_id:str,job_id:str,provider:str,media:ProviderMedia,asset_type:str)->MediaAsset:
         mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=new_id("asset");key=self.storage_key(client_id,aid,None,mime)
