@@ -7,15 +7,63 @@ class DummyWS:
     async def close(self, *args, **kwargs): pass
 
 
-def test_scheduler_prefers_less_loaded_ready_account(app):
+def _ready_accounts():
     bridge=FlowBridge(flow_api_key="x")
     a=bridge.register(DummyWS(),{"installationId":"install-a-123456","runtimeId":"chrome","profileId":"a"})
     b=bridge.register(DummyWS(),{"installationId":"install-b-123456","runtimeId":"chrome","profileId":"b"})
     for conn,credits in ((a,100),(b,200)):
         conn.flow_key="bearer";conn.account_email=f"{conn.profile_id}@example.com";conn.paygate_tier="PAYGATE_TIER_ONE";conn.credits=credits;conn.sku="test"
+    return bridge,a,b
+
+
+def test_scheduler_prefers_less_loaded_ready_account(app):
+    bridge,a,b=_ready_accounts()
     scheduler=GlobalScheduler(bridge)
     with app.state.runtime.session_factory() as db:
         assert scheduler.choose_account(db,kind="video") == b.id
+
+
+def test_scheduler_prefers_existing_workspace_project(app):
+    from sqlalchemy import select
+    from app.db.models import ApiClient, WorkspaceProject
+
+    bridge,a,b=_ready_accounts()
+    scheduler=GlobalScheduler(bridge)
+    with app.state.runtime.session_factory() as db:
+        client_row=db.scalar(select(ApiClient).limit(1))
+        db.add(WorkspaceProject(
+            id="wsp_sticky",client_id=client_row.id,workspace_key="sticky:workspace",
+            provider="google_flow",provider_account_id=a.id,provider_project_id="project-a",
+        ))
+        db.commit()
+        chosen=scheduler.choose_account(
+            db,kind="video",client_id=client_row.id,workspace_key="sticky:workspace",provider="google_flow"
+        )
+        assert chosen == a.id
+
+
+def test_scheduler_spills_over_when_workspace_account_is_saturated(app):
+    from sqlalchemy import select
+    from app.db.models import ApiClient, GenerationJob, WorkspaceProject, utcnow
+
+    bridge,a,b=_ready_accounts();a.max_slots=1
+    scheduler=GlobalScheduler(bridge)
+    with app.state.runtime.session_factory() as db:
+        client_row=db.scalar(select(ApiClient).limit(1))
+        db.add(WorkspaceProject(
+            id="wsp_spill",client_id=client_row.id,workspace_key="spill:workspace",
+            provider="google_flow",provider_account_id=a.id,provider_project_id="project-a",
+        ))
+        db.add(GenerationJob(
+            id="job_saturate_a",client_id=client_row.id,kind="video",provider="google_flow",
+            workspace_key="other",status="running",stage="provider_running",priority=20,
+            request_payload={"prompt":"x"},provider_account_id=a.id,next_run_at=utcnow(),attempt_count=1,
+        ))
+        db.commit()
+        chosen=scheduler.choose_account(
+            db,kind="video",client_id=client_row.id,workspace_key="spill:workspace",provider="google_flow"
+        )
+        assert chosen == b.id
 
 import asyncio
 from app.providers.base import ProviderMedia
