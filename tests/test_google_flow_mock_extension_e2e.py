@@ -82,7 +82,10 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         assert len(job["outputs"]) == 2
         assert mock.state.projects_created == 1
         assert mock.state.image_generations == 1
-        assert "GET_BEARER" in mock.state.rpc_types
+        # Flow bearer is browser-owned now. Backend fetch RPCs must not request
+        # the bearer explicitly; the extension attaches it immediately before
+        # executing SW_FETCH / INJECT_PAGE_FETCH.
+        assert "GET_BEARER" not in mock.state.rpc_types
         assert "INJECT_RECAPTCHA" in mock.state.rpc_types
         assert "SW_FETCH" in mock.state.rpc_types
 
