@@ -1,6 +1,7 @@
 const CONFIG = self.FLOW_PROVIDER_EXTENSION_CONFIG || {};
 const PROTOCOL_VERSION = Number(CONFIG.protocolVersion || 7);
 const SERVER_KEY = "flow-provider-server-url-v1";
+const SERVER_DEFAULT_VERSION_KEY = "flow-provider-server-default-version-v1";
 const GATEWAY_TOKEN_KEY = "flow-provider-gateway-token-v1";
 const INSTALLATION_KEY = "flow-provider-installation-id-v1";
 const PROFILE_KEY = "flow-provider-profile-id-v1";
@@ -46,13 +47,25 @@ function normalizeServerUrl(value) {
 }
 
 async function getConnectionConfig() {
-  const data = await chrome.storage.local.get([SERVER_KEY, GATEWAY_TOKEN_KEY]);
-  const parsed = normalizeServerUrl(data?.[SERVER_KEY] || CONFIG.defaultServerUrl || "http://127.0.0.1:8000");
+  const data = await chrome.storage.local.get([SERVER_KEY, SERVER_DEFAULT_VERSION_KEY, GATEWAY_TOKEN_KEY]);
+  const defaultServerUrl = CONFIG.defaultServerUrl || "http://127.0.0.1:8000";
+  const defaultServerVersion = Number(CONFIG.defaultServerVersion || 0);
+  const storedServerValue = typeof data?.[SERVER_KEY] === "string" ? data[SERVER_KEY].trim() : "";
+  const storedServer = storedServerValue ? normalizeServerUrl(storedServerValue) : null;
+  const legacyDefaultServers = Array.isArray(CONFIG.legacyDefaultServerUrls)
+    ? CONFIG.legacyDefaultServerUrls.map((value) => normalizeServerUrl(value).serverUrl)
+    : [];
+  const migrateStoredDefault = Number(data?.[SERVER_DEFAULT_VERSION_KEY] || 0) < defaultServerVersion
+    && storedServer
+    && legacyDefaultServers.includes(storedServer.serverUrl);
+  const parsed = normalizeServerUrl(migrateStoredDefault || !storedServer ? defaultServerUrl : storedServer.serverUrl);
   let gatewayToken = typeof data?.[GATEWAY_TOKEN_KEY] === "string" ? data[GATEWAY_TOKEN_KEY] : "";
-  if (parsed.migratedToken) {
-    gatewayToken ||= parsed.migratedToken;
-    await chrome.storage.local.set({ [SERVER_KEY]: parsed.serverUrl, [GATEWAY_TOKEN_KEY]: gatewayToken });
-  }
+  gatewayToken ||= storedServer?.migratedToken || parsed.migratedToken || "";
+  const updates = {};
+  if (!storedServer || migrateStoredDefault || storedServerValue !== parsed.serverUrl) updates[SERVER_KEY] = parsed.serverUrl;
+  if (Number(data?.[SERVER_DEFAULT_VERSION_KEY] || 0) < defaultServerVersion) updates[SERVER_DEFAULT_VERSION_KEY] = defaultServerVersion;
+  if (gatewayToken && gatewayToken !== data?.[GATEWAY_TOKEN_KEY]) updates[GATEWAY_TOKEN_KEY] = gatewayToken;
+  if (Object.keys(updates).length) await chrome.storage.local.set(updates);
   return { serverUrl: parsed.serverUrl, gatewayToken };
 }
 
@@ -61,7 +74,7 @@ async function setConnectionConfig(serverValue, gatewayTokenValue) {
   const origin = `${new URL(parsed.serverUrl).origin}/*`;
   const granted = await chrome.permissions.contains({ origins: [origin] }) || await chrome.permissions.request({ origins: [origin] });
   if (!granted) throw new Error(`Permission was not granted for ${origin}`);
-  const updates = { [SERVER_KEY]: parsed.serverUrl };
+  const updates = { [SERVER_KEY]: parsed.serverUrl, [SERVER_DEFAULT_VERSION_KEY]: Number(CONFIG.defaultServerVersion || 0) };
   const supplied = typeof gatewayTokenValue === "string" ? gatewayTokenValue.trim() : "";
   if (supplied) updates[GATEWAY_TOKEN_KEY] = supplied;
   else if (parsed.migratedToken) updates[GATEWAY_TOKEN_KEY] = parsed.migratedToken;

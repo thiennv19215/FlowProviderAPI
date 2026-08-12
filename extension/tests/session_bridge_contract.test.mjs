@@ -1,14 +1,23 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
+import vm from 'node:vm';
 
 const loader = fs.readFileSync(new URL('../background-loader.js', import.meta.url), 'utf8');
 const background = fs.readFileSync(new URL('../background.js', import.meta.url), 'utf8');
 const bridge = fs.readFileSync(new URL('../session-bridge.js', import.meta.url), 'utf8');
 const offscreen = fs.readFileSync(new URL('../offscreen.js', import.meta.url), 'utf8');
+const configContext = { self: {} };
+vm.runInNewContext(fs.readFileSync(new URL('../config.js', import.meta.url), 'utf8'), configContext);
+const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
 test('session bridge loads after background so it can reuse connector state', () => {
   assert.match(loader, /background\.js", "session-bridge\.js/);
+});
+
+test('production extension defaults to the public provider hostname', () => {
+  assert.equal(configContext.self.FLOW_PROVIDER_EXTENSION_CONFIG.defaultServerUrl, 'https://api.shopcongngheso5.io.vn');
+  assert.ok(manifest.host_permissions.includes('https://api.shopcongngheso5.io.vn/*'));
 });
 
 test('frame session is accepted only from the signed-in labs.google content frame', () => {

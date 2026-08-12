@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Flow Provider Connector",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Connects a signed-in Google Flow browser profile to FlowProviderAPI.",
   "background": {
     "service_worker": "background-loader.js"
@@ -26,6 +26,7 @@
     "https://aisandbox-pa.googleapis.com/*",
     "https://flow-content.google/*",
     "https://storage.googleapis.com/*",
+    "https://api.shopcongngheso5.io.vn/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],

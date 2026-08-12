@@ -4,8 +4,11 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../background.js', import.meta.url), 'utf8');
+const configContext = { self: {} };
+vm.runInNewContext(fs.readFileSync(new URL('../config.js', import.meta.url), 'utf8'), configContext);
+const productionConfig = JSON.parse(JSON.stringify(configContext.self.FLOW_PROVIDER_EXTENSION_CONFIG));
 
-function buildHarness(initialStorage = {}, { fetchImpl = null } = {}) {
+function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig = null } = {}) {
   const sockets = [];
   const fetchSignals = [];
   const storage = { ...initialStorage };
@@ -52,7 +55,7 @@ function buildHarness(initialStorage = {}, { fetchImpl = null } = {}) {
   };
 
   const context = {
-    self: {}, chrome, WebSocket: MockWebSocket,
+    self: extensionConfig ? { FLOW_PROVIDER_EXTENSION_CONFIG: extensionConfig } : {}, chrome, WebSocket: MockWebSocket,
     URL, AbortController, Uint8Array, TextEncoder,
     btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
     setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {}, console, Date, Math,
@@ -96,6 +99,29 @@ test('legacy /ext/token server setting is migrated to sanitized server plus toke
   assert.equal(h.storage['flow-provider-server-url-v1'], 'https://provider.example.com');
   assert.equal(h.storage['flow-provider-gateway-token-v1'], 'old-secret');
   assert.equal(h.sockets[0].url, 'wss://provider.example.com/api/extensions/ws');
+});
+
+test('configured production default replaces the previous public default once', async () => {
+  const h = buildHarness({
+    'flow-provider-server-url-v1': 'https://ext.shopcongngheso5.io.vn',
+    'flow-provider-server-default-version-v1': 1,
+  }, {
+    extensionConfig: productionConfig,
+  });
+  await flush();
+  assert.equal(h.storage['flow-provider-server-url-v1'], 'https://api.shopcongngheso5.io.vn');
+  assert.equal(h.storage['flow-provider-server-default-version-v1'], 2);
+  assert.equal(h.sockets[0].url, 'wss://api.shopcongngheso5.io.vn/api/extensions/ws');
+});
+
+test('configured production migration preserves an explicit custom server', async () => {
+  const h = buildHarness({ 'flow-provider-server-url-v1': 'https://custom.example.com' }, {
+    extensionConfig: productionConfig,
+  });
+  await flush();
+  assert.equal(h.storage['flow-provider-server-url-v1'], 'https://custom.example.com');
+  assert.equal(h.storage['flow-provider-server-default-version-v1'], 2);
+  assert.equal(h.sockets[0].url, 'wss://custom.example.com/api/extensions/ws');
 });
 
 test('CANCEL_RPC aborts an in-flight SW_FETCH', async () => {
