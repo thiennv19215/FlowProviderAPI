@@ -22,6 +22,9 @@ class GoogleFlowProvider:
 
     def _sdk(self, account_id: str): return FlowSDK(BoundFlowClient(self.bridge,account_id))
 
+    def has_online_account(self)->bool:
+        return self.bridge.connected
+
     async def refresh_video_capacity(self) -> None:
         """Refresh credits before assigning a paid video generation.
 

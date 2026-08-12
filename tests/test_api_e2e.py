@@ -1,7 +1,10 @@
 import asyncio
 import re
 
+from sqlalchemy import func, select
+
 from conftest import upload_media
+from app.db.models import GenerationJob
 
 def test_image_generation_end_to_end(client, app, auth):
     response = client.post("/v1/images/generations", headers=auth, json={
@@ -49,6 +52,36 @@ def test_duplicate_submissions_always_create_new_tasks(client, auth):
     second=client.post("/v1/images/generations",headers=headers,json=payload)
     assert first.status_code == second.status_code == 202
     assert first.json()["task_id"] != second.json()["task_id"]
+
+
+def test_google_flow_generation_fails_immediately_without_online_account(client,app,auth):
+    response=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat"})
+
+    assert response.status_code==503
+    assert response.json()["error"]=={
+        "status_code":503,
+        "code":"PROVIDER_ACCOUNT_UNAVAILABLE",
+        "message":"No Google Flow account is currently online.",
+        "details":[],
+        "request_id":response.headers["X-Request-Id"],
+        "retryable":True,
+    }
+    with app.state.runtime.session_factory() as db:
+        assert db.scalar(select(func.count()).select_from(GenerationJob))==0
+
+
+def test_google_flow_generation_is_accepted_while_connected_account_syncs(client,app,auth):
+    app.state.runtime.bridge.register(object(),{
+        "installationId":"install_syncing",
+        "runtimeId":"chrome",
+        "profileId":"profile_syncing",
+        "profileName":"Syncing account",
+    })
+
+    response=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat"})
+
+    assert response.status_code==202
+    assert response.json()["status"]=="queued"
 
 
 def test_server_generates_task_id(client,auth):

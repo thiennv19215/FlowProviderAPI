@@ -39,10 +39,19 @@ def _submit(request: Request, db, client, payload, kind: str):
     if kind=="video":data["start_media_id"]=str(data["start_media_id"])
     else:data["reference_media_ids"]=[str(media_id) for media_id in data.get("reference_media_ids") or []]
     provider=payload.provider;model=getattr(payload,"model",None)
-    request.app.state.runtime.providers.get(provider)
+    runtime=request.app.state.runtime
+    configured_provider=runtime.providers.get(provider)
     _validate_reference_assets(request,db,client,data,kind)
+    has_online_account=getattr(configured_provider,"has_online_account",None)
+    if configured_provider.requires_account_pool and callable(has_online_account) and not has_online_account():
+        raise APIError(
+            503,
+            "PROVIDER_ACCOUNT_UNAVAILABLE",
+            "No Google Flow account is currently online.",
+            retryable=True,
+        )
     job=create_job(db,client=client,kind=kind,provider=provider,model=model,workspace_key=CLIENT_WORKSPACE_KEY,payload=data,request_id=request.state.request_id)
-    return job_dict(request.app.state.runtime,db,job)
+    return job_dict(runtime,db,job)
 
 
 @router.post("/v1/images/generations",status_code=202,response_model=JobOutput)
