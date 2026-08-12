@@ -48,7 +48,7 @@ def test_stuck_provider_operation_hits_deadline(client,app,auth):
     assert done["error"]["code"]=="PROVIDER_OPERATION_TIMEOUT"
 
 
-def test_rate_limit_state_is_shared_between_limiter_instances(app):
+def test_rate_limit_state_is_shared_between_limiter_instances(app,client):
     limiter_a=RateLimiter();limiter_b=RateLimiter()
     with app.state.runtime.session_factory() as db:
         client_id=db.scalar(select(ApiClient.id))
