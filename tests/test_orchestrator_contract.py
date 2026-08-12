@@ -64,6 +64,60 @@ def test_unified_generation_idempotency_returns_same_durable_task(client, app, a
         assert len(rows) == 1
 
 
+def test_unified_generation_idempotency_rejects_key_reuse_for_different_payload(
+    client, auth
+):
+    headers = {**auth, "Idempotency-Key": "flowcanvas:43:image:0"}
+    first = client.post(
+        "/v1/generations",
+        headers=headers,
+        json={"kind": "image", "prompt": "first cat", "provider": "fake"},
+    )
+    conflict = client.post(
+        "/v1/generations",
+        headers=headers,
+        json={"kind": "image", "prompt": "different cat", "provider": "fake"},
+    )
+
+    assert first.status_code == 202
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+
+
+def test_idempotent_replay_returns_existing_task_before_reference_revalidation(
+    client, app, auth
+):
+    uploaded = client.post(
+        "/v1/media",
+        headers=auth,
+        files={"file": ("start.png", b"video-start-image", "image/png")},
+    )
+    assert uploaded.status_code == 201
+    media_id = uploaded.json()["media_id"]
+    headers = {**auth, "Idempotency-Key": "flowcanvas:44:video:0"}
+    payload = {
+        "kind": "video",
+        "prompt": "move slowly",
+        "provider": "fake",
+        "media_ids": [media_id],
+    }
+    first = client.post("/v1/generations", headers=headers, json=payload)
+    assert first.status_code == 202
+
+    # Simulate reference storage/database loss after the Provider already
+    # accepted this logical POST. An idempotent replay must still recover the
+    # durable task instead of revalidating transient input state first.
+    with app.state.runtime.session_factory() as db:
+        asset = db.get(MediaAsset, media_id)
+        assert asset is not None
+        db.delete(asset)
+        db.commit()
+
+    replay = client.post("/v1/generations", headers=headers, json=payload)
+    assert replay.status_code == 202
+    assert replay.json()["task_id"] == first.json()["task_id"]
+
+
 def test_unified_video_requires_localized_start_media(client, auth):
     response = client.post(
         "/v1/generations",
