@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.db.models import GenerationJob, MediaAsset, utcnow
 from app.jobs import repository
-from app.providers.base import ProviderDispatch
+from app.providers.base import ProviderDispatch, ProviderError
 
 logger=logging.getLogger(__name__)
 
@@ -80,6 +80,15 @@ class JobWorker:
         job.result_payload=payload or None
 
     @staticmethod
+    def _set_error(job,exc:Exception,*,fallback_code:str,fallback_status:int=502,retryable:bool=False)->None:
+        is_provider=isinstance(exc,ProviderError)
+        job.error_code=exc.code if is_provider else fallback_code
+        job.error_message=(exc.message if is_provider else str(exc))[:1000]
+        payload=dict(getattr(job,"result_payload",None) or {})
+        payload["_error"]={"status_code":exc.status_code or fallback_status if is_provider else fallback_status,"retryable":exc.retryable if is_provider else retryable}
+        job.result_payload=payload
+
+    @staticmethod
     def _operation_metadata(job:GenerationJob)->dict:
         try:
             raw=json.loads(job.provider_operation_id or "{}")
@@ -102,7 +111,8 @@ class JobWorker:
         return now>=started+timedelta(seconds=self.runtime.settings.max_provider_operation_seconds)
 
     def _finish_operation_timeout(self,db,job:GenerationJob):
-        job.status="failed";job.stage="completed";job.error_code="PROVIDER_OPERATION_TIMEOUT";job.error_message="Provider operation exceeded the configured maximum runtime.";job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit()
+        self._set_error(job,RuntimeError("Provider operation exceeded the configured maximum runtime."),fallback_code="PROVIDER_OPERATION_TIMEOUT",fallback_status=504,retryable=True)
+        job.status="failed";job.stage="completed";job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit()
 
     async def _poll(self,db,job,provider):
         if job.cancel_requested:return self._finish_cancel(db,job)
@@ -113,12 +123,14 @@ class JobWorker:
             dispatch=ProviderDispatch(operation_ids=raw.get("operation_ids") or [],workflows=raw.get("workflows") or [])
             result=await provider.poll_video(job=job,db=db,account_id=job.provider_account_id,dispatch=dispatch)
             if result.error and result.done:
-                job.status="failed";job.stage="completed";job.error_code="PROVIDER_TERMINAL_ERROR";job.error_message=result.error[:1000];job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit();return
+                self._set_error(job,RuntimeError(result.error),fallback_code="PROVIDER_TERMINAL_ERROR")
+                job.status="failed";job.stage="completed";job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit();return
             if result.error:
                 failures=self._poll_error_count(job)+1;self._set_poll_error_count(job,failures)
                 if failures>=self.runtime.settings.max_consecutive_poll_errors:
-                    job.status="failed";job.stage="completed";job.error_code="PROVIDER_POLL_RETRIES_EXHAUSTED";job.error_message=result.error[:1000];job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit();return
-                job.error_code="PROVIDER_POLL_ERROR";job.error_message=result.error[:1000]
+                    self._set_error(job,RuntimeError(result.error),fallback_code="PROVIDER_POLL_RETRIES_EXHAUSTED")
+                    job.status="failed";job.stage="completed";job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit();return
+                self._set_error(job,RuntimeError(result.error),fallback_code="PROVIDER_POLL_ERROR",retryable=True)
                 job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit();return
             self._set_poll_error_count(job,0)
             if not result.done:
@@ -129,10 +141,14 @@ class JobWorker:
             db.rollback();fresh=db.get(GenerationJob,job_id)
             if not fresh:raise
             if self._operation_timed_out(fresh):return self._finish_operation_timeout(db,fresh)
+            if isinstance(exc,ProviderError) and not exc.retryable:
+                self._set_error(fresh,exc,fallback_code="PROVIDER_ERROR")
+                fresh.status="failed";fresh.stage="completed";fresh.completed_at=utcnow();fresh.lease_owner=None;fresh.lease_expires_at=None;db.commit();return
             failures=self._poll_error_count(fresh)+1;self._set_poll_error_count(fresh,failures)
             if failures>=self.runtime.settings.max_consecutive_poll_errors:
-                fresh.status="failed";fresh.stage="completed";fresh.error_code="PROVIDER_POLL_RETRIES_EXHAUSTED";fresh.error_message=str(exc)[:1000];fresh.completed_at=utcnow();fresh.lease_owner=None;fresh.lease_expires_at=None;db.commit();return
-            fresh.stage="provider_running";fresh.error_code="PROVIDER_POLL_ERROR";fresh.error_message=str(exc)[:1000]
+                self._set_error(fresh,exc,fallback_code="PROVIDER_POLL_RETRIES_EXHAUSTED")
+                fresh.status="failed";fresh.stage="completed";fresh.completed_at=utcnow();fresh.lease_owner=None;fresh.lease_expires_at=None;db.commit();return
+            fresh.stage="provider_running";self._set_error(fresh,exc,fallback_code="PROVIDER_POLL_ERROR",retryable=True)
             fresh.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);fresh.lease_owner=None;fresh.lease_expires_at=None;db.commit()
 
     async def _store_outputs(self,db,job,outputs,asset_type):
@@ -143,17 +159,17 @@ class JobWorker:
         if not asset_ids and existing:asset_ids=[a.id for a in existing]
         start_index=len(asset_ids)
         for media in list(outputs)[start_index:]:
-            asset=await self.runtime.assets.ingest_provider_media(db,client_id=job.client_id,job_id=job.id,provider=job.provider,media=media,asset_type=asset_type)
+            asset=await self.runtime.assets.ingest_provider_media(db,client_id=job.client_id,job_id=job.id,provider=job.provider,media=media,asset_type=asset_type,provider_project_id=job.provider_project_id)
             asset_ids=[*asset_ids,asset.id];job.result_payload={"asset_ids":list(asset_ids)};db.commit()
         if not asset_ids:raise RuntimeError("provider_returned_no_outputs")
         job.status="succeeded";job.stage="completed";job.result_payload={"asset_ids":list(asset_ids)};job.completed_at=utcnow();job.error_code=None;job.error_message=None;job.lease_owner=None;job.lease_expires_at=None;db.commit()
 
     async def _handle_error(self,db,job,exc):
-        db.rollback();message=str(exc);safe_to_retry=job.stage in {"preparing"} and job.attempt_count<self.runtime.settings.max_attempts_before_dispatch
+        db.rollback();safe_to_retry=job.stage in {"preparing"} and job.attempt_count<self.runtime.settings.max_attempts_before_dispatch and (not isinstance(exc,ProviderError) or exc.retryable)
         if safe_to_retry:
-            job.status="queued";job.stage="queued";job.provider_account_id=None;job.error_code="PROVIDER_UNAVAILABLE";job.error_message=message[:1000];job.next_run_at=utcnow()+timedelta(seconds=min(30,2**job.attempt_count));job.lease_owner=None;job.lease_expires_at=None
+            job.status="queued";job.stage="queued";job.provider_account_id=None;self._set_error(job,exc,fallback_code="PROVIDER_UNAVAILABLE",retryable=True);job.next_run_at=utcnow()+timedelta(seconds=min(30,2**job.attempt_count));job.lease_owner=None;job.lease_expires_at=None
         else:
-            job.status="failed";job.stage="completed";job.error_code="PROVIDER_ERROR";job.error_message=message[:1000];job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None
+            job.status="failed";job.stage="completed";self._set_error(job,exc,fallback_code="PROVIDER_ERROR");job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None
         db.commit()
 
     def _finish_cancel(self,db,job):

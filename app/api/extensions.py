@@ -15,7 +15,7 @@ def _manager(request: Request):
 def _require_known(request: Request, installation_id: str):
     item=_manager(request).get(installation_id)
     if not item:
-        raise APIError(404,"EXTENSION_NOT_FOUND","The requested extension installation is not known.",param="installation_id")
+        raise APIError(404,"EXTENSION_NOT_FOUND","The requested extension installation is not known.",field="installation_id")
     return item
 
 

@@ -14,7 +14,7 @@ class FlowSDK:
 
     async def create_project(self, title: str) -> dict:
         resp=await self.client.trpc_request(url=TRPC_CREATE_PROJECT,method="POST",headers=TRPC_HEADERS,body={"json":{"projectTitle":title,"toolName":"PINHOLE"}})
-        if (err:=inner_error(resp)): return {"error":err,"raw":resp}
+        if (err:=flow_error(resp)): return {"error":err.message,"exception":err,"raw":resp}
         pid=extract_project_id(resp)
         return {"project_id":pid,"raw":resp} if pid else {"error":"no_project_id_in_response","raw":resp}
 
@@ -27,7 +27,7 @@ class FlowSDK:
     async def upload_image(self, image_base64: str, mime_type: str, project_id: str, file_name: str="upload.png") -> dict:
         body={"clientContext":{"projectId":project_id,"tool":"PINHOLE"},"fileName":file_name,"imageBytes":image_base64,"isHidden":False,"isUserUploaded":True,"mimeType":mime_type}
         resp=await self.client.api_request(url=UPLOAD_IMAGE_URL,method="POST",headers=API_HEADERS,body=body)
-        if (err:=inner_error(resp)): return {"error":err,"raw":resp}
+        if (err:=flow_error(resp)): return {"error":err.message,"exception":err,"raw":resp}
         mid=extract_upload_media_id(resp)
         return {"media_id":mid,"raw":resp} if mid else {"error":"no_media_id_in_upload_response","raw":resp}
 
@@ -41,7 +41,7 @@ class FlowSDK:
         body={"clientContext":ctx,"mediaGenerationContext":{"batchId":str(uuid.uuid4())},"useNewMedia":True,"requests":requests}
         url=f"{FLOW_API_BASE}/v1/projects/{project_id}/flowMedia:batchGenerateImages"
         resp=await self.client.api_request(url=url,method="POST",headers=API_HEADERS,body=body,captcha_action=CAPTCHA_IMAGE)
-        if (err:=inner_error(resp)): return {"error":err,"raw":resp}
+        if (err:=flow_error(resp)): return {"error":err.message,"exception":err,"raw":resp}
         entries=media_entries(resp)
         for entry in entries:
             if not entry.get("url") and entry.get("media_id"):
@@ -54,7 +54,7 @@ class FlowSDK:
         ctx=client_context(project_id,paygate_tier); token=unique_token()
         body={"clientContext":ctx,"mediaGenerationContext":{"batchId":str(uuid.uuid4())},"requests":[{"aspectRatio":aspect_ratio,"seed":token%1_000_000,"textInput":{"prompt":prompt},"videoModelKey":model,"startImage":{"mediaId":start_media_id},"metadata":{"sceneId":str(uuid.uuid4())}}],"useV2ModelConfig":True}
         resp=await self.client.api_request(url=VIDEO_I2V_URL,method="POST",headers=API_HEADERS,body=body,captcha_action=CAPTCHA_VIDEO)
-        if (err:=inner_error(resp)): return {"error":err,"raw":resp}
+        if (err:=flow_error(resp)): return {"error":err.message,"exception":err,"raw":resp}
         names=operation_names(resp)
         return {"operation_names":names,"workflows":workflows(resp),"raw":resp} if names else {"error":"no_operations_in_response","raw":resp}
 
@@ -64,7 +64,7 @@ class FlowSDK:
         ctx=client_context(project_id,paygate_tier); token=unique_token()
         body={"mediaGenerationContext":{"batchId":str(uuid.uuid4()),"audioFailurePreference":"BLOCK_SILENCED_VIDEOS"},"clientContext":{**ctx,"sessionId":f";{token}"},"requests":[{"aspectRatio":aspect_ratio,"textInput":{"prompt":prompt},"videoModelKey":model,"seed":token%1_000_000,"metadata":{},"referenceImages":[{"mediaId":m,"imageUsageType":"IMAGE_USAGE_TYPE_ASSET"} for m in ref_media_ids]}],"useV2ModelConfig":True}
         resp=await self.client.api_request(url=VIDEO_OMNI_URL,method="POST",headers=API_HEADERS,body=body,captcha_action=CAPTCHA_VIDEO)
-        if (err:=inner_error(resp)): return {"error":err,"raw":resp}
+        if (err:=flow_error(resp)): return {"error":err.message,"exception":err,"raw":resp}
         names=operation_names(resp)
         return {"operation_names":names,"workflows":workflows(resp),"raw":resp} if names else {"error":"no_operations_in_response","raw":resp}
 
@@ -75,13 +75,13 @@ class FlowSDK:
         summaries=[]
         if media_names:
             resp=await self.client.api_request(url=VIDEO_POLL_URL,method="POST",headers=API_HEADERS,body={"media":[{"name":m,"projectId":project_id} for m in media_names]})
-            if (err:=inner_error(resp)): return {"error":err,"raw":resp}
+            if (err:=flow_error(resp)): return {"error":err.message,"exception":err,"raw":resp}
             parsed=poll_operations(resp,media_names);reverse={v:k for k,v in wf_map.items()}
             for p in parsed: p["name"]=reverse.get(p["name"],p["name"])
             summaries.extend(parsed)
         if regular:
             resp=await self.client.api_request(url=VIDEO_POLL_URL,method="POST",headers=API_HEADERS,body={"operations":[{"operation":{"name":n}} for n in regular]})
-            if (err:=inner_error(resp)): return {"error":err,"raw":resp}
+            if (err:=flow_error(resp)): return {"error":err.message,"exception":err,"raw":resp}
             summaries.extend(poll_operations(resp,regular))
         order={name:i for i,name in enumerate(operation_names)}; summaries.sort(key=lambda x:order.get(x.get("name"),99999))
         for op in summaries:

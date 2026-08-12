@@ -1,6 +1,6 @@
 # FlowProviderAPI
 
-Shared, developer-facing AI media provider platform. V1 integrates Google Flow through a Chrome MV3 connector while keeping the public API provider-neutral for future OpenAI/Kling adapters.
+Shared, developer-facing Google Flow media API through a Chrome MV3 connector. The public generation contract stays deliberately small while provider orchestration remains internal.
 
 ## What it owns
 
@@ -32,7 +32,7 @@ For a live Google Flow test, open Google Flow in the same Chrome profile. The ex
 ## Primary endpoints
 
 - `POST /v1/images/generations`
-- `POST /v1/videos/generations`
+- `POST /v1/videos/image-to-video`
 - `POST /v1/videos/omni-generations`
 - `GET /v1/jobs/{job_id}`
 - `POST /v1/jobs/{job_id}/cancel`
@@ -40,7 +40,8 @@ For a live Google Flow test, open Google Flow in the same Chrome profile. The ex
 - `GET /v1/assets/{asset_id}`
 - `GET /v1/accounts`
 - `GET /v1/health`
-- `GET /health/ready`
+
+Operational probes `/health/live` and `/health/ready`, plus the extension-only `/api/health`, remain available but are intentionally hidden from the public OpenAPI document.
 
 ## Runtime hardening
 

@@ -266,12 +266,12 @@ class FlowBridge:
         url=f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}";response=await self.send_rpc(connection_id,"SW_FETCH",{"spec":{"url":url,"method":"GET","headers":{},"responseType":"none","timeoutMs":30000}},timeout=35);inner=response.get("data") if isinstance(response,dict) else None
         return inner.get("finalUrl") if isinstance(inner,dict) and isinstance(inner.get("finalUrl"),str) else None
 
-    def mark_provider_failure(self,connection_id:str,error:str)->None:
+    def mark_provider_failure(self,connection_id:str,error:str,*,status_code:int|None=None)->None:
         conn=self.get(connection_id)
         if not conn:return
         text=error.lower();conn.last_error=error[:300]
-        if "401" in text or "403" in text or "unauth" in text:self._invalidate_auth(conn,error)
-        if "429" in text or "rate limit" in text or "quota" in text:
+        if status_code in {401,403} or "401" in text or "403" in text or "unauth" in text:self._invalidate_auth(conn,error)
+        if status_code==429 or "429" in text or "rate limit" in text or "quota" in text:
             conn.cooldown_until=time.time()+self.cooldown_seconds;conn.cooldown_reason="rate_limit" if "quota" not in text else "quota"
 
 

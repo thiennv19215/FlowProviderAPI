@@ -6,10 +6,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.accounts import router as accounts_router
 from app.api.assets import router as assets_router
-from app.api.errors import APIError, api_error_handler, unexpected_error_handler, validation_error_handler
+from app.api.errors import APIError, PUBLIC_ERROR_RESPONSES, api_error_handler, http_error_handler, unexpected_error_handler, validation_error_handler
 from app.api.extensions import router as extensions_admin_router
 from app.api.generations import router as generations_router
 from app.api.health import router as health_router
@@ -35,7 +36,7 @@ def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->Fa
         if runtime.worker:await runtime.worker.stop()
         runtime.engine.dispose()
 
-    app=FastAPI(title="Flow Provider API",version="1.0.0",description="Developer-facing asynchronous AI media generation API.",lifespan=lifespan)
+    app=FastAPI(title="Flow Provider API",version="1.0.0",description="Developer-facing asynchronous AI media generation API.",lifespan=lifespan,responses=PUBLIC_ERROR_RESPONSES)
     app.state.runtime=runtime
 
     @app.middleware("http")
@@ -49,6 +50,7 @@ def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->Fa
 
     app.add_exception_handler(APIError,api_error_handler)
     app.add_exception_handler(RequestValidationError,validation_error_handler)
+    app.add_exception_handler(StarletteHTTPException,http_error_handler)
     app.add_exception_handler(Exception,unexpected_error_handler)
     for router in (health_router,generations_router,jobs_router,assets_router,accounts_router,extensions_admin_router,extension_router):app.include_router(router)
     return app

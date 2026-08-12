@@ -10,8 +10,8 @@ from urllib.parse import urlparse
 import httpx
 from sqlalchemy import select
 
-from app.db.models import MediaAsset
-from app.ids import new_id
+from app.db.models import MediaAsset, ProjectMediaMapping
+from app.ids import new_compact_id, new_id
 from app.providers.base import ProviderMedia
 
 PROVIDER_MEDIA_HOSTS={"labs.google","flow.google","flow-content.google","storage.googleapis.com","googleusercontent.com"}
@@ -34,7 +34,7 @@ class AssetService:
         except Exception:return False
 
     def create_pending(self,db,*,client_id:str,filename:str,mime_type:str,asset_type:str,size_bytes:int|None=None)->MediaAsset:
-        aid=new_id("asset");key=self.storage_key(client_id,aid,filename,mime_type)
+        aid=new_compact_id("asset");key=self.storage_key(client_id,aid,filename,mime_type)
         asset=MediaAsset(id=aid,client_id=client_id,status="pending",type=asset_type,storage_key=key,filename=filename,mime_type=mime_type,size_bytes=size_bytes)
         db.add(asset);db.commit();db.refresh(asset);return asset
 
@@ -77,8 +77,8 @@ class AssetService:
             except Exception:pass
             raise
 
-    async def ingest_provider_media(self,db,*,client_id:str,job_id:str,provider:str,media:ProviderMedia,asset_type:str)->MediaAsset:
-        mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=new_id("asset");key=self.storage_key(client_id,aid,None,mime)
+    async def ingest_provider_media(self,db,*,client_id:str,job_id:str,provider:str,media:ProviderMedia,asset_type:str,provider_project_id:str|None=None)->MediaAsset:
+        mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=new_compact_id("asset");key=self.storage_key(client_id,aid,None,mime)
         checksum=hashlib.sha256();size=0;stored=False;limit=getattr(self.settings,"max_provider_output_bytes",1024*1024*1024)
         if media.bytes_data is not None:
             data=media.bytes_data;size=len(data)
@@ -113,6 +113,8 @@ class AssetService:
         else:raise ValueError("provider_output_has_no_content")
         asset=MediaAsset(id=aid,client_id=client_id,status="ready",type=asset_type,storage_key=key,mime_type=mime,size_bytes=size,width=media.width,height=media.height,duration=media.duration,checksum_sha256=checksum.hexdigest(),source_provider=provider,source_job_id=job_id)
         db.add(asset)
+        if media.media_id and provider_project_id:
+            db.add(ProjectMediaMapping(id=new_id("map"),asset_id=aid,provider=provider,provider_project_id=provider_project_id,provider_media_id=media.media_id))
         try:db.commit()
         except Exception:
             db.rollback()

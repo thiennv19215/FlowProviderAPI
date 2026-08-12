@@ -55,7 +55,7 @@ def test_job_cursor_is_stable_when_created_at_timestamps_match(client,app,auth):
             "prompt":f"job {i}","provider":"fake","workspace":{"key":f"cursor:{i}"}
         })
         assert response.status_code==202
-        ids.append(response.json()["id"])
+        ids.append(response.json()["task_id"])
 
     same_time=datetime(2026,8,12,0,0,0,tzinfo=timezone.utc)
     db=app.state.runtime.session_factory()
@@ -75,8 +75,8 @@ def test_job_cursor_is_stable_when_created_at_timestamps_match(client,app,auth):
 
     second=client.get(f"/v1/jobs?limit=2&after={cursor}",headers=auth)
     assert second.status_code==200
-    second_ids=[item["id"] for item in second.json()["data"]]
-    first_ids=[item["id"] for item in first_body["data"]]
+    second_ids=[item["task_id"] for item in second.json()["data"]]
+    first_ids=[item["task_id"] for item in first_body["data"]]
     assert len(set(first_ids+second_ids))==3
     assert set(first_ids+second_ids)==set(ids)
 
@@ -84,7 +84,7 @@ def test_job_cursor_is_stable_when_created_at_timestamps_match(client,app,auth):
 def test_job_cursor_from_another_client_is_rejected(client,app,auth):
     admin_job=client.post("/v1/images/generations",headers=auth,json={
         "prompt":"admin","provider":"fake","workspace":{"key":"cursor:admin"}
-    }).json()["id"]
+    }).json()["task_id"]
     regular=_regular_auth(app)
     response=client.get(f"/v1/jobs?after={admin_job}",headers=regular)
     assert response.status_code==400

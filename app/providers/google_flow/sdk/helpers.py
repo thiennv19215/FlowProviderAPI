@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Any
+from app.providers.base import ProviderError
 from app.providers.google_flow.sdk.constants import *
 
 
@@ -30,18 +31,24 @@ def extract_upload_media_id(resp: Any) -> str | None:
 
 
 def inner_error(resp: Any) -> str | None:
+    error=flow_error(resp)
+    return error.message if error else None
+
+
+def flow_error(resp: Any) -> ProviderError | None:
     if not isinstance(resp, dict): return None
-    if resp.get("error"): return str(resp["error"])
     status=resp.get("status")
     data=resp.get("data") if isinstance(resp.get("data"),dict) else {}
     err=data.get("error") if isinstance(data,dict) else None
-    if isinstance(status,int) and status>=400 or isinstance(err,dict):
-        if isinstance(err,dict):
-            details=err.get("details") or []
-            reason=next((d.get("reason") for d in details if isinstance(d,dict) and d.get("reason")),None)
-            msg=err.get("message") or err.get("status") or f"API_{status}"
-            return f"{reason}: {msg}" if reason else str(msg)
-        return f"API_{status}"
+    if isinstance(err,dict) and isinstance(err.get("code"),int):status=err["code"]
+    if resp.get("error") or isinstance(status,int) and status>=400 or isinstance(err,dict):
+        details=err.get("details") or [] if isinstance(err,dict) else []
+        reason=next((d.get("reason") for d in details if isinstance(d,dict) and d.get("reason")),None)
+        flow_code=err.get("status") if isinstance(err,dict) else None
+        code=str(flow_code or reason or (f"FLOW_HTTP_{status}" if isinstance(status,int) else "FLOW_PROVIDER_ERROR"))
+        message=str(err.get("message") if isinstance(err,dict) and err.get("message") else resp.get("error") or code)
+        retryable=status in {408,425,429,500,502,503,504} if isinstance(status,int) else False
+        return ProviderError(code,message,status_code=status if isinstance(status,int) else None,retryable=retryable)
     return None
 
 

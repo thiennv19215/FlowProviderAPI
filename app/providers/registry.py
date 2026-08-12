@@ -13,7 +13,7 @@ class ProviderRegistry:
     def get(self, name: str):
         provider = self._providers.get(name)
         if provider is None:
-            raise APIError(400, "UNSUPPORTED_PROVIDER", f"Provider '{name}' is not configured.", error_type="validation_error", param="provider")
+            raise APIError(400, "UNSUPPORTED_PROVIDER", f"Provider '{name}' is not configured.", field="provider")
         return provider
 
     def names(self) -> list[str]:

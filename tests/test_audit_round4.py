@@ -29,7 +29,7 @@ def _reference(client,auth):
 def test_stuck_provider_operation_hits_deadline(client,app,auth):
     app.state.runtime.providers.register(StuckProvider())
     aid=_reference(client,auth)
-    job_id=client.post("/v1/videos/generations",headers=auth,json={"provider":"stuck","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"timeout"}}).json()["id"]
+    job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"stuck","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"timeout"}}).json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once())
     with app.state.runtime.session_factory() as db:
         job=db.get(GenerationJob,job_id)

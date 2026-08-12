@@ -21,7 +21,7 @@ def test_video_start_asset_must_be_image(client,auth):
     assert created.status_code==201
     aid=created.json()["asset"]["id"]
     assert client.put(f"/v1/assets/{aid}/content",headers={**auth,"Content-Type":"application/octet-stream"},content=b"video").status_code==204
-    response=client.post("/v1/videos/generations",headers=auth,json={"prompt":"move","provider":"fake","input":{"start_asset_id":aid},"workspace":{"key":"bad-ref"}})
+    response=client.post("/v1/videos/image-to-video",headers=auth,json={"prompt":"move","provider":"fake","input":{"start_asset_id":aid},"workspace":{"key":"bad-ref"}})
     assert response.status_code==422
     assert response.json()["error"]["code"]=="INVALID_ASSET_TYPE"
 

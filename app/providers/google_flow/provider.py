@@ -8,6 +8,7 @@ from app.providers.google_flow.media_sync import MediaSync
 
 IMAGE_ASPECT={"1:1":"IMAGE_ASPECT_RATIO_SQUARE","16:9":"IMAGE_ASPECT_RATIO_LANDSCAPE","9:16":"IMAGE_ASPECT_RATIO_PORTRAIT"}
 VIDEO_ASPECT={"16:9":"VIDEO_ASPECT_RATIO_LANDSCAPE","9:16":"VIDEO_ASPECT_RATIO_PORTRAIT"}
+PUBLIC_IMAGE_MODELS={"banana_pro":"NANO_BANANA_PRO","banana_2":"NANO_BANANA_2"}
 
 
 class GoogleFlowProvider:
@@ -31,34 +32,35 @@ class GoogleFlowProvider:
         if not account_id: raise RuntimeError("provider_account_required")
         conn,sdk,pid=await self._context(job,db,account_id);payload=job.request_payload
         refs=[]
-        for ref in payload.get("references") or []:
-            refs.append(await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=ref["asset_id"],project_id=pid,sdk=sdk))
+        for asset_id in payload.get("reference_asset_ids") or []:
+            refs.append(await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=asset_id,project_id=pid,sdk=sdk))
         job.stage="dispatching";db.commit()
-        result=await sdk.gen_image(prompt=payload["prompt"],project_id=pid,paygate_tier=conn.paygate_tier,aspect_ratio=IMAGE_ASPECT[payload.get("aspect_ratio","16:9")],ref_media_ids=refs,variant_count=payload.get("output_count",1),image_model=payload.get("model"))
+        image_model=PUBLIC_IMAGE_MODELS[payload.get("model","banana_pro")]
+        result=await sdk.gen_image(prompt=payload["prompt"],project_id=pid,paygate_tier=conn.paygate_tier,aspect_ratio=IMAGE_ASPECT[payload.get("aspect_ratio","9:16")],ref_media_ids=refs,variant_count=payload.get("output_count",1),image_model=image_model)
         if result.get("error"):
-            self.bridge.mark_provider_failure(account_id,result["error"]);raise RuntimeError(result["error"])
+            exc=result.get("exception") or RuntimeError(result["error"]);self.bridge.mark_provider_failure(account_id,result["error"],status_code=getattr(exc,"status_code",None));raise exc
         return [ProviderMedia(media_id=e.get("media_id"),url=e.get("url"),mime_type="image/png") for e in result.get("media_entries") or []]
 
     async def dispatch_video(self, *, job, db, account_id: str|None):
         if not account_id: raise RuntimeError("provider_account_required")
         conn,sdk,pid=await self._context(job,db,account_id);p=job.request_payload
-        start=await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=p["input"]["start_asset_id"],project_id=pid,sdk=sdk)
+        start=await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=p["start_asset_id"],project_id=pid,sdk=sdk)
         job.stage="dispatching";db.commit()
         result=await sdk.gen_video(prompt=p["prompt"],project_id=pid,start_media_id=start,aspect_ratio=VIDEO_ASPECT[p.get("aspect_ratio","16:9")],paygate_tier=conn.paygate_tier,video_quality=p.get("quality","lite"))
         if result.get("error"):
-            self.bridge.mark_provider_failure(account_id,result["error"]);raise RuntimeError(result["error"])
+            exc=result.get("exception") or RuntimeError(result["error"]);self.bridge.mark_provider_failure(account_id,result["error"],status_code=getattr(exc,"status_code",None));raise exc
         return ProviderDispatch(operation_ids=result["operation_names"],workflows=result.get("workflows") or [])
 
     async def dispatch_omni(self, *, job, db, account_id: str|None):
         if not account_id: raise RuntimeError("provider_account_required")
         conn,sdk,pid=await self._context(job,db,account_id);p=job.request_payload
         refs=[]
-        for ref in p.get("references") or []:
-            refs.append(await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=ref["asset_id"],project_id=pid,sdk=sdk))
+        for asset_id in p.get("reference_asset_ids") or []:
+            refs.append(await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=asset_id,project_id=pid,sdk=sdk))
         job.stage="dispatching";db.commit()
         result=await sdk.gen_video_omni(prompt=p["prompt"],project_id=pid,ref_media_ids=refs,duration_s=p.get("duration",8),aspect_ratio=VIDEO_ASPECT[p.get("aspect_ratio","9:16")],paygate_tier=conn.paygate_tier)
         if result.get("error"):
-            self.bridge.mark_provider_failure(account_id,result["error"]);raise RuntimeError(result["error"])
+            exc=result.get("exception") or RuntimeError(result["error"]);self.bridge.mark_provider_failure(account_id,result["error"],status_code=getattr(exc,"status_code",None));raise exc
         return ProviderDispatch(operation_ids=result["operation_names"],workflows=result.get("workflows") or [])
 
     async def poll_video(self, *, job, db, account_id: str|None, dispatch: ProviderDispatch):
@@ -66,7 +68,9 @@ class GoogleFlowProvider:
         sdk=self._sdk(account_id)
         result=await sdk.check_async(operation_names=dispatch.operation_ids,project_id=job.provider_project_id,workflows_data=dispatch.workflows)
         if result.get("error"):
-            self.bridge.mark_provider_failure(account_id,str(result["error"]));return ProviderPollResult(done=False,error=result["error"])
+            exc=result.get("exception");self.bridge.mark_provider_failure(account_id,str(result["error"]),status_code=getattr(exc,"status_code",None));
+            if exc:raise exc
+            return ProviderPollResult(done=False,error=result["error"])
         ops=result.get("operations") or []
         failed=next((op.get("error") for op in ops if op.get("error")),None)
         if failed:

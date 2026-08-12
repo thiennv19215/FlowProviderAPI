@@ -34,7 +34,7 @@ def test_persistent_poll_errors_eventually_fail_job(client,app,auth):
     app.state.runtime.settings.max_consecutive_poll_errors=2
     try:
         aid=_reference(client,auth)
-        job_id=client.post("/v1/videos/generations",headers=auth,json={"provider":"persistent_poll_error","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"poll:bounded"}}).json()["id"]
+        job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"persistent_poll_error","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"poll:bounded"}}).json()["task_id"]
         assert asyncio.run(app.state.runtime.worker.run_once())
         assert asyncio.run(app.state.runtime.worker.run_once())
         mid=client.get(f"/v1/jobs/{job_id}",headers=auth).json()

@@ -4,6 +4,11 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 
+class ProviderError(RuntimeError):
+    def __init__(self,code:str,message:str,*,status_code:int|None=None,retryable:bool=False):
+        super().__init__(message);self.code=code;self.message=message;self.status_code=status_code;self.retryable=retryable
+
+
 @dataclass
 class ProviderMedia:
     media_id: str | None = None

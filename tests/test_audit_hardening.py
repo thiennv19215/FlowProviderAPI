@@ -104,7 +104,7 @@ def _reference(client,auth):
 
 def test_terminal_provider_failure_finishes_job(client,app,auth):
     app.state.runtime.providers.register(TerminalVideoProvider());aid=_reference(client,auth)
-    job_id=client.post("/v1/videos/generations",headers=auth,json={"provider":"terminal_video","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"terminal"}}).json()["id"]
+    job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"terminal_video","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"terminal"}}).json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once())
     assert asyncio.run(app.state.runtime.worker.run_once())
     body=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
@@ -114,7 +114,7 @@ def test_terminal_provider_failure_finishes_job(client,app,auth):
 
 def test_output_storage_failure_returns_to_poll_and_recovers(client,app,auth):
     app.state.runtime.providers.register(RecoveringStorageProvider());aid=_reference(client,auth)
-    job_id=client.post("/v1/videos/generations",headers=auth,json={"provider":"recover_storage","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"storage-retry"}}).json()["id"]
+    job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"recover_storage","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"storage-retry"}}).json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once())
     original=app.state.runtime.assets.ingest_provider_media;calls={"n":0}
     async def flaky(*args,**kwargs):
@@ -123,6 +123,6 @@ def test_output_storage_failure_returns_to_poll_and_recovers(client,app,auth):
         return await original(*args,**kwargs)
     app.state.runtime.assets.ingest_provider_media=flaky
     assert asyncio.run(app.state.runtime.worker.run_once())
-    mid=client.get(f"/v1/jobs/{job_id}",headers=auth).json();assert mid["status"]=="running" and mid["stage"]=="provider_running"
+    mid=client.get(f"/v1/jobs/{job_id}",headers=auth).json();assert mid["status"]=="running"
     assert asyncio.run(app.state.runtime.worker.run_once())
     done=client.get(f"/v1/jobs/{job_id}",headers=auth).json();assert done["status"]=="succeeded"

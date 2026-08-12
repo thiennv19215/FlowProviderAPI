@@ -1,6 +1,6 @@
 # Jobs
 
-Public states are `queued`, `running`, `succeeded`, `failed`, and `canceled`. The `stage` field is diagnostic and clients should not build business logic around individual stage names.
+Public states are `queued`, `running`, `succeeded`, `failed`, and `canceled`. Internal worker stages are deliberately not exposed in the task response.
 
 Video/Omni dispatch persists provider operation IDs before polling. Polling retries never redispatch the generation, preventing duplicate videos after transient failures, extension reconnects, output-storage errors, or worker restarts. Terminal provider failures finish the job instead of being polled indefinitely.
 

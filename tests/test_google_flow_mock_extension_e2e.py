@@ -68,13 +68,14 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
             json={
                 "prompt": "a studio product photo",
                 "provider": "google_flow",
+                "model": "banana_2",
                 "aspect_ratio": "1:1",
                 "output_count": 2,
                 "workspace": {"key": "mock:image:e2e"},
             },
         )
         assert response.status_code == 202
-        job_id = response.json()["id"]
+        job_id = response.json()["task_id"]
 
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         job = client.get(f"/v1/jobs/{job_id}", headers=auth).json()
@@ -89,9 +90,26 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         assert "INJECT_RECAPTCHA" in mock.state.rpc_types
         assert "SW_FETCH" in mock.state.rpc_types
 
-        content = client.get(f"/v1/assets/{job['outputs'][0]['id']}/content", headers=auth)
+        content = client.get(f"/v1/assets/{job['outputs'][0]['asset_id']}/content", headers=auth)
         assert content.status_code == 200
         assert content.content == b"mock-image-bytes"
+
+        referenced = client.post(
+            "/v1/images/generations",
+            headers=auth,
+            json={
+                "prompt": "the same product in dramatic lighting",
+                "provider": "google_flow",
+                "reference_asset_ids": [job["outputs"][0]["asset_id"]],
+            },
+        )
+        assert referenced.status_code == 202
+        assert asyncio.run(app.state.runtime.worker.run_once()) is True
+        referenced_job = client.get(f"/v1/jobs/{referenced.json()['task_id']}", headers=auth).json()
+        assert referenced_job["status"] == "succeeded"
+        assert mock.state.projects_created == 1
+        assert mock.state.image_generations == 2
+        assert mock.state.uploads == 0
 
 
 def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, app, auth):
@@ -100,7 +118,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         reference_id = _upload_reference(client, auth)
 
         video = client.post(
-            "/v1/videos/generations",
+            "/v1/videos/image-to-video",
             headers=auth,
             json={
                 "prompt": "slow camera push in",
@@ -111,11 +129,10 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
             },
         )
         assert video.status_code == 202
-        video_id = video.json()["id"]
+        video_id = video.json()["task_id"]
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         mid = client.get(f"/v1/jobs/{video_id}", headers=auth).json()
         assert mid["status"] == "running"
-        assert mid["stage"] == "provider_running"
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         done = client.get(f"/v1/jobs/{video_id}", headers=auth).json()
         assert done["status"] == "succeeded"
@@ -134,7 +151,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
             },
         )
         assert omni.status_code == 202
-        omni_id = omni.json()["id"]
+        omni_id = omni.json()["task_id"]
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         omni_done = client.get(f"/v1/jobs/{omni_id}", headers=auth).json()
