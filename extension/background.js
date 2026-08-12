@@ -222,7 +222,11 @@ async function inject(tabId, operation, payload = {}) {
           const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: controller.signal });
           const type = spec.responseType || ((resp.headers.get("content-type") || "").includes("json") ? "json" : "text");
           const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url };
-          if (type === "json") out.data = await resp.json().catch(() => null);
+          if (type === "json") {
+            const text = await resp.text().catch(() => "");
+            try { out.data = text ? JSON.parse(text) : null; }
+            catch (_) { out.text = text.slice(0, 4096); }
+          }
           else if (type !== "none") out.text = await resp.text().catch(() => "");
           return { ok: true, data: out };
         } finally { clearTimeout(timer); }
@@ -248,7 +252,11 @@ async function swFetch(spec, signal) {
     const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: controller.signal });
     const type = spec.responseType || ((resp.headers.get("content-type") || "").includes("json") ? "json" : "text");
     const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url };
-    if (type === "json") out.data = await resp.json().catch(() => null);
+    if (type === "json") {
+      const text = await resp.text().catch(() => "");
+      try { out.data = text ? JSON.parse(text) : null; }
+      catch (_) { out.text = text.slice(0, 4096); }
+    }
     else if (type === "base64") {
       const bytes = new Uint8Array(await resp.arrayBuffer());
       let binary = "";

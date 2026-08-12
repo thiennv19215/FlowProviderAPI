@@ -64,6 +64,17 @@ async def test_connection_supplied_flow_api_key_makes_account_ready_without_serv
     assert bridge.refresh_count==1
 
 
+async def test_credit_refresh_records_non_success_response_without_hiding_it():
+    class FailingBridge(BrowserFlowBridge):
+        async def send_rpc(self,*_args,**_kwargs):
+            return {"data":{"ok":False,"status":429,"text":"quota exhausted"}}
+
+    bridge=FailingBridge(flow_api_key="test");conn=ready_connection(bridge,"credit-error")
+    await bridge.refresh_account(conn.id)
+    assert conn.ready
+    assert conn.last_error=="flow_credits_http_429"
+
+
 def test_omni_credit_cost_is_duration_aware():
     assert estimated_credit_cost("omni",{"duration":2})==10
     assert estimated_credit_cost("omni",{"duration":4})==15
@@ -121,7 +132,7 @@ def test_terminal_provider_failure_finishes_job(client,app,auth):
     job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"terminal_video","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"terminal"}}).json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once())
     assert asyncio.run(app.state.runtime.worker.run_once())
-    body=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
+    body=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
     assert body["status"]=="failed"
     assert body["error"]["code"]=="PROVIDER_TERMINAL_ERROR"
 
@@ -137,6 +148,6 @@ def test_output_storage_failure_returns_to_poll_and_recovers(client,app,auth):
         return await original(*args,**kwargs)
     app.state.runtime.assets.ingest_provider_media=flaky
     assert asyncio.run(app.state.runtime.worker.run_once())
-    mid=client.get(f"/v1/jobs/{job_id}",headers=auth).json();assert mid["status"]=="running"
+    mid=client.get(f"/v1/tasks/{job_id}",headers=auth).json();assert mid["status"]=="running"
     assert asyncio.run(app.state.runtime.worker.run_once())
-    done=client.get(f"/v1/jobs/{job_id}",headers=auth).json();assert done["status"]=="succeeded"
+    done=client.get(f"/v1/tasks/{job_id}",headers=auth).json();assert done["status"]=="succeeded"

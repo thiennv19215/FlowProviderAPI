@@ -36,10 +36,10 @@ def test_persistent_poll_errors_eventually_fail_job(client,app,auth):
         job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"persistent_poll_error","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"poll:bounded"}}).json()["task_id"]
         assert asyncio.run(app.state.runtime.worker.run_once())
         assert asyncio.run(app.state.runtime.worker.run_once())
-        mid=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
+        mid=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
         assert mid["status"]=="running"
         assert asyncio.run(app.state.runtime.worker.run_once())
-        done=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
+        done=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
         assert done["status"]=="failed"
         assert done["error"]["code"]=="PROVIDER_POLL_RETRIES_EXHAUSTED"
     finally:

@@ -4,6 +4,7 @@ from sqlalchemy import select, text
 
 from app.db.models import GenerationJob, WorkspaceProject
 from app.jobs.repository import active_count_for_account
+from app.providers.base import ProviderError
 
 VIDEO_MIN_CREDITS={"video":20}
 OMNI_CREDIT_COST={2:10,4:15,8:25,10:30}
@@ -49,9 +50,9 @@ class GlobalScheduler:
             available=(conn.credits or 0)-self._reserved_credits(db,account_id)
             if active>=conn.max_slots or available<required:continue
             job.provider_account_id=account_id;db.commit();db.refresh(job);return account_id
-        raise RuntimeError("no_ready_provider_account")
+        raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
 
     def choose_account(self, db, *, kind: str, payload: dict | None = None, client_id: str|None = None, workspace_key: str|None = None, provider: str|None = None) -> str:
         candidates=self._ranked_candidates(db,kind=kind,payload=payload,client_id=client_id,workspace_key=workspace_key,provider=provider)
-        if not candidates:raise RuntimeError("no_ready_provider_account")
+        if not candidates:raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         return candidates[0]

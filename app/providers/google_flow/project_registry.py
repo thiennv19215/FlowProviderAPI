@@ -7,6 +7,7 @@ from sqlalchemy import select
 
 from app.db.models import WorkspaceProject
 from app.ids import new_id
+from app.providers.base import ProviderError
 
 
 class ProjectRegistry:
@@ -28,6 +29,7 @@ class ProjectRegistry:
             if existing:
                 project_id=existing.provider_project_id;db.commit();return project_id
             db.commit();result=await sdk.create_project("FlowProvider")
-            if result.get("error") or not result.get("project_id"):raise result.get("exception") or RuntimeError(result.get("error") or "flow_project_create_failed")
+            if result.get("error") or not result.get("project_id"):
+                raise result.get("exception") or ProviderError("FLOW_PROJECT_CREATE_FAILED",str(result.get("error") or "Google Flow did not return a project ID."),status_code=502,retryable=True)
             row=WorkspaceProject(id=new_id("wsp"),client_id=client_id,workspace_key="__api_client__",provider="google_flow",provider_account_id=account_id,provider_project_id=result["project_id"])
             db.add(row);db.commit();return row.provider_project_id

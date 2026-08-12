@@ -113,6 +113,11 @@ test('extension source and popup expose no gateway-token configuration', () => {
   assert.equal(popupJs.includes('gatewayToken'), false);
 });
 
+test('browser transport preserves bounded plain-text errors when JSON parsing fails', () => {
+  assert.match(source, /const text = await resp\.text\(\)\.catch\(\(\) => ""\);/);
+  assert.match(source, /out\.text = text\.slice\(0, 4096\);/);
+});
+
 test('popup hides provider endpoint configuration', () => {
   const popupHtml = fs.readFileSync(new URL('../popup.html', import.meta.url), 'utf8');
   const popupJs = fs.readFileSync(new URL('../popup.js', import.meta.url), 'utf8');

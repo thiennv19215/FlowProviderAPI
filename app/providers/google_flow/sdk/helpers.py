@@ -46,7 +46,12 @@ def flow_error(resp: Any) -> ProviderError | None:
         reason=next((d.get("reason") for d in details if isinstance(d,dict) and d.get("reason")),None)
         flow_code=err.get("status") if isinstance(err,dict) else None
         code=str(flow_code or reason or (f"FLOW_HTTP_{status}" if isinstance(status,int) else "FLOW_PROVIDER_ERROR"))
-        message=str(err.get("message") if isinstance(err,dict) and err.get("message") else resp.get("error") or code)
+        raw_message=err.get("message") if isinstance(err,dict) else None
+        raw_message=raw_message or resp.get("error")
+        if not raw_message and isinstance(resp.get("text"),str):
+            text=" ".join(resp["text"].split())
+            raw_message=text if text and "<" not in text else None
+        message=str(raw_message or code)[:1000]
         retryable=status in {408,425,429,500,502,503,504} if isinstance(status,int) else False
         public_details=[]
         for item in details:

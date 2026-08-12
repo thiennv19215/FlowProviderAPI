@@ -33,7 +33,7 @@ def test_task_preserves_flow_error(client,app,auth,status_code,code,message,retr
     assert created.status_code==202
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
 
-    response=client.get(f"/v1/jobs/{created.json()['task_id']}",headers=auth)
+    response=client.get(f"/v1/tasks/{created.json()['task_id']}",headers=auth)
     assert response.status_code==200
     assert response.json()["status"]=="failed"
     assert response.json()["error"]=={
@@ -41,7 +41,7 @@ def test_task_preserves_flow_error(client,app,auth,status_code,code,message,retr
         "code":code,
         "message":message,
         "details":[],
-        "request_id":None,
+        "request_id":created.headers["X-Request-Id"],
         "retryable":retryable,
     }
 
@@ -56,11 +56,28 @@ def test_google_error_parser_keeps_http_status_and_flow_code():
     assert error.details==[{"field":None,"code":"RATE_LIMIT_EXCEEDED","message":"Image generation quota is exhausted."}]
 
 
+def test_google_error_parser_keeps_plain_text_upstream_message():
+    error=flow_error({"status":502,"text":"Google Flow is temporarily unavailable."})
+    assert error is not None
+    assert error.code=="FLOW_HTTP_502"
+    assert error.message=="Google Flow is temporarily unavailable."
+    assert error.retryable is True
+
+
 def test_task_returns_sanitized_upstream_error_details(client,app,auth):
     provider=UpstreamFailureProvider(429,"RESOURCE_EXHAUSTED","Quota exceeded.",True)
     provider.error.details=[{"field":None,"code":"RATE_LIMIT_EXCEEDED","message":"Image generation quota is exhausted."}]
     app.state.runtime.providers.register(provider)
     created=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":provider.name})
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    error=client.get(f"/v1/jobs/{created.json()['task_id']}",headers=auth).json()["error"]
+    error=client.get(f"/v1/tasks/{created.json()['task_id']}",headers=auth).json()["error"]
     assert error["details"]==[{"field":None,"code":"RATE_LIMIT_EXCEEDED","message":"Image generation quota is exhausted."}]
+
+
+def test_failed_task_keeps_submission_request_id(client,app,auth):
+    provider=UpstreamFailureProvider(503,"UNAVAILABLE","Flow is temporarily unavailable.",True)
+    app.state.runtime.providers.register(provider)
+    created=client.post("/v1/images/generations",headers={**auth,"X-Request-Id":"req_generation_trace"},json={"prompt":"cat","provider":provider.name})
+    assert asyncio.run(app.state.runtime.worker.run_once()) is True
+    error=client.get(f"/v1/tasks/{created.json()['task_id']}",headers=auth).json()["error"]
+    assert error["request_id"]=="req_generation_trace"

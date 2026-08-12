@@ -14,7 +14,7 @@ from app.api.errors import APIError, PUBLIC_ERROR_RESPONSES, api_error_handler, 
 from app.api.extensions import router as extensions_admin_router
 from app.api.generations import router as generations_router
 from app.api.health import router as health_router
-from app.api.jobs import router as jobs_router
+from app.api.jobs import router as tasks_router
 from app.config import Settings, get_settings
 from app.auth.api_keys import ensure_bootstrap_client
 from app.extension.gateway import router as extension_router
@@ -52,7 +52,7 @@ def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->Fa
     app.add_exception_handler(RequestValidationError,validation_error_handler)
     app.add_exception_handler(StarletteHTTPException,http_error_handler)
     app.add_exception_handler(Exception,unexpected_error_handler)
-    for router in (health_router,generations_router,jobs_router,assets_router,accounts_router,extensions_admin_router,extension_router):app.include_router(router)
+    for router in (health_router,generations_router,tasks_router,assets_router,accounts_router,extensions_admin_router,extension_router):app.include_router(router)
     return app
 
 app=create_app()

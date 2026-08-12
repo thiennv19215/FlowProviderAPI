@@ -39,7 +39,7 @@ def _submit(request: Request, db, client, payload, kind: str):
     provider=payload.provider;model=getattr(payload,"model",None)
     request.app.state.runtime.providers.get(provider)
     _validate_reference_assets(request,db,client,data,kind)
-    job=create_job(db,client=client,kind=kind,provider=provider,model=model,workspace_key=CLIENT_WORKSPACE_KEY,payload=data)
+    job=create_job(db,client=client,kind=kind,provider=provider,model=model,workspace_key=CLIENT_WORKSPACE_KEY,payload=data,request_id=request.state.request_id)
     return job_dict(request.app.state.runtime,db,job)
 
 

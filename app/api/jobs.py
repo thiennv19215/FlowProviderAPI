@@ -9,19 +9,19 @@ from app.api.serializers import job_dict
 from app.api.schemas import JobListResponse, JobOutput
 from app.db.models import GenerationJob
 
-router=APIRouter(prefix="/v1/jobs",tags=["Jobs"])
+router=APIRouter(prefix="/v1/tasks",tags=["Tasks"])
 
 
-@router.get("/{job_id}",response_model=JobOutput)
-def get_job(job_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
-    job=db.scalar(select(GenerationJob).where(GenerationJob.id==job_id,GenerationJob.client_id==client.id))
+@router.get("/{task_id}",response_model=JobOutput)
+def get_job(task_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
+    job=db.scalar(select(GenerationJob).where(GenerationJob.id==task_id,GenerationJob.client_id==client.id))
     if not job:raise APIError(404,"JOB_NOT_FOUND","The requested generation job does not exist.")
     return job_dict(request.app.state.runtime,db,job)
 
 
-@router.post("/{job_id}/cancel",response_model=JobOutput)
-def cancel_job(job_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
-    job=db.scalar(select(GenerationJob).where(GenerationJob.id==job_id,GenerationJob.client_id==client.id))
+@router.post("/{task_id}/cancel",response_model=JobOutput)
+def cancel_job(task_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
+    job=db.scalar(select(GenerationJob).where(GenerationJob.id==task_id,GenerationJob.client_id==client.id))
     if not job:raise APIError(404,"JOB_NOT_FOUND","The requested generation job does not exist.")
     if job.status in {"succeeded","failed","canceled"}:return job_dict(request.app.state.runtime,db,job)
     job.cancel_requested=True

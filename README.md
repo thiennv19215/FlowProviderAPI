@@ -47,8 +47,8 @@ Configure the Tunnel published application to route the Provider hostname to `ht
 - `POST /v1/images/generations`
 - `POST /v1/videos/image-to-video`
 - `POST /v1/videos/omni-generations`
-- `GET /v1/jobs/{job_id}`
-- `POST /v1/jobs/{job_id}/cancel`
+- `GET /v1/tasks/{task_id}`
+- `POST /v1/tasks/{task_id}/cancel`
 - `POST /v1/assets/uploads`
 - `GET /v1/assets/{asset_id}`
 - `GET /v1/accounts`
@@ -66,7 +66,7 @@ The public extension WebSocket accepts unauthenticated connector registrations b
 
 Direct Flow URLs are controlled by the upstream provider and may expire or be revoked. A calling backend that needs a durable result should download it promptly and store its own copy.
 
-`POST /v1/jobs/{id}/cancel` is currently cooperative at the Provider job layer. The current Google Flow integration does not contain a verified upstream cancel-generation primitive, so the service deliberately does not invent or call an unverified Google endpoint.
+`POST /v1/tasks/{task_id}/cancel` is currently cooperative at the Provider job layer. The current Google Flow integration does not contain a verified upstream cancel-generation primitive, so the service deliberately does not invent or call an unverified Google endpoint.
 
 ## Mock extension E2E
 

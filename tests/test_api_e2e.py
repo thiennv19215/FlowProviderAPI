@@ -13,7 +13,7 @@ def test_image_generation_end_to_end(client, app, auth):
     job_id = response.json()["task_id"]
     assert response.json()["status"] == "queued"
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    job = client.get(f"/v1/jobs/{job_id}", headers=auth)
+    job = client.get(f"/v1/tasks/{job_id}", headers=auth)
     assert job.status_code == 200
     body = job.json()
     assert body["status"] == "succeeded"
@@ -33,10 +33,10 @@ def test_video_dispatch_and_poll_survives_db_state(client, app, auth):
     })
     job_id=response.json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    mid=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
+    mid=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
     assert mid["status"] == "running"
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    done=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
+    done=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
     assert done["status"] == "succeeded"
     assert done["outputs"][0]["type"] == "video"
 
@@ -65,7 +65,7 @@ def test_new_asset_ids_are_compact_and_url_safe(client,auth):
 
 
 def test_structured_auth_error(client):
-    response=client.get("/v1/jobs/nope")
+    response=client.get("/v1/tasks/nope")
     assert response.status_code==401
     error=response.json()["error"]
     assert set(error)=={"status_code","code","message","details","request_id","retryable"}
@@ -103,6 +103,8 @@ def test_openapi_exposes_typed_generation_and_asset_responses(client):
     assert not {"/health/live","/health/ready","/api/health"}&set(schema["paths"])
     assert "/v1/videos/image-to-video" in schema["paths"]
     assert "/v1/videos/generations" not in schema["paths"]
+    assert "/v1/tasks/{task_id}" in schema["paths"]
+    assert "/v1/jobs/{task_id}" not in schema["paths"]
     assert set(schema["components"]["schemas"]["ImageToVideoRequest"]["properties"])=={"prompt","start_asset_id","quality","aspect_ratio"}
     image=schema["paths"]["/v1/images/generations"]["post"]
     assert image["responses"]["202"]["content"]["application/json"]["schema"]["$ref"].endswith("/JobOutput")

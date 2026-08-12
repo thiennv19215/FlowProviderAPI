@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.providers.base import ProviderDispatch, ProviderMedia, ProviderPollResult
+from app.providers.base import ProviderDispatch, ProviderError, ProviderMedia, ProviderPollResult
 from app.providers.google_flow.client import BoundFlowClient
 from app.providers.google_flow.sdk import FlowSDK
 from app.providers.google_flow.project_registry import ProjectRegistry
@@ -22,14 +22,14 @@ class GoogleFlowProvider:
 
     async def _context(self, job, db, account_id: str):
         conn=self.bridge.get(account_id)
-        if not conn or not conn.ready: raise RuntimeError("provider_account_unavailable")
+        if not conn or not conn.ready: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","The selected Google Flow account is no longer ready.",status_code=503,retryable=True)
         sdk=self._sdk(account_id)
         project_id=job.provider_project_id or await self.projects.get_or_create(db,client_id=job.client_id,account_id=account_id,sdk=sdk)
         job.provider_project_id=project_id;db.commit()
         return conn,sdk,project_id
 
     async def generate_image(self, *, job, db, account_id: str|None):
-        if not account_id: raise RuntimeError("provider_account_required")
+        if not account_id: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         conn,sdk,pid=await self._context(job,db,account_id);payload=job.request_payload
         refs=[]
         for asset_id in payload.get("reference_asset_ids") or []:
@@ -42,7 +42,7 @@ class GoogleFlowProvider:
         return [ProviderMedia(media_id=e.get("media_id"),url=e.get("url"),mime_type="image/png") for e in result.get("media_entries") or []]
 
     async def dispatch_video(self, *, job, db, account_id: str|None):
-        if not account_id: raise RuntimeError("provider_account_required")
+        if not account_id: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         conn,sdk,pid=await self._context(job,db,account_id);p=job.request_payload
         start=await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=p["start_asset_id"],project_id=pid,sdk=sdk)
         job.stage="dispatching";db.commit()
@@ -52,7 +52,7 @@ class GoogleFlowProvider:
         return ProviderDispatch(operation_ids=result["operation_names"],workflows=result.get("workflows") or [])
 
     async def dispatch_omni(self, *, job, db, account_id: str|None):
-        if not account_id: raise RuntimeError("provider_account_required")
+        if not account_id: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         conn,sdk,pid=await self._context(job,db,account_id);p=job.request_payload
         refs=[]
         for asset_id in p.get("reference_asset_ids") or []:

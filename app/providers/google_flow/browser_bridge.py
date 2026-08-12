@@ -53,12 +53,23 @@ class FlowBridge(BaseFlowBridge):
             await self._send_auth_ack(conn)
             return
         inner = response.get("data") if isinstance(response, dict) else None
-        payload = inner.get("data") if isinstance(inner, dict) else None
+        if not isinstance(inner, dict) or inner.get("ok") is False:
+            status = inner.get("status") if isinstance(inner, dict) else None
+            reason = f"flow_credits_http_{status}" if isinstance(status, int) else "flow_credits_unavailable"
+            if status in {401, 403}:
+                self._invalidate_auth(conn, reason)
+            else:
+                conn.last_error = reason
+            await self._send_auth_ack(conn)
+            return
+        payload = inner.get("data")
         if isinstance(payload, dict):
             conn.last_error = None
             conn.paygate_tier = resolve_paygate_tier(payload)
             conn.credits = payload.get("credits") if isinstance(payload.get("credits"), int) else None
             conn.sku = payload.get("sku") if isinstance(payload.get("sku"), str) else None
+        else:
+            conn.last_error = "flow_credits_invalid_response"
         await self._send_auth_ack(conn)
 
     async def api_request(

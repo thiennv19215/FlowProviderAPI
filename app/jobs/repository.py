@@ -16,8 +16,9 @@ def _as_utc(value):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-def create_job(db, *, client, kind: str, provider: str, model: str|None, workspace_key: str, payload: dict):
-    row=GenerationJob(id=new_id("job"),client_id=client.id,kind=kind,provider=provider,model=model,workspace_key=workspace_key,status="queued",stage="queued",priority=client.priority,request_payload=payload,next_run_at=utcnow())
+def create_job(db, *, client, kind: str, provider: str, model: str|None, workspace_key: str, payload: dict, request_id: str|None=None):
+    result_payload={"_request_id":request_id} if request_id else None
+    row=GenerationJob(id=new_id("job"),client_id=client.id,kind=kind,provider=provider,model=model,workspace_key=workspace_key,status="queued",stage="queued",priority=client.priority,request_payload=payload,result_payload=result_payload,next_run_at=utcnow())
     db.add(row)
     db.commit();db.refresh(row);return row
 

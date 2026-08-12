@@ -35,7 +35,7 @@ def test_preparation_failure_is_requeued(client, app, auth):
     job_id=response.json()["task_id"]
     import asyncio
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    body=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
+    body=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
     assert body["status"] == "queued"
 
 
@@ -45,7 +45,7 @@ def test_ambiguous_dispatch_failure_is_not_replayed(client, app, auth):
     job_id=response.json()["task_id"]
     import asyncio
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    body=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
+    body=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
     assert body["status"] == "failed"
 
 
@@ -158,6 +158,6 @@ def test_omni_generation_uses_same_durable_job_contract(client, app, auth):
     import asyncio
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    body=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
+    body=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
     assert body["status"] == "succeeded"
     assert body["outputs"][0]["type"] == "video"

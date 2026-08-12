@@ -43,7 +43,7 @@ def test_stuck_provider_operation_hits_deadline(client,app,auth):
         job.lease_expires_at=None
         db.commit()
     assert asyncio.run(app.state.runtime.worker.run_once())
-    done=client.get(f"/v1/jobs/{job_id}",headers=auth).json()
+    done=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
     assert done["status"]=="failed"
     assert done["error"]["code"]=="PROVIDER_OPERATION_TIMEOUT"
 
