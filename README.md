@@ -4,12 +4,12 @@ Shared, developer-facing Google Flow media API through a Chrome MV3 connector. T
 
 ## What it owns
 
-- `/v1` image, video and Omni generation contracts
+- unified `/v1/generations` orchestration plus native image, video and Omni generation contracts
 - durable PostgreSQL generation jobs with leases
 - provider account scheduling/capacity and cooldowns
 - Google Flow project/media mapping
-- compact numeric media references with direct Google Flow output URLs
-- durable reference-upload storage in a local Docker volume
+- compact 15-digit string media references with direct Google Flow output URLs
+- durable, content-deduplicated reference-upload storage in a local Docker volume
 - direct Chrome extension WebSocket protocol v7
 - API keys, client concurrency limits, rate-limit headers, structured errors
 
@@ -44,17 +44,23 @@ Configure the Tunnel published application to route the Provider hostname to `ht
 
 ## Primary endpoints
 
+Application backends should prefer the unified contract:
+
+- `POST /v1/generations`
+- `GET /v1/tasks/{task_id}`
+- `POST /v1/tasks/{task_id}/cancel`
+- `POST /v1/media`
+- `GET /v1/media/{media_id}`
+
+Native compatibility endpoints remain available:
+
 - `POST /v1/images/generations`
 - `POST /v1/videos/image-to-video`
 - `POST /v1/videos/omni-generations`
-- `GET /v1/tasks/{task_id}`
-- `POST /v1/tasks/{task_id}/cancel`
 
-For the current client-facing contract, see [docs/integration.md](docs/integration.md). Backend services should use the [backend integration reference](docs/backend-integration.md); UI implementations should use the [frontend integration guide](docs/frontend-integration.md).
-- `POST /v1/media`
-- `GET /v1/media/{media_id}`
-- `GET /v1/accounts`
-- `GET /v1/health`
+Additional operational/client endpoints include `GET /v1/accounts` and `GET /v1/health`.
+
+Backend services should use the [backend integration reference](docs/backend-integration.md) or the smaller [orchestrator contract](docs/orchestrator-contract.md). UI implementations should use the [frontend integration guide](docs/frontend-integration.md).
 
 Operational probes `/health/live` and `/health/ready`, plus the extension-only `/api/health`, remain available but are intentionally hidden from the public OpenAPI document.
 
@@ -62,7 +68,7 @@ Operational probes `/health/live` and `/health/ready`, plus the extension-only `
 
 The current V1 preserves provider account identity across extension reconnects, invalidates stale signed-out accounts, reserves estimated credits from active jobs, uses duration-aware Omni credit costs, distinguishes terminal provider failures from transient polling failures, and bounds consecutive polling failures so jobs cannot remain `running` forever on a persistent provider error.
 
-Provider output URLs are host-allowlisted before they enter the public task result. The API preserves a compact `media_id` and project-local Flow media mapping so a generated image can be reused as a reference without uploading it again. A user-supplied file is validated and stored by `POST /v1/media`; Google Flow reference uploads have a separate in-memory hard limit before base64 encoding. Readiness checks both the database and configured reference-upload storage backend.
+Provider output URLs are host-allowlisted before they enter the public task result. The API preserves a compact `media_id` and project-local Flow media mapping so a generated image can be reused as a reference. User-supplied files are validated, SHA-256 content-deduplicated per API client and stored by `POST /v1/media`; Google Flow reference uploads have a separate in-memory hard limit before base64 encoding. Readiness checks both the database and configured reference-upload storage backend.
 
 The public extension WebSocket accepts unauthenticated connector registrations by design. Anyone who can reach the hostname can attempt to connect, so do not treat connector identity as trusted. Keep Cloudflare's WAF/DDoS protections enabled and apply an IP-based rate limit to WebSocket handshake requests for `/api/extensions/ws` without adding an interactive challenge that would break the extension connection.
 
