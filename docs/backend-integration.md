@@ -2,7 +2,7 @@
 
 Stable HTTP contract for server-to-server integration.
 
-Base URL: `https://api.shopcongngheso5.io.vn`  
+Base URL: `https://api.shopcongngheso5.io.vn`
 Authentication: `Authorization: Bearer <FLOW_PROVIDER_API_KEY>`
 
 Keep the API key on your server only. A Bearer key owns its tasks and media; another key cannot read them.
@@ -116,7 +116,7 @@ Authorization: Bearer <API_KEY>
 }
 ```
 
-`quality`: `lite`, `fast`, `quality`, `lite_relaxed`, or `fast_relaxed`.  
+`quality`: `lite`, `fast`, `quality`, `lite_relaxed`, or `fast_relaxed`.
 `aspect_ratio`: `16:9` or `9:16`.
 
 Video is assigned only to an account with enough credit. If capacity is temporarily unavailable, the task remains `queued` with retryable `PROVIDER_ACCOUNT_UNAVAILABLE`; keep polling the same task rather than submitting a duplicate.
