@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy import select
 
 from app.api.deps import get_client, get_db
@@ -14,7 +14,12 @@ from app.api.schemas import (
 )
 from app.api.serializers import job_dict
 from app.db.models import MediaAsset
-from app.jobs.repository import create_job
+from app.jobs.repository import (
+    IdempotencyConflict,
+    assert_idempotent_submission,
+    create_job,
+    get_job_by_idempotency,
+)
 
 router = APIRouter(tags=["Generations"])
 CLIENT_WORKSPACE_KEY = "__api_client__"
@@ -92,7 +97,24 @@ def _validate_reference_assets(request: Request, db, client, data: dict, kind: s
             )
 
 
-def _submit(request: Request, db, client, payload, kind: str):
+def _idempotency_conflict() -> APIError:
+    return APIError(
+        409,
+        "IDEMPOTENCY_KEY_CONFLICT",
+        "Idempotency-Key was already used for a different generation submission.",
+        field="Idempotency-Key",
+    )
+
+
+def _submit(
+    request: Request,
+    db,
+    client,
+    payload,
+    kind: str,
+    *,
+    idempotency_key: str | None = None,
+):
     data = payload.model_dump(mode="json")
     if kind == "video":
         data["start_media_id"] = str(data["start_media_id"])
@@ -104,6 +126,29 @@ def _submit(request: Request, db, client, payload, kind: str):
     model = getattr(payload, "model", None)
     runtime = request.app.state.runtime
     configured_provider = runtime.providers.get(provider)
+    clean_key = idempotency_key.strip() if isinstance(idempotency_key, str) else None
+
+    # Lookup first: a retry after an ambiguous network failure must recover the
+    # already-created task even if account capacity or reference availability
+    # has changed since the original accepted submission.
+    if clean_key:
+        existing = get_job_by_idempotency(
+            db,
+            client_id=client.id,
+            idempotency_key=clean_key,
+        )
+        if existing is not None:
+            try:
+                assert_idempotent_submission(
+                    existing,
+                    kind=kind,
+                    provider=provider,
+                    model=model,
+                    payload=data,
+                )
+            except IdempotencyConflict as exc:
+                raise _idempotency_conflict() from exc
+            return job_dict(runtime, db, existing)
 
     _validate_reference_assets(request, db, client, data, kind)
     has_online_account = getattr(configured_provider, "has_online_account", None)
@@ -119,16 +164,20 @@ def _submit(request: Request, db, client, payload, kind: str):
             retryable=True,
         )
 
-    job = create_job(
-        db,
-        client=client,
-        kind=kind,
-        provider=provider,
-        model=model,
-        workspace_key=CLIENT_WORKSPACE_KEY,
-        payload=data,
-        request_id=request.state.request_id,
-    )
+    try:
+        job = create_job(
+            db,
+            client=client,
+            kind=kind,
+            provider=provider,
+            model=model,
+            workspace_key=CLIENT_WORKSPACE_KEY,
+            payload=data,
+            request_id=request.state.request_id,
+            idempotency_key=clean_key,
+        )
+    except IdempotencyConflict as exc:
+        raise _idempotency_conflict() from exc
     return job_dict(runtime, db, job)
 
 
@@ -200,11 +249,24 @@ def _unified_payload(payload: UnifiedGenerationRequest):
 def create_generation(
     payload: UnifiedGenerationRequest,
     request: Request,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+        min_length=8,
+        max_length=200,
+    ),
     db=Depends(get_db),
     client=Depends(get_client),
 ):
     provider_payload = _unified_payload(payload)
-    return _submit(request, db, client, provider_payload, payload.kind)
+    return _submit(
+        request,
+        db,
+        client,
+        provider_payload,
+        payload.kind,
+        idempotency_key=idempotency_key,
+    )
 
 
 @router.post("/v1/images/generations", status_code=202, response_model=JobOutput)
