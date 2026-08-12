@@ -10,6 +10,7 @@ Shared, developer-facing Google Flow media API through a Chrome MV3 connector. T
 - Google Flow project/media mapping
 - compact 15-digit string media references with direct Google Flow output URLs
 - durable, content-deduplicated reference-upload storage in a local Docker volume
+- durable idempotency for unified application-orchestrator submissions
 - direct Chrome extension WebSocket protocol v7
 - API keys, client concurrency limits, rate-limit headers, structured errors
 
@@ -48,13 +49,13 @@ Application backends should prefer the unified contract:
 - `POST /v1/media`
 - `GET /v1/media/{media_id}`
 
+For `POST /v1/generations`, send one stable `Idempotency-Key` per logical remote submission. A retry of the same normalized request with the same API client and key returns the same durable task; reusing the key for a different submission returns `409 IDEMPOTENCY_KEY_CONFLICT`. Persist the returned `task_id` immediately and poll `/v1/status/{task_id}` while work is queued or running.
+
 Native compatibility generation endpoints remain available:
 
 - `POST /v1/images/generations`
 - `POST /v1/videos/image-to-video`
 - `POST /v1/videos/omni-generations`
-
-Every generation POST is an independent submission and receives a new server-generated `task_id`. `Idempotency-Key` is not part of the public V1 contract. Callers should persist the returned `task_id` and poll `/v1/status/{task_id}` rather than resubmitting while work is queued or running.
 
 Additional operational/client endpoints include `GET /v1/accounts` and `GET /v1/health`.
 
