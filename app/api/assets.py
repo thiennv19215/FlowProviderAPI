@@ -84,7 +84,7 @@ def get_asset(asset_id: str,request: Request,db=Depends(get_db),client=Depends(g
 async def get_asset_content(asset_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
     asset=request.app.state.runtime.assets.get_owned(db,asset_id,client.id)
     if not asset or asset.status!="ready":raise APIError(404,"ASSET_NOT_FOUND","The requested asset is not ready.")
-    signed=request.app.state.runtime.storage.presign_get(asset.storage_key,request.app.state.runtime.settings.asset_url_ttl_seconds)
-    if signed:return RedirectResponse(signed,status_code=307)
+    if asset.external_url:return RedirectResponse(asset.external_url,status_code=307)
+    if not asset.storage_key:raise APIError(404,"ASSET_CONTENT_NOT_FOUND","The requested asset has no available content.")
     data=await request.app.state.runtime.assets.bytes_for_asset(asset)
     return Response(content=data,media_type=asset.mime_type,headers={"Content-Disposition":f'inline; filename="{asset.filename or asset.id}"'})

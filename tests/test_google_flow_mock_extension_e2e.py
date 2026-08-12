@@ -4,6 +4,10 @@ import asyncio
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from sqlalchemy import select
+
+from app.db.models import MediaAsset
+
 from tests.mock_extension import MockExtensionSocket
 
 
@@ -90,9 +94,19 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         assert "INJECT_RECAPTCHA" in mock.state.rpc_types
         assert "SW_FETCH" in mock.state.rpc_types
 
-        content = client.get(f"/v1/assets/{job['outputs'][0]['asset_id']}/content", headers=auth)
-        assert content.status_code == 200
-        assert content.content == b"mock-image-bytes"
+        direct_url = f"{media.base_url}/media/mock-image-1-1"
+        assert job["outputs"][0]["url"] == direct_url
+        content = client.get(
+            f"/v1/assets/{job['outputs'][0]['asset_id']}/content",
+            headers=auth,
+            follow_redirects=False,
+        )
+        assert content.status_code == 307
+        assert content.headers["location"] == direct_url
+        with app.state.runtime.session_factory() as db:
+            asset = db.scalar(select(MediaAsset).where(MediaAsset.id == job["outputs"][0]["asset_id"]))
+            assert asset.external_url == direct_url
+            assert asset.storage_key is None
 
         referenced = client.post(
             "/v1/images/generations",

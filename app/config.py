@@ -26,14 +26,7 @@ class Settings(BaseSettings):
     max_consecutive_poll_errors:int=Field(default=12,ge=1,le=100)
     max_provider_operation_seconds:int=Field(default=3600,ge=60,le=24*3600)
 
-    storage_backend:Literal["local","r2"]="local"
     local_storage_path:Path=Path(".data/assets")
-    r2_endpoint_url:str|None=None
-    r2_access_key_id:str|None=None
-    r2_secret_access_key:str|None=None
-    r2_bucket:str|None=None
-    r2_region:str="auto"
-    asset_url_ttl_seconds:int=Field(default=1800,ge=60,le=86400)
     max_upload_bytes:int=Field(default=50*1024*1024,ge=1024,le=2*1024*1024*1024)
     max_reference_bytes:int=Field(default=25*1024*1024,ge=1024,le=512*1024*1024)
     max_reference_in_memory_bytes:int=Field(default=25*1024*1024,ge=1024,le=64*1024*1024)
@@ -54,14 +47,9 @@ class Settings(BaseSettings):
             raise ValueError("Reference asset limit cannot exceed upload limit")
         if self.max_reference_in_memory_bytes>self.max_reference_bytes:
             raise ValueError("In-memory reference limit cannot exceed reference asset limit")
-        if self.storage_backend=="r2":
-            required=[self.r2_endpoint_url,self.r2_access_key_id,self.r2_secret_access_key,self.r2_bucket]
-            if not all(required):raise ValueError("R2 storage requires endpoint, access key, secret key, and bucket")
         if self.env=="production":
             if not self.database_url.startswith("postgresql"):
                 raise ValueError("Production requires PostgreSQL")
-            if self.storage_backend!="r2":
-                raise ValueError("Production requires R2 storage")
             if self.bootstrap_api_key and (self.bootstrap_api_key.startswith("fpa_dev_") or "change_me" in self.bootstrap_api_key.lower()):
                 raise ValueError("Disable bootstrap seeding or configure a non-development API key")
             if not self.extension_gateway_token or len(self.extension_gateway_token)<32:

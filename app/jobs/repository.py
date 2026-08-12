@@ -68,7 +68,7 @@ def claim_next(db, *, worker_id: str, lease_seconds: int):
 
 def due_poll(db, *, worker_id: str, lease_seconds: int):
     now=utcnow()
-    query=(select(GenerationJob).where(GenerationJob.status=="running",GenerationJob.stage=="provider_running",GenerationJob.next_run_at<=now,or_(GenerationJob.lease_expires_at.is_(None),GenerationJob.lease_expires_at<=now)).order_by(GenerationJob.next_run_at.asc()).with_for_update(skip_locked=True).limit(1))
+    query=(select(GenerationJob).where(GenerationJob.status=="running",GenerationJob.stage.in_(["provider_running","storing_outputs"]),GenerationJob.next_run_at<=now,or_(GenerationJob.lease_expires_at.is_(None),GenerationJob.lease_expires_at<=now)).order_by(GenerationJob.next_run_at.asc()).with_for_update(skip_locked=True).limit(1))
     job=db.scalar(query)
     if job:
         job.lease_owner=worker_id;job.lease_expires_at=now+timedelta(seconds=lease_seconds);db.commit();db.refresh(job)
@@ -79,6 +79,8 @@ def recover_expired(db):
     now=utcnow(); rows=list(db.scalars(select(GenerationJob).where(GenerationJob.status=="running",GenerationJob.lease_expires_at.is_not(None),GenerationJob.lease_expires_at<now)))
     for job in rows:
         if job.stage=="provider_running":
+            job.lease_owner=None;job.lease_expires_at=None;job.next_run_at=now
+        elif job.stage=="storing_outputs" and isinstance((job.result_payload or {}).get("_provider_outputs"),list):
             job.lease_owner=None;job.lease_expires_at=None;job.next_run_at=now
         elif job.stage in {"preparing"}:
             job.status="queued";job.stage="queued";job.lease_owner=None;job.lease_expires_at=None;job.next_run_at=now

@@ -15,4 +15,6 @@ The API returns HTTP `202` with a `task_id`. Poll it:
 curl -H 'Authorization: Bearer fpa_dev_change_me' http://localhost:8000/v1/jobs/job_xxx
 ```
 
-When `status` becomes `succeeded`, `outputs` contains `asset_id`, media `type`, and `url`.
+When `status` becomes `succeeded`, `outputs` contains `asset_id`, media `type`, and the direct Google Flow `url`. `asset_id` can be reused in later reference-based generation calls; the calling backend can use `url` immediately without another FlowProvider download endpoint.
+
+FlowProvider does not copy generated output bytes into its storage. Direct Provider URLs may expire or be revoked, so download successful outputs promptly if your application needs durable media.

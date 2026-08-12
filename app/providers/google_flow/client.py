@@ -264,7 +264,10 @@ class FlowBridge:
 
     async def resolve_media_url(self,connection_id:str,media_id:str)->str|None:
         url=f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}";response=await self.send_rpc(connection_id,"SW_FETCH",{"spec":{"url":url,"method":"GET","headers":{},"responseType":"none","timeoutMs":30000}},timeout=35);inner=response.get("data") if isinstance(response,dict) else None
-        return inner.get("finalUrl") if isinstance(inner,dict) and isinstance(inner.get("finalUrl"),str) else None
+        if not isinstance(inner,dict) or inner.get("ok") is False:return None
+        status=inner.get("status")
+        if isinstance(status,int) and status>=400:return None
+        return inner.get("finalUrl") if isinstance(inner.get("finalUrl"),str) else None
 
     def mark_provider_failure(self,connection_id:str,error:str,*,status_code:int|None=None)->None:
         conn=self.get(connection_id)

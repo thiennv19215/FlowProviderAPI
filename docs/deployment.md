@@ -19,13 +19,12 @@ API clients / Chrome extension
      +------+------+ 
      |             |
  cloudflared      API
-                   |
-              PostgreSQL
-                   |
-             Cloudflare R2
+                  / \
+        PostgreSQL   local assets volume
+                     (reference uploads)
 ```
 
-The production Compose file publishes no API or PostgreSQL host ports. `cloudflared` reaches the API by Docker DNS at `http://api:8000`.
+The production Compose file publishes no API or PostgreSQL host ports. `cloudflared` reaches the API by Docker DNS at `http://api:8000`. Generated Flow image and video bytes are not stored on the VPS: successful tasks expose the direct Provider URL. The local assets volume only persists user-supplied reference uploads and fallback media that has no Provider URL.
 
 ## 1. VPS prerequisites
 
@@ -70,24 +69,23 @@ Set `FLOW_PROVIDER_PUBLIC_BASE_URL` to the final HTTPS hostname, for example:
 FLOW_PROVIDER_PUBLIC_BASE_URL=https://provider.example.com
 ```
 
-Production startup intentionally fails unless PostgreSQL, R2, HTTPS, and a gateway token of at least 32 characters are configured.
+Production startup intentionally fails unless PostgreSQL, HTTPS, durable reference-upload storage, and a gateway token of at least 32 characters are configured.
 
 ### Bootstrap API key
 
 `FLOW_PROVIDER_BOOTSTRAP_API_KEY` creates an admin API client if that key does not already exist. Keep the generated key in a password manager. After the client has been persisted in PostgreSQL, the environment value may be cleared on later deployments; the database client remains.
 
-## 3. Configure Cloudflare R2
+## 3. Configure reference-upload storage
 
-Create a private R2 bucket for Provider assets and an R2 API credential with only the permissions needed for that bucket. Fill in:
+The default production configuration keeps user-supplied reference uploads in the Docker named volume mounted at `/app/.data/assets`:
 
 ```env
-FLOW_PROVIDER_STORAGE_BACKEND=r2
-FLOW_PROVIDER_R2_ENDPOINT_URL=https://<ACCOUNT_ID>.r2.cloudflarestorage.com
-FLOW_PROVIDER_R2_ACCESS_KEY_ID=...
-FLOW_PROVIDER_R2_SECRET_ACCESS_KEY=...
-FLOW_PROVIDER_R2_BUCKET=flowprovider-production
-FLOW_PROVIDER_R2_REGION=auto
+FLOW_PROVIDER_LOCAL_STORAGE_PATH=/app/.data/assets
 ```
+
+Generated Google Flow outputs are not copied into this volume. Their compact `asset_id`, internal Flow media mapping, and direct output URL are registered in PostgreSQL. The direct URL can be returned immediately to the calling backend.
+
+Direct Flow output URLs remain upstream-owned and may expire or be revoked. An integrating backend that requires permanent output media should download each successful result promptly into its own storage.
 
 Do not commit `.env.production`. The repository ignores production env files and local backup dumps.
 

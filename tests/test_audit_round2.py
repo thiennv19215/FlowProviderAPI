@@ -68,7 +68,7 @@ class RecordingStorage:
 
 
 def _service(storage):
-    settings=SimpleNamespace(env="test",max_upload_bytes=1024,max_reference_bytes=1024,asset_url_ttl_seconds=60,public_base_url="http://test")
+    settings=SimpleNamespace(env="test",max_upload_bytes=1024,max_reference_bytes=1024,public_base_url="http://test")
     return AssetService(storage,settings)
 
 

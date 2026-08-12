@@ -26,6 +26,8 @@ services:
       - .env.production
     environment:
       FLOW_PROVIDER_DATABASE_URL: postgresql+psycopg://flowprovider:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}@postgres:5432/flowprovider
+    volumes:
+      - flowprovider_assets:/app/.data/assets
     depends_on:
       postgres:
         condition: service_healthy
@@ -34,7 +36,7 @@ services:
         - CMD-SHELL
         - >-
           python -c "import urllib.request;
-          urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3).read()"
+          urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=3).read()"
       interval: 10s
       timeout: 5s
       retries: 12
@@ -57,3 +59,4 @@ services:
 
 volumes:
   flowprovider_pg:
+  flowprovider_assets:

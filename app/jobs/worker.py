@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.db.models import GenerationJob, MediaAsset, utcnow
 from app.jobs import repository
-from app.providers.base import ProviderDispatch, ProviderError
+from app.providers.base import ProviderDispatch, ProviderError, ProviderMedia
 
 logger=logging.getLogger(__name__)
 
@@ -50,6 +50,8 @@ class JobWorker:
         if job.cancel_requested:return self._finish_cancel(db,job)
         provider=self.runtime.providers.get(job.provider);job_id=job.id
         try:
+            if job.stage=="storing_outputs":
+                await self._resume_outputs(db,job);return
             if job.stage=="provider_running":
                 await self._poll(db,job,provider);return
             account_id=None
@@ -63,7 +65,9 @@ class JobWorker:
             job.stage="provider_running";job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit()
         except Exception as exc:
             db.rollback();fresh=db.get(GenerationJob,job_id)
-            if fresh:await self._handle_error(db,fresh,exc)
+            if fresh and fresh.stage=="storing_outputs" and isinstance((fresh.result_payload or {}).get("_provider_outputs"),list):
+                await self._retry_output_registration(db,fresh,exc)
+            elif fresh:await self._handle_error(db,fresh,exc)
             else:raise
 
     @staticmethod
@@ -151,16 +155,51 @@ class JobWorker:
             fresh.stage="provider_running";self._set_error(fresh,exc,fallback_code="PROVIDER_POLL_ERROR",retryable=True)
             fresh.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);fresh.lease_owner=None;fresh.lease_expires_at=None;db.commit()
 
+    @staticmethod
+    def _serializable_outputs(outputs)->list[dict]|None:
+        items=list(outputs)
+        if not items or any(not media.url for media in items):return None
+        return [{"media_id":media.media_id,"url":media.url,"mime_type":media.mime_type,"width":media.width,"height":media.height,"duration":media.duration} for media in items]
+
+    async def _resume_outputs(self,db,job):
+        raw=(job.result_payload or {}).get("_provider_outputs")
+        if not isinstance(raw,list) or not raw:raise RuntimeError("provider_outputs_not_recoverable")
+        outputs=[ProviderMedia(**item) for item in raw if isinstance(item,dict)]
+        if len(outputs)!=len(raw):raise RuntimeError("provider_outputs_not_recoverable")
+        await self._store_outputs(db,job,outputs,"image" if job.kind=="image" else "video")
+
+    async def _retry_output_registration(self,db,job,exc):
+        payload=dict(job.result_payload or {})
+        failures=max(0,int(payload.get("_output_error_count",0) or 0))+1
+        payload["_output_error_count"]=failures
+        job.result_payload=payload
+        if failures>=self.runtime.settings.max_consecutive_poll_errors:
+            self._set_error(job,exc,fallback_code="OUTPUT_REGISTRATION_RETRIES_EXHAUSTED")
+            job.status="failed";job.stage="completed";job.completed_at=utcnow()
+        else:
+            job.status="running";job.stage="storing_outputs"
+            self._set_error(job,exc,fallback_code="OUTPUT_REGISTRATION_ERROR",retryable=True)
+            job.next_run_at=utcnow()+timedelta(seconds=min(30,2**failures))
+        job.lease_owner=None;job.lease_expires_at=None;db.commit()
+
     async def _store_outputs(self,db,job,outputs,asset_type):
-        job.stage="storing_outputs";db.commit()
-        payload=dict(job.result_payload or {});payload.pop("_poll_error_count",None)
+        outputs=list(outputs)
+        payload=dict(job.result_payload or {});payload.pop("_poll_error_count",None);payload.pop("_output_error_count",None)
+        raw_persisted=payload.get("_provider_outputs")
+        if isinstance(raw_persisted,list) and raw_persisted and all(isinstance(item,dict) for item in raw_persisted):
+            outputs=[ProviderMedia(**item) for item in raw_persisted]
+        if "_provider_outputs" not in payload:
+            if serialized:=self._serializable_outputs(outputs):payload["_provider_outputs"]=serialized
+        job.stage="storing_outputs";job.result_payload=payload or None;db.commit()
         asset_ids=list(payload.get("asset_ids") or [])
-        existing=list(db.scalars(select(MediaAsset).where(MediaAsset.client_id==job.client_id,MediaAsset.source_job_id==job.id).order_by(MediaAsset.created_at.asc())))
-        if not asset_ids and existing:asset_ids=[a.id for a in existing]
+        existing=list(db.scalars(select(MediaAsset).where(MediaAsset.client_id==job.client_id,MediaAsset.source_job_id==job.id).order_by(MediaAsset.created_at.asc(),MediaAsset.id.asc())))
+        if len(existing)>len(outputs):raise RuntimeError("provider_output_registration_inconsistent")
+        if existing:asset_ids=[a.id for a in existing]
         start_index=len(asset_ids)
-        for media in list(outputs)[start_index:]:
+        for media in outputs[start_index:]:
             asset=await self.runtime.assets.ingest_provider_media(db,client_id=job.client_id,job_id=job.id,provider=job.provider,media=media,asset_type=asset_type,provider_project_id=job.provider_project_id)
-            asset_ids=[*asset_ids,asset.id];job.result_payload={"asset_ids":list(asset_ids)};db.commit()
+            asset_ids=[*asset_ids,asset.id]
+            progress=dict(job.result_payload or {});progress["asset_ids"]=list(asset_ids);job.result_payload=progress;db.commit()
         if not asset_ids:raise RuntimeError("provider_returned_no_outputs")
         job.status="succeeded";job.stage="completed";job.result_payload={"asset_ids":list(asset_ids)};job.completed_at=utcnow();job.error_code=None;job.error_message=None;job.lease_owner=None;job.lease_expires_at=None;db.commit()
 

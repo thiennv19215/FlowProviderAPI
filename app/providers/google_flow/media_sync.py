@@ -41,10 +41,14 @@ class MediaSync:
             if asset.size_bytes is not None and asset.size_bytes>memory_limit:
                 db.rollback();raise ValueError(f"asset_too_large_for_flow_upload:{asset_id}")
             db.commit()
-            meta=await self.assets.storage.stat(asset.storage_key)
-            stored_size=meta.get("size_bytes") if isinstance(meta,dict) else None
-            if isinstance(stored_size,int) and stored_size>memory_limit:raise ValueError(f"asset_too_large_for_flow_upload:{asset_id}")
-            data=await self.assets.bytes_for_asset(asset)
+            if asset.storage_key:
+                meta=await self.assets.storage.stat(asset.storage_key)
+                stored_size=meta.get("size_bytes") if isinstance(meta,dict) else None
+                if isinstance(stored_size,int) and stored_size>memory_limit:raise ValueError(f"asset_too_large_for_flow_upload:{asset_id}")
+            try:data=await self.assets.bytes_for_asset(asset,max_bytes=memory_limit)
+            except ValueError as exc:
+                if str(exc)=="external_asset_too_large":raise ValueError(f"asset_too_large_for_flow_upload:{asset_id}") from exc
+                raise
             if len(data)>memory_limit:raise ValueError(f"asset_too_large_for_flow_upload:{asset_id}")
             result=await sdk.upload_image(base64.b64encode(data).decode("ascii"),asset.mime_type,project_id,asset.filename or "reference.png")
             if result.get("error") or not result.get("media_id"):raise result.get("exception") or RuntimeError(result.get("error") or "flow_upload_failed")

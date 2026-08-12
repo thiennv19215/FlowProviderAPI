@@ -8,7 +8,8 @@ Shared, developer-facing Google Flow media API through a Chrome MV3 connector. T
 - durable PostgreSQL generation jobs with leases
 - provider account scheduling/capacity and cooldowns
 - Google Flow project/media mapping
-- Provider-owned assets in local storage or Cloudflare R2
+- compact `asset_*` references with direct Google Flow output URLs
+- durable reference-upload storage in a local Docker volume
 - direct Chrome extension WebSocket protocol v7
 - API keys, client concurrency limits, rate-limit headers, structured errors
 
@@ -31,15 +32,15 @@ For a live Google Flow test, open Google Flow in the same Chrome profile. The ex
 
 ## Production deployment
 
-The production VPS stack is defined in `compose.production.yaml`: PostgreSQL, FlowProviderAPI, and a remotely-managed Cloudflare Tunnel run together without publishing API or database ports on the VPS. Production media storage uses Cloudflare R2.
+The production VPS stack is defined in `compose.production.yaml`: PostgreSQL, FlowProviderAPI, and a remotely-managed Cloudflare Tunnel run together without publishing API or database ports on the VPS. User-supplied reference uploads persist in a local Docker volume. Generated images and videos are returned with their direct Google Flow URLs instead of being copied into backend storage.
 
 ```bash
 cp .env.production.example .env.production
-# fill the required PostgreSQL, Cloudflare Tunnel, R2 and Provider secrets
+# fill the required PostgreSQL, Cloudflare Tunnel and Provider secrets
 bash scripts/deploy-production.sh
 ```
 
-Configure the Tunnel published application to route the Provider hostname to `http://api:8000`. See [`docs/deployment.md`](docs/deployment.md) for the complete VPS, R2, Tunnel, backup, update, and live-acceptance procedure.
+Configure the Tunnel published application to route the Provider hostname to `http://api:8000`. See [`docs/deployment.md`](docs/deployment.md) for the complete VPS, asset storage, Tunnel, backup, update, and live-acceptance procedure.
 
 ## Primary endpoints
 
@@ -59,7 +60,9 @@ Operational probes `/health/live` and `/health/ready`, plus the extension-only `
 
 The current V1 preserves provider account identity across extension reconnects, invalidates stale signed-out accounts, reserves estimated credits from active jobs, uses duration-aware Omni credit costs, distinguishes terminal provider failures from transient polling failures, and bounds consecutive polling failures so jobs cannot remain `running` forever on a persistent provider error.
 
-Provider output downloads are host-allowlisted, size-bounded, and streamed through temporary files into local/R2 storage instead of buffering whole videos in process memory. Presigned upload completion validates declared size/content type and deletes rejected objects. Google Flow reference uploads have a separate in-memory hard limit before base64 encoding. Readiness checks both the database and configured storage backend.
+Provider output URLs are host-allowlisted before they enter the public task result. The API preserves a compact `asset_id` and project-local Flow media mapping so a generated image can be reused as a reference without uploading it again. User-supplied upload completion validates declared size and content type; Google Flow reference uploads have a separate in-memory hard limit before base64 encoding. Readiness checks both the database and configured reference-upload storage backend.
+
+Direct Flow URLs are controlled by the upstream provider and may expire or be revoked. A calling backend that needs a durable result should download it promptly and store its own copy.
 
 `POST /v1/jobs/{id}/cancel` is currently cooperative at the Provider job layer. The current Google Flow integration does not contain a verified upstream cancel-generation primitive, so the service deliberately does not invent or call an unverified Google endpoint.
 
@@ -72,7 +75,7 @@ The tests therefore execute the real backend stack below the browser boundary:
 ```text
 REST API -> GenerationJob -> Worker -> Global Scheduler
          -> GoogleFlowProvider -> FlowSDK -> FlowBridge
-         -> Mock Extension RPC -> Provider output -> Asset storage
+         -> Mock Extension RPC -> direct Provider output URL
 ```
 
 Run the complete suite with:

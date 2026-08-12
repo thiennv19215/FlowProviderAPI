@@ -77,7 +77,18 @@ def test_freemium_sku_uses_tier_one_when_google_omits_legacy_tier():
 
 def test_production_configuration_rejects_dev_shape():
     with pytest.raises(ValueError):
-        Settings(env="production",database_url="sqlite:///bad.db",storage_backend="local",public_base_url="http://localhost:8000",flow_api_key=None)
+        Settings(env="production",database_url="sqlite:///bad.db",public_base_url="http://localhost:8000",flow_api_key=None)
+
+
+def test_production_configuration_accepts_local_input_storage():
+    settings=Settings(
+        env="production",
+        database_url="postgresql+psycopg://flowprovider:secret@postgres/flowprovider",
+        public_base_url="https://api.example.com",
+        bootstrap_api_key=None,
+        extension_gateway_token="g"*32,
+    )
+    assert settings.local_storage_path
 
 
 def test_extension_heartbeat_defaults_to_one_minute():

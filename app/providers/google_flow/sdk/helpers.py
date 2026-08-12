@@ -58,10 +58,10 @@ def media_entries(resp: Any) -> list[dict]:
     out=[]
     for item in items or []:
         if not isinstance(item,dict) or not isinstance(item.get("name"),str): continue
-        url=item.get("thumbnailUrl") or item.get("downloadUrl")
+        url=item.get("downloadUrl")
         image=item.get("image") if isinstance(item.get("image"),dict) else {}
         generated=image.get("generatedImage") if isinstance(image.get("generatedImage"),dict) else {}
-        url=url or generated.get("fifeUrl") or generated.get("url")
+        url=url or generated.get("fifeUrl") or generated.get("url") or item.get("thumbnailUrl")
         out.append({"media_id":item["name"],"url":url,"mediaType":item.get("mediaFormat") or "image"})
     return out
 

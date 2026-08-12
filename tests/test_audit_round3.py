@@ -69,7 +69,7 @@ class NoCommitDB:
     def refresh(self,obj):raise AssertionError("refresh should not happen")
 
 
-def test_presigned_upload_size_mismatch_deletes_object():
+def test_pending_upload_size_mismatch_deletes_object():
     storage=PendingStorage({"size_bytes":6,"content_type":"image/png"})
     settings=SimpleNamespace(max_upload_bytes=100)
     service=AssetService(storage,settings)
@@ -79,7 +79,7 @@ def test_presigned_upload_size_mismatch_deletes_object():
     assert storage.deleted==[asset.storage_key]
 
 
-def test_rejected_presigned_content_type_deletes_object():
+def test_rejected_pending_content_type_deletes_object():
     storage=PendingStorage({"size_bytes":5,"content_type":"video/mp4"})
     settings=SimpleNamespace(max_upload_bytes=100)
     service=AssetService(storage,settings)

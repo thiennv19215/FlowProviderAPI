@@ -21,7 +21,7 @@ async def ready(request:Request):
     except Exception:db_ok=False
     storage_ok=await runtime.storage.healthcheck()
     is_ready=db_ok and storage_ok
-    payload={"status":"ready" if is_ready else "not_ready","database":db_ok,"storage":storage_ok,"provider_accounts":len(runtime.bridge.ready_connections()),"storage_backend":runtime.settings.storage_backend}
+    payload={"status":"ready" if is_ready else "not_ready","database":db_ok,"storage":storage_ok,"provider_accounts":len(runtime.bridge.ready_connections())}
     return payload if is_ready else JSONResponse(status_code=503,content=payload)
 
 @router.get("/api/health",include_in_schema=False)
