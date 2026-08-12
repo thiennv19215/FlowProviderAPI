@@ -32,59 +32,59 @@ def _register(app):
     return ws,conn
 
 
-def test_extension_registry_pause_resume_and_api(client,app,auth):
+def test_extension_registry_pause_resume_and_api(client,app,auth,admin_auth):
     _ws,conn=_register(app)
-    listed=client.get("/v1/extensions",headers=auth)
+    listed=client.get("/v1/extensions",headers=admin_auth)
     assert listed.status_code==200
     assert listed.json()["data"][0]["installation_id"]=="install_manage_1"
     assert listed.json()["data"][0]["connected"] is True
 
-    paused=client.post("/v1/extensions/install_manage_1/pause",headers=auth)
+    paused=client.post("/v1/extensions/install_manage_1/pause",headers=admin_auth)
     assert paused.status_code==200
     assert paused.json()["paused"] is True
     assert conn not in app.state.runtime.bridge.ready_connections()
 
-    resumed=client.post("/v1/extensions/install_manage_1/resume",headers=auth)
+    resumed=client.post("/v1/extensions/install_manage_1/resume",headers=admin_auth)
     assert resumed.status_code==200
     assert resumed.json()["paused"] is False
     assert conn in app.state.runtime.bridge.ready_connections()
 
 
-def test_extension_control_rpc_and_offline_history(client,app,auth):
+def test_extension_control_rpc_and_offline_history(client,app,auth,admin_auth):
     ws,conn=_register(app)
 
-    ping=client.post("/v1/extensions/install_manage_1/ping",headers=auth)
+    ping=client.post("/v1/extensions/install_manage_1/ping",headers=admin_auth)
     assert ping.status_code==200
     assert ping.json()["extension"]["version"]=="1.0.0-test"
 
-    refreshed=client.post("/v1/extensions/install_manage_1/refresh-auth",headers=auth)
+    refreshed=client.post("/v1/extensions/install_manage_1/refresh-auth",headers=admin_auth)
     assert refreshed.status_code==200
     assert conn.credits==777
     assert conn.sku=="MOCK_PRO"
 
-    opened=client.post("/v1/extensions/install_manage_1/open-flow",headers=auth)
+    opened=client.post("/v1/extensions/install_manage_1/open-flow",headers=admin_auth)
     assert opened.status_code==200
     assert opened.json()["tab"]["tabId"]==42
 
-    diagnostics=client.get("/v1/extensions/install_manage_1/diagnostics",headers=auth)
+    diagnostics=client.get("/v1/extensions/install_manage_1/diagnostics",headers=admin_auth)
     assert diagnostics.status_code==200
     assert diagnostics.json()["extension"]["connected"] is True
     assert diagnostics.json()["pending_rpc"]==0
 
-    reconnect=client.post("/v1/extensions/install_manage_1/reconnect",headers=auth)
+    reconnect=client.post("/v1/extensions/install_manage_1/reconnect",headers=admin_auth)
     assert reconnect.status_code==200
     assert ws.closed[-1][0]==4001
 
     app.state.runtime.extension_manager.disconnected(conn)
     app.state.runtime.bridge.clear(connection_id=conn.id)
-    offline=client.get("/v1/extensions/install_manage_1",headers=auth)
+    offline=client.get("/v1/extensions/install_manage_1",headers=admin_auth)
     assert offline.status_code==200
     assert offline.json()["connected"] is False
     assert offline.json()["ready"] is False
-    assert client.post("/v1/extensions/install_manage_1/ping",headers=auth).status_code==409
+    assert client.post("/v1/extensions/install_manage_1/ping",headers=admin_auth).status_code==409
 
 
-def test_unknown_extension_returns_structured_404(client,auth):
-    response=client.get("/v1/extensions/does-not-exist",headers=auth)
+def test_unknown_extension_returns_structured_404(client,admin_auth):
+    response=client.get("/v1/extensions/does-not-exist",headers=admin_auth)
     assert response.status_code==404
     assert response.json()["error"]["code"]=="EXTENSION_NOT_FOUND"

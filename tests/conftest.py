@@ -31,6 +31,7 @@ def app(tmp_path: Path):
         env="test",
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         bootstrap_api_key="fpa_test_key",
+        admin_api_key="fpa_test_admin",
         public_base_url="http://testserver",
         worker_enabled=False,
         video_poll_seconds=0,
@@ -50,3 +51,8 @@ def client(app):
 @pytest.fixture
 def auth():
     return {"Authorization": "Bearer fpa_test_key"}
+
+
+@pytest.fixture
+def admin_auth():
+    return {"X-Admin-Key": "fpa_test_admin"}

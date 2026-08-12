@@ -8,6 +8,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.api.errors import APIError
 from app.auth.api_keys import authenticate_api_key
+import hashlib
+import hmac
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -33,7 +35,11 @@ def get_client(request: Request, credentials: HTTPAuthorizationCredentials | Non
     return client
 
 
-def get_admin_client(client=Depends(get_client)):
-    if not client.is_admin:
-        raise APIError(403, "ADMIN_REQUIRED", "This endpoint is restricted to Provider administrators.")
-    return client
+def get_admin_client(request: Request):
+    admin_key=request.app.state.runtime.settings.admin_api_key
+    supplied=request.headers.get("X-Admin-Key") or ""
+    if not admin_key:
+        raise APIError(503,"ADMIN_CONTROL_PLANE_UNCONFIGURED","The provider administration control plane is not configured.",retryable=True)
+    if not supplied or not hmac.compare_digest(hashlib.sha256(supplied.encode()).hexdigest(),hashlib.sha256(admin_key.encode()).hexdigest()):
+        raise APIError(401,"INVALID_ADMIN_KEY","A valid X-Admin-Key is required for provider administration.",headers={"WWW-Authenticate":"Admin-Key"})
+    return True

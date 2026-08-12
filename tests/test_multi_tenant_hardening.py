@@ -35,17 +35,18 @@ def test_regular_client_can_generate_but_cannot_control_provider_pool(client,app
     assert generated.status_code==202
 
     accounts=client.get("/v1/accounts",headers=auth)
-    assert accounts.status_code==403
-    assert accounts.json()["error"]["code"]=="ADMIN_REQUIRED"
+    assert accounts.status_code==401
+    assert accounts.json()["error"]["code"]=="INVALID_ADMIN_KEY"
 
     extensions=client.get("/v1/extensions",headers=auth)
-    assert extensions.status_code==403
-    assert extensions.json()["error"]["code"]=="ADMIN_REQUIRED"
+    assert extensions.status_code==401
+    assert extensions.json()["error"]["code"]=="INVALID_ADMIN_KEY"
 
 
-def test_bootstrap_client_retains_admin_control_plane_access(client,auth):
-    assert client.get("/v1/accounts",headers=auth).status_code==200
-    assert client.get("/v1/extensions",headers=auth).status_code==200
+def test_admin_control_plane_uses_separate_secret(client,auth,admin_auth):
+    assert client.get("/v1/accounts",headers=auth).status_code==401
+    assert client.get("/v1/accounts",headers=admin_auth).status_code==200
+    assert client.get("/v1/extensions",headers=admin_auth).status_code==200
 
 
 def test_job_cursor_is_stable_when_created_at_timestamps_match(client,app,auth):

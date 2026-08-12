@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     env:Literal["development","test","production"]="development"
     database_url:str="sqlite:///./.data/flowprovider.db"
     bootstrap_api_key:str|None="fpa_dev_local"
+    admin_api_key:str|None=None
     public_base_url:str="http://localhost:8000"
     worker_enabled:bool=True
     worker_poll_seconds:float=1.0

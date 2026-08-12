@@ -179,10 +179,10 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         assert mock.state.polls >= 2
 
 
-def test_mock_extension_exposes_ready_account_to_public_accounts_api(client, app, auth):
+def test_mock_extension_exposes_ready_account_to_public_accounts_api(client, app, admin_auth):
     with MediaServer() as media:
         asyncio.run(_connect_mock(app, media.base_url))
-        response = client.get("/v1/accounts", headers=auth)
+        response = client.get("/v1/accounts", headers=admin_auth)
         assert response.status_code == 200
         accounts = response.json()["data"]
         assert len(accounts) == 1

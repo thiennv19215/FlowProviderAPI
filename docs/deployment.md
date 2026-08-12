@@ -57,7 +57,7 @@ printf 'fpa_prod_'; openssl rand -hex 32
 Use them for, respectively:
 
 - `POSTGRES_PASSWORD`
-- `FLOW_PROVIDER_BOOTSTRAP_API_KEY` on the first deployment
+- `FLOW_PROVIDER_BOOTSTRAP_API_KEY` on the first deployment (client bootstrap only)
 
 Do not reuse the same value for multiple credentials.
 
@@ -71,7 +71,7 @@ Production startup intentionally fails unless PostgreSQL, HTTPS, and durable ref
 
 ### Bootstrap API key
 
-`FLOW_PROVIDER_BOOTSTRAP_API_KEY` creates an admin API client if that key does not already exist. Keep the generated key in a password manager. After the client has been persisted in PostgreSQL, the environment value may be cleared on later deployments; the database client remains.
+`FLOW_PROVIDER_BOOTSTRAP_API_KEY` creates a normal API client if that key does not already exist. Keep the generated key in a password manager. After the client has been persisted in PostgreSQL, the environment value may be cleared on later deployments; the database client remains. Provider administration is separate: configure `FLOW_PROVIDER_ADMIN_API_KEY` and send it in the `X-Admin-Key` header for control-plane endpoints.
 
 ## 3. Configure reference-upload storage
 
