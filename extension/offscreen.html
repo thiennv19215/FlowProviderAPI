@@ -1,5 +1,12 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8"><title>Flow Provider Offscreen</title></head>
-  <body><script src="offscreen.js"></script></body>
+  <head>
+    <meta charset="utf-8">
+    <title>Flow Provider Offscreen</title>
+    <style>html,body,iframe{width:1px;height:1px;margin:0;border:0;overflow:hidden}</style>
+  </head>
+  <body>
+    <iframe id="flow-frame" src="https://labs.google/fx/vi/tools/flow" aria-hidden="true"></iframe>
+    <script src="offscreen.js"></script>
+  </body>
 </html>
