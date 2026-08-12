@@ -56,6 +56,8 @@ class JobWorker:
                 await self._poll(db,job,provider);return
             account_id=None
             if provider.requires_account_pool:
+                if job.kind in {"video","omni"} and hasattr(provider,"refresh_video_capacity"):
+                    await provider.refresh_video_capacity()
                 account_id=self.runtime.scheduler.reserve_account(db,job)
             if job.kind=="image":
                 outputs=await provider.generate_image(job=job,db=db,account_id=account_id)

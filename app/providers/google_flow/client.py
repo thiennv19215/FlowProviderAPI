@@ -181,6 +181,9 @@ class FlowBridge:
     async def refresh_account(self,connection_id:str)->None:
         conn=self.get(connection_id)
         if not conn or not conn.flow_key:return
+        # Never let a stale balance route a new paid video to this account
+        # while the current credits request is in flight or unavailable.
+        conn.credits=None
         api_key=conn.flow_api_key or self.flow_api_key
         if not api_key:
             conn.last_error="flow_api_key_unavailable";await self._send_auth_ack(conn);return

@@ -1,3 +1,7 @@
+import pytest
+import time
+
+from app.providers.base import ProviderError
 from app.providers.google_flow.client import FlowBridge
 from app.jobs.scheduler import GlobalScheduler
 from app.db.models import utcnow
@@ -35,6 +39,15 @@ def test_scheduler_prefers_less_loaded_ready_account(app):
     scheduler=GlobalScheduler(bridge)
     with app.state.runtime.session_factory() as db:
         assert scheduler.choose_account(db,kind="video") == b.id
+
+
+def test_zero_credit_account_can_create_images_but_never_receives_video(app):
+    bridge,a,b=_ready_accounts();a.credits=0;b.cooldown_until=time.time()+60
+    scheduler=GlobalScheduler(bridge)
+    with app.state.runtime.session_factory() as db:
+        assert scheduler.choose_account(db,kind="image") == a.id
+        with pytest.raises(ProviderError,match="No ready Google Flow account"):
+            scheduler.choose_account(db,kind="video")
 
 
 def test_scheduler_prefers_existing_workspace_project(app):
