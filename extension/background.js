@@ -161,13 +161,34 @@ async function waitForTab(tabId, timeoutMs = 15000) {
   throw new Error("flow_tab_timeout");
 }
 
-async function openFlowHome() {
+let openFlowHomeInFlight = null;
+
+async function findOrOpenFlowHome() {
   const tabs = await chrome.tabs.query({ url: ["https://labs.google/fx/*tools/flow*", "https://flow.google/*"] });
-  const existing = tabs.find((t) => t.id && !String(t.url || "").includes("/project/"));
-  if (existing?.id) { await waitForTab(existing.id); return { tabId: existing.id, isNew: false }; }
+  const existing = tabs
+    .filter((tab) => tab.id)
+    .sort((left, right) => Number(right.status === "complete") - Number(left.status === "complete")
+      || Number(right.active) - Number(left.active)
+      || Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
+  if (existing?.id) {
+    await waitForTab(existing.id);
+    return { tabId: existing.id, isNew: false };
+  }
+
   const tab = await chrome.tabs.create({ url: FLOW_HOME_URL, active: false });
   await waitForTab(tab.id);
   return { tabId: tab.id, isNew: true };
+}
+
+async function openFlowHome() {
+  if (openFlowHomeInFlight) return await openFlowHomeInFlight;
+  const pending = findOrOpenFlowHome();
+  openFlowHomeInFlight = pending;
+  try {
+    return await pending;
+  } finally {
+    if (openFlowHomeInFlight === pending) openFlowHomeInFlight = null;
+  }
 }
 
 async function inject(tabId, operation, payload = {}) {

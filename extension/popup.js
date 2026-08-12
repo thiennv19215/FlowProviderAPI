@@ -1,6 +1,23 @@
-const statusEl=document.querySelector('#status'),serverEl=document.querySelector('#server'),accountEl=document.querySelector('#account'),errorEl=document.querySelector('#error');
-const send=(message)=>chrome.runtime.sendMessage(message);
-async function refresh(){const s=await send({type:'FLOW_PROVIDER_GET_STATE'});serverEl.value=s.serverUrl||'';statusEl.textContent=s.connected?'Connected':'Disconnected';accountEl.textContent=s.account?.email?`${s.account.email}${Number.isFinite(s.account.credits)?` · ${s.account.credits} credits`:''}`:'Open Google Flow and sign in.';}
-document.querySelector('#save').onclick=async()=>{errorEl.textContent='';const r=await send({type:'FLOW_PROVIDER_SET_SERVER',serverUrl:serverEl.value});if(!r.ok)errorEl.textContent=r.error||'Cannot save server';setTimeout(refresh,300)};
-document.querySelector('#flow').onclick=()=>send({type:'FLOW_PROVIDER_OPEN_FLOW'});
-refresh();
+const statusEl = document.querySelector("#status");
+const accountEl = document.querySelector("#account");
+const errorEl = document.querySelector("#error");
+const send = (message) => chrome.runtime.sendMessage(message);
+
+async function refresh() {
+  const state = await send({ type: "FLOW_PROVIDER_GET_STATE" });
+  statusEl.textContent = state.connected ? "Connected" : "Disconnected";
+  statusEl.classList.toggle("connected", Boolean(state.connected));
+  accountEl.textContent = state.account?.email
+    ? `${state.account.email}${Number.isFinite(state.account.credits) ? ` · ${state.account.credits} credits` : ""}`
+    : "Open Google Flow and sign in.";
+}
+
+document.querySelector("#flow").onclick = async () => {
+  errorEl.textContent = "";
+  const result = await send({ type: "FLOW_PROVIDER_OPEN_FLOW" });
+  if (!result?.ok) errorEl.textContent = result?.error || "Cannot open Google Flow";
+};
+
+refresh().catch(() => {
+  statusEl.textContent = "Disconnected";
+});

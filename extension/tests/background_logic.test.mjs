@@ -113,6 +113,16 @@ test('extension source and popup expose no gateway-token configuration', () => {
   assert.equal(popupJs.includes('gatewayToken'), false);
 });
 
+test('popup hides provider endpoint configuration', () => {
+  const popupHtml = fs.readFileSync(new URL('../popup.html', import.meta.url), 'utf8');
+  const popupJs = fs.readFileSync(new URL('../popup.js', import.meta.url), 'utf8');
+  assert.equal(popupHtml.includes('Provider server'), false);
+  assert.equal(popupHtml.includes('id="server"'), false);
+  assert.equal(popupHtml.includes('id="save"'), false);
+  assert.equal(popupJs.includes('FLOW_PROVIDER_SET_SERVER'), false);
+  assert.equal(popupJs.includes('serverUrl'), false);
+});
+
 test('configured production default replaces the previous public default once', async () => {
   const h = buildHarness({
     'flow-provider-server-url-v1': 'https://ext.shopcongngheso5.io.vn',
@@ -162,6 +172,56 @@ test('legacy unused RPC handlers are removed', () => {
   assert.equal(source.includes('RELOAD_TAB'), false);
   assert.equal(source.includes('DOWNLOAD_FILE'), false);
   assert.equal(source.includes('ensureOffscreen'), false);
+});
+
+test('openFlowHome reuses an existing project tab instead of opening another tab', async () => {
+  const h = buildHarness();
+  await flush();
+  let createCalls = 0;
+  h.context.chrome.tabs.query = async () => [{
+    id: 42,
+    url: 'https://labs.google/fx/vi/tools/flow/project/example',
+    status: 'complete',
+    active: true,
+  }];
+  h.context.chrome.tabs.get = async (tabId) => ({
+    id: tabId,
+    url: 'https://labs.google/fx/vi/tools/flow/project/example',
+    status: 'complete',
+  });
+  h.context.chrome.tabs.create = async () => {
+    createCalls += 1;
+    return { id: 99 };
+  };
+
+  const result = await vm.runInContext('openFlowHome()', h.context);
+  assert.equal(result.tabId, 42);
+  assert.equal(result.isNew, false);
+  assert.equal(createCalls, 0);
+});
+
+test('concurrent openFlowHome calls create at most one Flow tab', async () => {
+  const h = buildHarness();
+  await flush();
+  let createCalls = 0;
+  h.context.chrome.tabs.query = async () => [];
+  h.context.chrome.tabs.create = async () => {
+    createCalls += 1;
+    return { id: 77 };
+  };
+  h.context.chrome.tabs.get = async (tabId) => ({
+    id: tabId,
+    url: 'https://labs.google/fx/vi/tools/flow',
+    status: 'complete',
+  });
+
+  const results = await Promise.all([
+    vm.runInContext('openFlowHome()', h.context),
+    vm.runInContext('openFlowHome()', h.context),
+    vm.runInContext('openFlowHome()', h.context),
+  ]);
+  assert.equal(createCalls, 1);
+  assert.deepEqual(results.map((result) => result.tabId), [77, 77, 77]);
 });
 
 test('concurrent auth synchronization shares one labs session request', async () => {
