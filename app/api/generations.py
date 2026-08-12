@@ -5,44 +5,107 @@ from sqlalchemy import select
 
 from app.api.deps import get_client, get_db
 from app.api.errors import APIError
-from app.api.schemas import ImageGenerationRequest, ImageToVideoRequest, JobOutput, OmniVideoGenerationRequest
+from app.api.schemas import (
+    ImageGenerationRequest,
+    ImageToVideoRequest,
+    JobOutput,
+    OmniVideoGenerationRequest,
+    UnifiedGenerationRequest,
+)
 from app.api.serializers import job_dict
 from app.db.models import MediaAsset
 from app.jobs.repository import create_job
 
-router=APIRouter(tags=["Generations"])
-CLIENT_WORKSPACE_KEY="__api_client__"
+router = APIRouter(tags=["Generations"])
+CLIENT_WORKSPACE_KEY = "__api_client__"
+
+_IMAGE_MODELS = {
+    "NANO_BANANA_PRO": "banana_pro",
+    "banana_pro": "banana_pro",
+    "NANO_BANANA_2": "banana_2",
+    "banana_2": "banana_2",
+}
+_ASPECT_RATIOS = {
+    "IMAGE_ASPECT_RATIO_LANDSCAPE": "16:9",
+    "IMAGE_ASPECT_RATIO_PORTRAIT": "9:16",
+    "IMAGE_ASPECT_RATIO_SQUARE": "1:1",
+    "VIDEO_ASPECT_RATIO_LANDSCAPE": "16:9",
+    "VIDEO_ASPECT_RATIO_PORTRAIT": "9:16",
+    "16:9": "16:9",
+    "9:16": "9:16",
+    "1:1": "1:1",
+}
+_VIDEO_QUALITIES = {
+    "720p": "lite",
+    "1080p": "quality",
+    "lite": "lite",
+    "fast": "fast",
+    "quality": "quality",
+    "lite_relaxed": "lite_relaxed",
+    "fast_relaxed": "fast_relaxed",
+}
+_OMNI_DURATIONS = {2, 4, 8, 10}
 
 
-def _reference_media_ids(data:dict,kind:str)->list[str]:
-    if kind=="video":return [str(data["start_media_id"])]
+def _reference_media_ids(data: dict, kind: str) -> list[str]:
+    if kind == "video":
+        return [str(data["start_media_id"])]
     return [str(media_id) for media_id in data.get("reference_media_ids") or []]
 
 
-def _validate_reference_assets(request:Request,db,client,data:dict,kind:str)->None:
-    ids=_reference_media_ids(data,kind)
-    if not ids:return
-    rows=list(db.scalars(select(MediaAsset).where(MediaAsset.id.in_(ids),MediaAsset.client_id==client.id)))
-    by_id={row.id:row for row in rows};limit=request.app.state.runtime.settings.max_reference_bytes
+def _validate_reference_assets(request: Request, db, client, data: dict, kind: str) -> None:
+    ids = _reference_media_ids(data, kind)
+    if not ids:
+        return
+    rows = list(
+        db.scalars(
+            select(MediaAsset).where(
+                MediaAsset.id.in_(ids),
+                MediaAsset.client_id == client.id,
+            )
+        )
+    )
+    by_id = {row.id: row for row in rows}
+    limit = request.app.state.runtime.settings.max_reference_bytes
     for asset_id in ids:
-        asset=by_id.get(asset_id)
-        if not asset or asset.status!="ready":
-            raise APIError(422,"INVALID_MEDIA_REFERENCE",f"Reference media '{asset_id}' is missing or not ready.",field="reference_media_ids")
-        if asset.type!="image" or not asset.mime_type.lower().startswith("image/"):
-            raise APIError(422,"INVALID_MEDIA_TYPE",f"Reference media '{asset_id}' must be an image.",field="reference_media_ids")
-        if asset.size_bytes is not None and asset.size_bytes>limit:
-            raise APIError(413,"REFERENCE_MEDIA_TOO_LARGE",f"Reference media '{asset_id}' exceeds the {limit} byte reference limit.",field="reference_media_ids")
+        asset = by_id.get(asset_id)
+        if not asset or asset.status != "ready":
+            raise APIError(
+                422,
+                "INVALID_MEDIA_REFERENCE",
+                f"Reference media '{asset_id}' is missing or not ready.",
+                field="reference_media_ids",
+            )
+        if asset.type != "image" or not asset.mime_type.lower().startswith("image/"):
+            raise APIError(
+                422,
+                "INVALID_MEDIA_TYPE",
+                f"Reference media '{asset_id}' must be an image.",
+                field="reference_media_ids",
+            )
+        if asset.size_bytes is not None and asset.size_bytes > limit:
+            raise APIError(
+                413,
+                "REFERENCE_MEDIA_TOO_LARGE",
+                f"Reference media '{asset_id}' exceeds the {limit} byte reference limit.",
+                field="reference_media_ids",
+            )
 
 
 def _submit(request: Request, db, client, payload, kind: str):
-    data=payload.model_dump(mode="json")
-    if kind=="video":data["start_media_id"]=str(data["start_media_id"])
-    else:data["reference_media_ids"]=[str(media_id) for media_id in data.get("reference_media_ids") or []]
-    provider=payload.provider;model=getattr(payload,"model",None)
-    runtime=request.app.state.runtime
-    configured_provider=runtime.providers.get(provider)
-    _validate_reference_assets(request,db,client,data,kind)
-    has_online_account=getattr(configured_provider,"has_online_account",None)
+    data = payload.model_dump(mode="json")
+    if kind == "video":
+        data["start_media_id"] = str(data["start_media_id"])
+    else:
+        data["reference_media_ids"] = [
+            str(media_id) for media_id in data.get("reference_media_ids") or []
+        ]
+    provider = payload.provider
+    model = getattr(payload, "model", None)
+    runtime = request.app.state.runtime
+    configured_provider = runtime.providers.get(provider)
+    _validate_reference_assets(request, db, client, data, kind)
+    has_online_account = getattr(configured_provider, "has_online_account", None)
     if configured_provider.requires_account_pool and callable(has_online_account) and not has_online_account():
         raise APIError(
             503,
@@ -50,20 +113,114 @@ def _submit(request: Request, db, client, payload, kind: str):
             "No Google Flow account is currently online.",
             retryable=True,
         )
-    job=create_job(db,client=client,kind=kind,provider=provider,model=model,workspace_key=CLIENT_WORKSPACE_KEY,payload=data,request_id=request.state.request_id)
-    return job_dict(runtime,db,job)
+    job = create_job(
+        db,
+        client=client,
+        kind=kind,
+        provider=provider,
+        model=model,
+        workspace_key=CLIENT_WORKSPACE_KEY,
+        payload=data,
+        request_id=request.state.request_id,
+    )
+    return job_dict(runtime, db, job)
 
 
-@router.post("/v1/images/generations",status_code=202,response_model=JobOutput)
-def create_image_generation(payload: ImageGenerationRequest,request: Request,db=Depends(get_db),client=Depends(get_client)):
-    return _submit(request,db,client,payload,"image")
+def _unified_payload(payload: UnifiedGenerationRequest):
+    """Translate the small orchestrator contract into the provider-native V1 model."""
+    options = payload.options or {}
+    aspect_value = str(options.get("aspect_ratio") or "")
+    aspect_ratio = _ASPECT_RATIOS.get(aspect_value)
+
+    if payload.kind == "image":
+        model_value = str(options.get("model") or "")
+        output_count = options.get("output_count", options.get("count", 1))
+        try:
+            output_count = int(output_count)
+        except (TypeError, ValueError):
+            output_count = 1
+        return ImageGenerationRequest(
+            prompt=payload.prompt,
+            model=_IMAGE_MODELS.get(model_value, "banana_pro"),
+            aspect_ratio=aspect_ratio or "9:16",
+            output_count=max(1, min(output_count, 4)),
+            reference_media_ids=payload.media_ids,
+        )
+
+    if payload.kind == "video":
+        if not payload.media_ids:
+            raise APIError(
+                422,
+                "INVALID_MEDIA_REFERENCE",
+                "Video generation requires one start image.",
+                field="media_ids",
+            )
+        quality_value = str(options.get("quality") or "lite").lower()
+        return ImageToVideoRequest(
+            prompt=payload.prompt,
+            start_media_id=payload.media_ids[0],
+            quality=_VIDEO_QUALITIES.get(quality_value, "lite"),
+            aspect_ratio=aspect_ratio if aspect_ratio in {"16:9", "9:16"} else "16:9",
+        )
+
+    if not payload.media_ids:
+        raise APIError(
+            422,
+            "INVALID_MEDIA_REFERENCE",
+            "Omni generation requires at least one reference image.",
+            field="media_ids",
+        )
+    duration = options.get("duration", options.get("duration_s", 8))
+    try:
+        duration = int(duration)
+    except (TypeError, ValueError):
+        duration = 8
+    if duration not in _OMNI_DURATIONS:
+        duration = 8
+    return OmniVideoGenerationRequest(
+        prompt=payload.prompt,
+        reference_media_ids=payload.media_ids,
+        duration=duration,
+        aspect_ratio=aspect_ratio if aspect_ratio in {"16:9", "9:16"} else "9:16",
+    )
 
 
-@router.post("/v1/videos/image-to-video",status_code=202,response_model=JobOutput)
-def create_image_to_video(payload: ImageToVideoRequest,request: Request,db=Depends(get_db),client=Depends(get_client)):
-    return _submit(request,db,client,payload,"video")
+@router.post("/v1/generations", status_code=202, response_model=JobOutput)
+def create_generation(
+    payload: UnifiedGenerationRequest,
+    request: Request,
+    db=Depends(get_db),
+    client=Depends(get_client),
+):
+    provider_payload = _unified_payload(payload)
+    return _submit(request, db, client, provider_payload, payload.kind)
 
 
-@router.post("/v1/videos/omni-generations",status_code=202,response_model=JobOutput)
-def create_omni_generation(payload: OmniVideoGenerationRequest,request: Request,db=Depends(get_db),client=Depends(get_client)):
-    return _submit(request,db,client,payload,"omni")
+@router.post("/v1/images/generations", status_code=202, response_model=JobOutput)
+def create_image_generation(
+    payload: ImageGenerationRequest,
+    request: Request,
+    db=Depends(get_db),
+    client=Depends(get_client),
+):
+    return _submit(request, db, client, payload, "image")
+
+
+@router.post("/v1/videos/image-to-video", status_code=202, response_model=JobOutput)
+def create_image_to_video(
+    payload: ImageToVideoRequest,
+    request: Request,
+    db=Depends(get_db),
+    client=Depends(get_client),
+):
+    return _submit(request, db, client, payload, "video")
+
+
+@router.post("/v1/videos/omni-generations", status_code=202, response_model=JobOutput)
+def create_omni_generation(
+    payload: OmniVideoGenerationRequest,
+    request: Request,
+    db=Depends(get_db),
+    client=Depends(get_client),
+):
+    return _submit(request, db, client, payload, "omni")
