@@ -9,7 +9,7 @@ from app.db.session import build_engine, build_session_factory
 from app.extension.manager import ExtensionManager
 from app.jobs.scheduler import GlobalScheduler
 from app.jobs.worker import JobWorker
-from app.providers.google_flow.client import FlowBridge
+from app.providers.google_flow.browser_bridge import FlowBridge
 from app.providers.google_flow.provider import GoogleFlowProvider
 from app.providers.registry import ProviderRegistry
 
