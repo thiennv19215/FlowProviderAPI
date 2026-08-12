@@ -34,14 +34,12 @@ def test_stuck_provider_operation_hits_deadline(client,app,auth):
         metadata=json.loads(job.provider_operation_id or "{}")
         metadata["dispatched_at"]=(utcnow()-timedelta(seconds=app.state.runtime.settings.max_provider_operation_seconds+1)).isoformat()
         job.provider_operation_id=json.dumps(metadata)
-        # Make the poll unambiguously due. Using exactly utcnow() here can be
-        # flaky across DB timestamp precision/timezone normalization in CI.
         job.next_run_at=utcnow()-timedelta(seconds=1)
         job.lease_owner=None
         job.lease_expires_at=None
         db.commit()
     assert asyncio.run(app.state.runtime.worker.run_once())
-    done=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
+    done=client.get(f"/v1/status/{job_id}",headers=auth).json()
     assert done["status"]=="failed"
     assert done["error"]["code"]=="PROVIDER_OPERATION_TIMEOUT"
 
