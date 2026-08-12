@@ -228,8 +228,9 @@ def test_openapi_exposes_typed_generation_and_asset_responses(client):
         for parameter in image.get("parameters", [])
     )
     unified = schema["paths"]["/v1/generations"]["post"]
-    assert all(
-        parameter.get("name") != "Idempotency-Key"
+    assert any(
+        parameter.get("name") == "Idempotency-Key"
+        and parameter.get("in") == "header"
         for parameter in unified.get("parameters", [])
     )
     assert "task_id" not in schema["components"]["schemas"]["ImageGenerationRequest"][
