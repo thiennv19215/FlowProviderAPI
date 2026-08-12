@@ -70,14 +70,11 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         job_id = response.json()["task_id"]
 
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
-        job = client.get(f"/v1/tasks/{job_id}", headers=auth).json()
+        job = client.get(f"/v1/status/{job_id}", headers=auth).json()
         assert job["status"] == "succeeded"
         assert len(job["outputs"]) == 2
         assert mock.state.projects_created == 1
         assert mock.state.image_generations == 1
-        # Flow bearer is browser-owned now. Backend fetch RPCs must not request
-        # the bearer explicitly; the extension attaches it immediately before
-        # executing SW_FETCH / INJECT_PAGE_FETCH.
         assert "GET_BEARER" not in mock.state.rpc_types
         assert "INJECT_RECAPTCHA" in mock.state.rpc_types
         assert "SW_FETCH" in mock.state.rpc_types
@@ -107,7 +104,7 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         )
         assert referenced.status_code == 202
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
-        referenced_job = client.get(f"/v1/tasks/{referenced.json()['task_id']}", headers=auth).json()
+        referenced_job = client.get(f"/v1/status/{referenced.json()['task_id']}", headers=auth).json()
         assert referenced_job["status"] == "succeeded"
         assert mock.state.projects_created == 1
         assert mock.state.image_generations == 2
@@ -133,10 +130,10 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         assert video.status_code == 202
         video_id = video.json()["task_id"]
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
-        mid = client.get(f"/v1/tasks/{video_id}", headers=auth).json()
+        mid = client.get(f"/v1/status/{video_id}", headers=auth).json()
         assert mid["status"] == "running"
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
-        done = client.get(f"/v1/tasks/{video_id}", headers=auth).json()
+        done = client.get(f"/v1/status/{video_id}", headers=auth).json()
         assert done["status"] == "succeeded"
         assert done["outputs"][0]["type"] == "video"
         assert done["outputs"][0]["thumbnail_url"].endswith("-thumbnail")
@@ -157,7 +154,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         omni_id = omni.json()["task_id"]
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
-        omni_done = client.get(f"/v1/tasks/{omni_id}", headers=auth).json()
+        omni_done = client.get(f"/v1/status/{omni_id}", headers=auth).json()
         assert omni_done["status"] == "succeeded"
         assert omni_done["outputs"][0]["type"] == "video"
         assert omni_done["outputs"][0]["thumbnail_url"].endswith("-thumbnail")
