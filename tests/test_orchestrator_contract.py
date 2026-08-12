@@ -39,6 +39,31 @@ def test_unified_generation_normalizes_provider_options_and_runs(client, app, au
     assert done.json()["outputs"][0]["type"] == "image"
 
 
+def test_unified_generation_idempotency_returns_same_durable_task(client, app, auth):
+    headers = {**auth, "Idempotency-Key": "flowcanvas:42:image:0"}
+    payload = {
+        "kind": "image",
+        "prompt": "idempotent cat",
+        "provider": "fake",
+        "options": {"aspect_ratio": "9:16"},
+    }
+
+    first = client.post("/v1/generations", headers=headers, json=payload)
+    second = client.post("/v1/generations", headers=headers, json=payload)
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["task_id"] == second.json()["task_id"]
+    with app.state.runtime.session_factory() as db:
+        rows = list(
+            db.scalars(
+                select(GenerationJob).where(
+                    GenerationJob.idempotency_key == "flowcanvas:42:image:0"
+                )
+            )
+        )
+        assert len(rows) == 1
+
+
 def test_unified_video_requires_localized_start_media(client, auth):
     response = client.post(
         "/v1/generations",
