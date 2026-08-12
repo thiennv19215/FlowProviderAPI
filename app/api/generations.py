@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy import select
 
 from app.api.deps import get_client, get_db
@@ -92,7 +92,15 @@ def _validate_reference_assets(request: Request, db, client, data: dict, kind: s
             )
 
 
-def _submit(request: Request, db, client, payload, kind: str):
+def _submit(
+    request: Request,
+    db,
+    client,
+    payload,
+    kind: str,
+    *,
+    idempotency_key: str | None = None,
+):
     data = payload.model_dump(mode="json")
     if kind == "video":
         data["start_media_id"] = str(data["start_media_id"])
@@ -106,7 +114,11 @@ def _submit(request: Request, db, client, payload, kind: str):
     configured_provider = runtime.providers.get(provider)
     _validate_reference_assets(request, db, client, data, kind)
     has_online_account = getattr(configured_provider, "has_online_account", None)
-    if configured_provider.requires_account_pool and callable(has_online_account) and not has_online_account():
+    if (
+        configured_provider.requires_account_pool
+        and callable(has_online_account)
+        and not has_online_account()
+    ):
         raise APIError(
             503,
             "PROVIDER_ACCOUNT_UNAVAILABLE",
@@ -122,6 +134,7 @@ def _submit(request: Request, db, client, payload, kind: str):
         workspace_key=CLIENT_WORKSPACE_KEY,
         payload=data,
         request_id=request.state.request_id,
+        idempotency_key=idempotency_key,
     )
     return job_dict(runtime, db, job)
 
@@ -162,7 +175,9 @@ def _unified_payload(payload: UnifiedGenerationRequest):
             prompt=payload.prompt,
             start_media_id=payload.media_ids[0],
             quality=_VIDEO_QUALITIES.get(quality_value, "lite"),
-            aspect_ratio=aspect_ratio if aspect_ratio in {"16:9", "9:16"} else "16:9",
+            aspect_ratio=(
+                aspect_ratio if aspect_ratio in {"16:9", "9:16"} else "16:9"
+            ),
         )
 
     if not payload.media_ids:
@@ -192,11 +207,24 @@ def _unified_payload(payload: UnifiedGenerationRequest):
 def create_generation(
     payload: UnifiedGenerationRequest,
     request: Request,
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+        min_length=8,
+        max_length=200,
+    ),
     db=Depends(get_db),
     client=Depends(get_client),
 ):
     provider_payload = _unified_payload(payload)
-    return _submit(request, db, client, provider_payload, payload.kind)
+    return _submit(
+        request,
+        db,
+        client,
+        provider_payload,
+        payload.kind,
+        idempotency_key=idempotency_key,
+    )
 
 
 @router.post("/v1/images/generations", status_code=202, response_model=JobOutput)
