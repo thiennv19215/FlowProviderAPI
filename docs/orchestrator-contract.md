@@ -6,6 +6,12 @@ FlowProviderAPI exposes a small server-to-server generation boundary for applica
 
 `POST /v1/generations`
 
+Send a stable `Idempotency-Key` header for each logical remote submission. Retrying the same logical submission with the same API client and key returns the same durable Provider task instead of creating duplicate generation work.
+
+```http
+Idempotency-Key: flowcanvas:42:image:0
+```
+
 ```json
 {
   "kind": "image",
@@ -32,7 +38,7 @@ The response is the same asynchronous task shape as the existing generation endp
 }
 ```
 
-Poll `GET /v1/tasks/{task_id}` until the task is terminal. Do not resubmit a task merely because it remains queued; FlowProviderAPI owns dispatch/capacity policy.
+Poll `GET /v1/tasks/{task_id}` until the task is terminal. Do not resubmit a task merely because it remains queued; FlowProviderAPI owns dispatch/capacity policy. If the caller cannot tell whether a prior POST completed, retry the POST with the same `Idempotency-Key`.
 
 ## Reference media
 
