@@ -52,14 +52,12 @@ Generate separate secrets. Hex values avoid URL-encoding surprises in the Postgr
 ```bash
 openssl rand -hex 32
 printf 'fpa_prod_'; openssl rand -hex 32
-openssl rand -hex 32
 ```
 
 Use them for, respectively:
 
 - `POSTGRES_PASSWORD`
 - `FLOW_PROVIDER_BOOTSTRAP_API_KEY` on the first deployment
-- `FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN`
 
 Do not reuse the same value for multiple credentials.
 
@@ -69,7 +67,7 @@ Set `FLOW_PROVIDER_PUBLIC_BASE_URL` to the final HTTPS hostname, for example:
 FLOW_PROVIDER_PUBLIC_BASE_URL=https://provider.example.com
 ```
 
-Production startup intentionally fails unless PostgreSQL, HTTPS, durable reference-upload storage, and a gateway token of at least 32 characters are configured.
+Production startup intentionally fails unless PostgreSQL, HTTPS, and durable reference-upload storage are configured.
 
 ### Bootstrap API key
 
@@ -115,7 +113,8 @@ Treat this hostname as an API/WebSocket origin:
 - do not add a Cache Everything rule for it;
 - do not put an interactive browser challenge in front of API or WebSocket requests;
 - if Cloudflare Access is enabled, clients and the Chrome extension need a non-interactive service-token flow, which FlowProvider does not currently inject automatically;
-- keep normal WAF/DDoS protections, and add targeted rate-limit rules if desired.
+- keep normal WAF/DDoS protections;
+- the connector endpoint is intentionally unauthenticated, so add an IP-based rate-limit rule for WebSocket handshake requests to `/api/extensions/ws`; do not use an interactive challenge for that path.
 
 ## 5. Deploy
 
@@ -162,14 +161,15 @@ If `/health/live` works inside Docker but not through the hostname, inspect the 
 
 ## 7. Connect the Chrome extension
 
-On the Chrome machine signed in to Google Flow, configure the extension with:
+Install the extension on a Chrome machine signed in to Google Flow. It automatically connects and reconnects to its configured Provider server; the packaged default is:
 
 ```text
-Provider server: https://provider.example.com
-Gateway token:   <FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN>
+Provider server: https://api.shopcongngheso5.io.vn
 ```
 
-The gateway token is sent during the WebSocket subprotocol handshake rather than being embedded in the URL.
+For a custom deployment, change the Provider server in the extension popup to your HTTPS hostname. There is no shared gateway credential to copy to each browser.
+
+`/api/extensions/ws` is public by design. Anyone who can reach it can attempt to register a connector, so connector identity is not an authentication boundary. Use Cloudflare WAF/DDoS protection and an IP-based handshake rate limit to reduce abuse while preserving automatic extension connections.
 
 After the extension connects, submit a real generation through the public API and poll its task until completion. The mock E2E suite is not a replacement for this live acceptance test.
 

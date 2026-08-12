@@ -26,9 +26,9 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-Open `http://localhost:8000/docs` for Swagger. Load `extension/` as an unpacked Chrome extension and point its popup at the Provider URL.
+Open `http://localhost:8000/docs` for Swagger. Load `extension/` as an unpacked Chrome extension. An installed extension automatically connects and reconnects to its configured Provider server; the packaged default is `https://api.shopcongngheso5.io.vn`.
 
-For a live Google Flow test, open Google Flow in the same Chrome profile. The extension discovers the Google Flow API key from requests to Google's Flow API and supplies it to the backend for the lifetime of the connection. `FLOW_PROVIDER_FLOW_API_KEY` remains available as an optional server-side fallback. Local/test mode may leave the extension gateway token unset. Production requires `FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN` with at least 32 characters. In the extension popup, configure the Provider server as `https://provider.example.com` and put the same secret in the separate **Gateway token** field. The connector sends that secret only in the WebSocket subprotocol during the `/api/extensions/ws` handshake; it is not embedded in the request URL. Existing saved `/ext/<token>` settings are migrated automatically once to the separate token storage.
+For a live Google Flow test, open Google Flow in the same Chrome profile. The extension discovers the Google Flow API key from requests to Google's Flow API and supplies it to the backend for the lifetime of the connection. `FLOW_PROVIDER_FLOW_API_KEY` remains available as an optional server-side fallback. The extension connector endpoint `/api/extensions/ws` is intentionally public and does not require a shared gateway token, so an installed extension can connect without manual credential setup. For a custom deployment, change only the Provider server URL in the extension popup.
 
 ## Production deployment
 
@@ -36,7 +36,7 @@ The production VPS stack is defined in `compose.production.yaml`: PostgreSQL, Fl
 
 ```bash
 cp .env.production.example .env.production
-# fill the required PostgreSQL, Cloudflare Tunnel and Provider secrets
+# fill the required PostgreSQL, Cloudflare Tunnel and bootstrap API secrets
 bash scripts/deploy-production.sh
 ```
 
@@ -61,6 +61,8 @@ Operational probes `/health/live` and `/health/ready`, plus the extension-only `
 The current V1 preserves provider account identity across extension reconnects, invalidates stale signed-out accounts, reserves estimated credits from active jobs, uses duration-aware Omni credit costs, distinguishes terminal provider failures from transient polling failures, and bounds consecutive polling failures so jobs cannot remain `running` forever on a persistent provider error.
 
 Provider output URLs are host-allowlisted before they enter the public task result. The API preserves a compact `asset_id` and project-local Flow media mapping so a generated image can be reused as a reference without uploading it again. User-supplied upload completion validates declared size and content type; Google Flow reference uploads have a separate in-memory hard limit before base64 encoding. Readiness checks both the database and configured reference-upload storage backend.
+
+The public extension WebSocket accepts unauthenticated connector registrations by design. Anyone who can reach the hostname can attempt to connect, so do not treat connector identity as trusted. Keep Cloudflare's WAF/DDoS protections enabled and apply an IP-based rate limit to WebSocket handshake requests for `/api/extensions/ws` without adding an interactive challenge that would break the extension connection.
 
 Direct Flow URLs are controlled by the upstream provider and may expire or be revoked. A calling backend that needs a durable result should download it promptly and store its own copy.
 

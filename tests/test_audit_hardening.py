@@ -86,7 +86,6 @@ def test_production_configuration_accepts_local_input_storage():
         database_url="postgresql+psycopg://flowprovider:secret@postgres/flowprovider",
         public_base_url="https://api.example.com",
         bootstrap_api_key=None,
-        extension_gateway_token="g"*32,
     )
     assert settings.local_storage_path
 

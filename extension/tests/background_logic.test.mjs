@@ -36,6 +36,9 @@ function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig =
         return { ...storage };
       },
       set: async (values) => Object.assign(storage, values),
+      remove: async (keys) => {
+        for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key];
+      },
     } },
     permissions: { contains: async () => true, request: async () => true },
     identity: { getProfileUserInfo: async () => ({ email: '' }) },
@@ -79,7 +82,7 @@ async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-test('connect sends gateway auth as websocket subprotocol without putting the token in the URL', async () => {
+test('connect uses only the versioned websocket protocol and removes legacy gateway storage', async () => {
   const h = buildHarness({
     'flow-provider-server-url-v1': 'https://provider.example.com',
     'flow-provider-gateway-token-v1': 'secret-value',
@@ -88,17 +91,26 @@ test('connect sends gateway auth as websocket subprotocol without putting the to
   assert.equal(h.sockets.length, 1);
   const ws = h.sockets[0];
   assert.equal(ws.url, 'wss://provider.example.com/api/extensions/ws');
-  assert.ok(ws.protocols.includes('flow-provider-v7'));
-  assert.ok(ws.protocols.some((value) => value.startsWith('flow-token.')));
+  assert.deepEqual(Array.from(ws.protocols), ['flow-provider-v7']);
   assert.equal(ws.url.includes('secret-value'), false);
+  assert.equal(h.storage['flow-provider-gateway-token-v1'], undefined);
 });
 
-test('legacy /ext/token server setting is migrated to sanitized server plus token storage', async () => {
+test('legacy /ext/token server setting is sanitized without migrating its token', async () => {
   const h = buildHarness({ 'flow-provider-server-url-v1': 'https://provider.example.com/ext/old-secret' });
   await flush();
   assert.equal(h.storage['flow-provider-server-url-v1'], 'https://provider.example.com');
-  assert.equal(h.storage['flow-provider-gateway-token-v1'], 'old-secret');
+  assert.equal(h.storage['flow-provider-gateway-token-v1'], undefined);
   assert.equal(h.sockets[0].url, 'wss://provider.example.com/api/extensions/ws');
+});
+
+test('extension source and popup expose no gateway-token configuration', () => {
+  const popupHtml = fs.readFileSync(new URL('../popup.html', import.meta.url), 'utf8');
+  const popupJs = fs.readFileSync(new URL('../popup.js', import.meta.url), 'utf8');
+  assert.equal(source.includes('gatewayToken'), false);
+  assert.equal(source.includes('flow-token.'), false);
+  assert.equal(popupHtml.toLowerCase().includes('gateway token'), false);
+  assert.equal(popupJs.includes('gatewayToken'), false);
 });
 
 test('configured production default replaces the previous public default once', async () => {

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hmac
 import json
 import logging
 
@@ -46,34 +44,18 @@ async def heartbeat_loop(conn,bridge,manager,settings):
         return
 
 
-def _presented_gateway_token(websocket:WebSocket)->tuple[str|None,bool]:
+def _supports_protocol(websocket:WebSocket)->bool:
     raw=websocket.headers.get("sec-websocket-protocol") or ""
     protocols=[item.strip() for item in raw.split(",") if item.strip()]
-    for protocol in protocols:
-        if not protocol.startswith("flow-token."):continue
-        encoded=protocol[len("flow-token."):]
-        try:
-            padded=encoded+"="*((4-len(encoded)%4)%4)
-            token=base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
-            return token,"flow-provider-v7" in protocols
-        except Exception:return None,"flow-provider-v7" in protocols
-    return None,"flow-provider-v7" in protocols
-
-
-def _gateway_token_valid(expected:str|None,presented:str|None)->bool:
-    if not expected:return True
-    if not presented:return False
-    return hmac.compare_digest(expected,presented)
+    return "flow-provider-v7" in protocols
 
 
 async def _serve(websocket:WebSocket):
     runtime=websocket.app.state.runtime;bridge=runtime.bridge;manager=runtime.extension_manager
-    presented_token,has_protocol=_presented_gateway_token(websocket)
+    has_protocol=_supports_protocol(websocket)
     await websocket.accept(subprotocol="flow-provider-v7" if has_protocol else None)
     adapter=SocketAdapter(websocket);conn=None;heartbeat_task=None
     try:
-        if not _gateway_token_valid(runtime.settings.extension_gateway_token,presented_token):
-            await websocket.close(4401,"extension gateway authentication failed");return
         hello=await receive_json(websocket,HELLO_TIMEOUT)
         if hello.get("type")!="extension_ready":await websocket.close(4400,"extension_ready frame required");return
         if hello.get("protocolVersion") not in PROTOCOL_VERSIONS:await websocket.close(4400,"extension protocol mismatch");return

@@ -2,7 +2,6 @@ const CONFIG = self.FLOW_PROVIDER_EXTENSION_CONFIG || {};
 const PROTOCOL_VERSION = Number(CONFIG.protocolVersion || 7);
 const SERVER_KEY = "flow-provider-server-url-v1";
 const SERVER_DEFAULT_VERSION_KEY = "flow-provider-server-default-version-v1";
-const GATEWAY_TOKEN_KEY = "flow-provider-gateway-token-v1";
 const INSTALLATION_KEY = "flow-provider-installation-id-v1";
 const PROFILE_KEY = "flow-provider-profile-id-v1";
 const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
@@ -30,24 +29,21 @@ function normalizeServerUrl(value) {
   if (url.protocol !== "https:" && !(local && url.protocol === "http:")) {
     throw new Error("Provider server must use HTTPS (HTTP is allowed only for localhost).")
   }
-  let migratedToken = null;
   const legacy = url.pathname.match(/^\/ext\/([^/]+)(\/.*)?$/);
   if (legacy) {
-    migratedToken = decodeURIComponent(legacy[1]);
     url.pathname = legacy[2] || "/";
   }
-  if (url.hash) {
-    const raw = url.hash.slice(1);
-    if (raw.startsWith("token=")) migratedToken = decodeURIComponent(raw.slice(6));
-    url.hash = "";
-  }
+  url.hash = "";
   url.pathname = url.pathname.replace(/\/+$/, "");
   url.search = "";
-  return { serverUrl: url.toString().replace(/\/$/, ""), migratedToken };
+  return { serverUrl: url.toString().replace(/\/$/, "") };
 }
 
 async function getConnectionConfig() {
-  const data = await chrome.storage.local.get([SERVER_KEY, SERVER_DEFAULT_VERSION_KEY, GATEWAY_TOKEN_KEY]);
+  // Remove the shared credential left by versions <= 1.0.2. The connector is
+  // intentionally credential-free from 1.0.3 onward.
+  await chrome.storage.local.remove("flow-provider-gateway-token-v1");
+  const data = await chrome.storage.local.get([SERVER_KEY, SERVER_DEFAULT_VERSION_KEY]);
   const defaultServerUrl = CONFIG.defaultServerUrl || "http://127.0.0.1:8000";
   const defaultServerVersion = Number(CONFIG.defaultServerVersion || 0);
   const storedServerValue = typeof data?.[SERVER_KEY] === "string" ? data[SERVER_KEY].trim() : "";
@@ -59,36 +55,23 @@ async function getConnectionConfig() {
     && storedServer
     && legacyDefaultServers.includes(storedServer.serverUrl);
   const parsed = normalizeServerUrl(migrateStoredDefault || !storedServer ? defaultServerUrl : storedServer.serverUrl);
-  let gatewayToken = typeof data?.[GATEWAY_TOKEN_KEY] === "string" ? data[GATEWAY_TOKEN_KEY] : "";
-  gatewayToken ||= storedServer?.migratedToken || parsed.migratedToken || "";
   const updates = {};
   if (!storedServer || migrateStoredDefault || storedServerValue !== parsed.serverUrl) updates[SERVER_KEY] = parsed.serverUrl;
   if (Number(data?.[SERVER_DEFAULT_VERSION_KEY] || 0) < defaultServerVersion) updates[SERVER_DEFAULT_VERSION_KEY] = defaultServerVersion;
-  if (gatewayToken && gatewayToken !== data?.[GATEWAY_TOKEN_KEY]) updates[GATEWAY_TOKEN_KEY] = gatewayToken;
   if (Object.keys(updates).length) await chrome.storage.local.set(updates);
-  return { serverUrl: parsed.serverUrl, gatewayToken };
+  return { serverUrl: parsed.serverUrl };
 }
 
-async function setConnectionConfig(serverValue, gatewayTokenValue) {
+async function setConnectionConfig(serverValue) {
   const parsed = normalizeServerUrl(serverValue);
   const origin = `${new URL(parsed.serverUrl).origin}/*`;
   const granted = await chrome.permissions.contains({ origins: [origin] }) || await chrome.permissions.request({ origins: [origin] });
   if (!granted) throw new Error(`Permission was not granted for ${origin}`);
   const updates = { [SERVER_KEY]: parsed.serverUrl, [SERVER_DEFAULT_VERSION_KEY]: Number(CONFIG.defaultServerVersion || 0) };
-  const supplied = typeof gatewayTokenValue === "string" ? gatewayTokenValue.trim() : "";
-  if (supplied) updates[GATEWAY_TOKEN_KEY] = supplied;
-  else if (parsed.migratedToken) updates[GATEWAY_TOKEN_KEY] = parsed.migratedToken;
   await chrome.storage.local.set(updates);
   disconnect();
   connect();
   return parsed.serverUrl;
-}
-
-function encodeToken(value) {
-  const bytes = new TextEncoder().encode(value);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 async function getInstallationId() {
@@ -272,7 +255,7 @@ async function handleRpc(msg, signal) {
 
 async function connectionState() {
   const config = await getConnectionConfig();
-  return { serverUrl: config.serverUrl, gatewayTokenConfigured: Boolean(config.gatewayToken), connected: socket?.readyState === WebSocket.OPEN, account: accountState, version: chrome.runtime.getManifest().version };
+  return { serverUrl: config.serverUrl, connected: socket?.readyState === WebSocket.OPEN, account: accountState, version: chrome.runtime.getManifest().version };
 }
 
 function scheduleReconnect() {
@@ -302,9 +285,7 @@ async function connect() {
     const server = new URL(config.serverUrl);
     server.protocol = server.protocol === "https:" ? "wss:" : "ws:";
     server.pathname = `${server.pathname.replace(/\/$/, "")}/api/extensions/ws`;
-    const protocols = ["flow-provider-v7"];
-    if (config.gatewayToken) protocols.push(`flow-token.${encodeToken(config.gatewayToken)}`);
-    const ws = new WebSocket(server.toString(), protocols);
+    const ws = new WebSocket(server.toString(), ["flow-provider-v7"]);
     socket = ws;
     ws.onopen = async () => {
       reconnectAttempt = 0;
@@ -363,7 +344,7 @@ async function setupDnr() {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "FLOW_PROVIDER_GET_STATE") { connectionState().then(sendResponse); return true; }
-  if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setConnectionConfig(msg.serverUrl, msg.gatewayToken).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
+  if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setConnectionConfig(msg.serverUrl).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_OPEN_FLOW") { openFlowHome().then((v) => sendResponse({ ok: true, ...v })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   return false;
 });

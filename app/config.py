@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     account_rate_limit_cooldown_seconds:int=Field(default=180,ge=10)
     extension_heartbeat_seconds:int=Field(default=60,ge=5,le=120)
     extension_heartbeat_grace_seconds:int=Field(default=15,ge=5,le=120)
-    extension_gateway_token:str|None=None
 
     @model_validator(mode="after")
     def validate_settings(self):
@@ -52,8 +51,6 @@ class Settings(BaseSettings):
                 raise ValueError("Production requires PostgreSQL")
             if self.bootstrap_api_key and (self.bootstrap_api_key.startswith("fpa_dev_") or "change_me" in self.bootstrap_api_key.lower()):
                 raise ValueError("Disable bootstrap seeding or configure a non-development API key")
-            if not self.extension_gateway_token or len(self.extension_gateway_token)<32:
-                raise ValueError("Production requires FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN with at least 32 characters")
             parsed=urlparse(self.public_base_url)
             if parsed.scheme!="https" or not parsed.netloc:
                 raise ValueError("Production public base URL must use HTTPS")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from types import SimpleNamespace
 
 import pytest
@@ -103,21 +102,11 @@ def test_flow_reference_memory_cap_is_enforced_before_read(client,app,auth):
         app.state.runtime.settings.max_reference_in_memory_bytes=previous
 
 
-def test_extension_gateway_requires_configured_token(client,app):
-    token="t"*32
-    encoded=base64.urlsafe_b64encode(token.encode()).decode().rstrip("=")
-    previous=app.state.runtime.settings.extension_gateway_token
-    app.state.runtime.settings.extension_gateway_token=token
-    try:
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect("/api/extensions/ws") as ws:
-                ws.send_json({"type":"extension_ready","protocolVersion":7,"installationId":"install-token-test"})
-                ws.receive_json()
-        with client.websocket_connect("/api/extensions/ws",subprotocols=["flow-provider-v7",f"flow-token.{encoded}"]) as ws:
-            ws.send_json({"type":"extension_ready","protocolVersion":7,"installationId":"install-token-test","runtimeId":"chrome","profileId":"p"})
-            assert client.get("/v1/health").json()["extension_connected"] is True
-    finally:
-        app.state.runtime.settings.extension_gateway_token=previous
+def test_extension_gateway_accepts_connection_without_token(client):
+    with client.websocket_connect("/api/extensions/ws",subprotocols=["flow-provider-v7"]) as ws:
+        assert ws.accepted_subprotocol=="flow-provider-v7"
+        ws.send_json({"type":"extension_ready","protocolVersion":7,"installationId":"install-open-test","runtimeId":"chrome","profileId":"p"})
+        assert client.get("/v1/health").json()["extension_connected"] is True
 
 
 def test_extension_gateway_rejects_overlong_installation_id(client):
