@@ -31,5 +31,13 @@
   "optional_host_permissions": [
     "https://*/*"
   ],
+  "content_scripts": [
+    {
+      "matches": ["https://labs.google/*"],
+      "js": ["flow-frame-bridge.js"],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
   "minimum_chrome_version": "116"
 }
