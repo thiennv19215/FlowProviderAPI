@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from pydantic.json_schema import JsonSchemaValue
 
-MediaId = Annotated[StrictInt, Field(ge=100_000_000_000_000, le=999_999_999_999_999)]
+MediaId = Annotated[StrictStr, Field(pattern=r"^[1-9][0-9]{14}$")]
 
 
 class ErrorDetail(BaseModel):
@@ -58,7 +58,7 @@ class OmniVideoGenerationRequest(FlowGenerationRequest):
     reference_media_ids: list[MediaId] = Field(min_length=1, max_length=8)
 
 class MediaOutput(BaseModel):
-    media_id: int
+    media_id: MediaId
     object: Literal["media"] = "media"
     type: str
     status: str = "ready"
@@ -72,7 +72,7 @@ class MediaOutput(BaseModel):
 
 
 class TaskMediaOutput(BaseModel):
-    media_id: int
+    media_id: MediaId
     type: str
     url: str | None = None
     thumbnail_url: str | None = None

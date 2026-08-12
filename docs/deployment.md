@@ -81,7 +81,7 @@ The default production configuration keeps user-supplied reference uploads in th
 FLOW_PROVIDER_LOCAL_STORAGE_PATH=/app/.data/assets
 ```
 
-Generated Google Flow outputs are not copied into this volume. Their compact numeric `media_id`, internal Flow media mapping, and direct output URL are registered in PostgreSQL. The direct URL can be returned immediately to the calling backend.
+Generated Google Flow outputs are not copied into this volume. Their compact string `media_id`, internal Flow media mapping, and direct output URL are registered in PostgreSQL. The direct URL can be returned immediately to the calling backend.
 
 Direct Flow output URLs remain upstream-owned and may expire or be revoked. An integrating backend that requires permanent output media should download each successful result promptly into its own storage.
 

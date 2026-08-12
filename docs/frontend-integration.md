@@ -24,10 +24,10 @@ Every submission creates a new task. Do not send a client-created task ID.
 
 ## TypeScript contract
 
-All public media IDs are 15-digit JSON numbers. They are safely representable by JavaScript `number` (`< Number.MAX_SAFE_INTEGER`).
+All public media IDs are opaque 15-digit JSON strings. Keep them as strings across storage, URLs, and generation requests.
 
 ```ts
-type MediaId = number;
+type MediaId = string;
 
 type Media = {
   media_id: MediaId;

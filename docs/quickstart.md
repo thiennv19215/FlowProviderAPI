@@ -17,6 +17,6 @@ The API returns HTTP `202` with a `task_id`. Poll it:
 curl -H 'Authorization: Bearer fpa_live_...' https://api.shopcongngheso5.io.vn/v1/tasks/task_xxx
 ```
 
-When `status` becomes `succeeded`, `outputs` contains a numeric `media_id`, `type`, and the direct Google Flow `url`. `media_id` can be reused in later reference-based generation calls; the calling backend can use `url` immediately without another FlowProvider download endpoint.
+When `status` becomes `succeeded`, `outputs` contains a string `media_id`, `type`, and the direct Google Flow `url`. `media_id` can be reused in later reference-based generation calls; the calling backend can use `url` immediately without another FlowProvider download endpoint.
 
 FlowProvider does not copy generated output bytes into its storage. Direct Provider URLs may expire or be revoked, so download successful outputs promptly if your application needs durable media.

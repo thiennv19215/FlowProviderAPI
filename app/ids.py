@@ -12,5 +12,5 @@ def new_compact_id(prefix: str) -> str:
 
 
 def new_numeric_id() -> str:
-    """Return a JavaScript-safe, 15-digit public media identifier."""
+    """Return a 15-digit opaque public media identifier as a string."""
     return str(secrets.randbelow(900_000_000_000_000) + 100_000_000_000_000)

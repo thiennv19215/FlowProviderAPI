@@ -6,7 +6,7 @@ from app.db.models import MediaAsset
 
 
 def media_dict(runtime, asset):
-    return {"media_id":int(asset.id),"object":"media","type":asset.type,"status":asset.status,"mime_type":asset.mime_type,"size_bytes":asset.size_bytes,"width":asset.width,"height":asset.height,"duration":asset.duration,"url":runtime.assets.content_url(asset) if asset.status=="ready" else None,"created_at":asset.created_at}
+    return {"media_id":asset.id,"object":"media","type":asset.type,"status":asset.status,"mime_type":asset.mime_type,"size_bytes":asset.size_bytes,"width":asset.width,"height":asset.height,"duration":asset.duration,"url":runtime.assets.content_url(asset) if asset.status=="ready" else None,"created_at":asset.created_at}
 
 
 def job_dict(runtime, db, job):
@@ -14,7 +14,7 @@ def job_dict(runtime, db, job):
     for aid in (job.result_payload or {}).get("asset_ids",[]):
         asset=db.scalar(select(MediaAsset).where(MediaAsset.id==aid,MediaAsset.client_id==job.client_id))
         if asset:
-            output={"media_id":int(asset.id),"type":asset.type,"url":runtime.assets.content_url(asset) if asset.status=="ready" else None}
+            output={"media_id":asset.id,"type":asset.type,"url":runtime.assets.content_url(asset) if asset.status=="ready" else None}
             if asset.type=="video":output["thumbnail_url"]=asset.thumbnail_url
             outputs.append(output)
     error=None
