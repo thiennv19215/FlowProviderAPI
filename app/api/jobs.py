@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import and_, or_, select
 
 from app.api.deps import get_client, get_db
@@ -13,13 +13,9 @@ router=APIRouter(prefix="/v1/jobs",tags=["Jobs"])
 
 
 @router.get("/{job_id}",response_model=JobOutput)
-def get_job(job_id: str,request: Request,response: Response,db=Depends(get_db),client=Depends(get_client)):
+def get_job(job_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
     job=db.scalar(select(GenerationJob).where(GenerationJob.id==job_id,GenerationJob.client_id==client.id))
     if not job:raise APIError(404,"JOB_NOT_FOUND","The requested generation job does not exist.")
-    if job.status not in {"succeeded","failed","canceled"}:
-        settings=request.app.state.runtime.settings
-        delay=settings.video_poll_seconds if job.kind in {"video","omni"} else settings.worker_poll_seconds
-        response.headers["Retry-After"]=str(max(1,int(delay)))
     return job_dict(request.app.state.runtime,db,job)
 
 
