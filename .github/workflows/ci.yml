@@ -12,7 +12,18 @@ jobs:
         with: { python-version: "3.13" }
       - run: pip install -e '.[dev]'
       - run: python -m compileall -q app
-      - run: python -m pytest -q
+      - id: pytest
+        continue-on-error: true
+        run: python -m pytest -q --junitxml=pytest-results.xml
+      - name: Upload pytest report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-results
+          path: pytest-results.xml
+      - name: Fail if pytest failed
+        if: steps.pytest.outcome == 'failure'
+        run: exit 1
       - run: alembic upgrade head
         env:
           FLOW_PROVIDER_ENV: test
