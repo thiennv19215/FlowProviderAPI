@@ -5,16 +5,17 @@ Stable HTTP contract for server-to-server integration.
 Base URL: `https://api.shopcongngheso5.io.vn`
 Authentication: `Authorization: Bearer <FLOW_PROVIDER_API_KEY>`
 
-Keep the API key on your server only. A Bearer key owns its tasks and media; another key cannot read them.
+Keep the API key on your server only. A Bearer key owns its generation statuses and media; another key cannot read them.
 
 ## Contract rules
 
 - Generation calls are asynchronous and return `202 Accepted` with a server-generated `task_id`.
-- Poll `GET /v1/tasks/{task_id}` every 3–5 seconds while `status` is `queued` or `running`.
+- Every generation POST is a new submission. `Idempotency-Key` is not part of V1.
+- Poll `GET /v1/status/{task_id}` every 3–5 seconds while `status` is `queued` or `running`.
 - `media_id` is a **15-digit JSON string** such as `"123456789012345"`.
 - `task_id` is an opaque string.
 - Pass `X-Request-Id` to correlate logs; the response returns the same header.
-- Application orchestrators should prefer the unified `POST /v1/generations` contract. Provider-specific aliases/defaults are normalized inside FlowProviderAPI.
+- Application orchestrators should prefer `POST /v1/generations`.
 
 ```ts
 type MediaId = string;
@@ -28,7 +29,7 @@ type ApiError = {
   retryable: boolean;
 };
 
-type Task = {
+type GenerationStatus = {
   task_id: string;
   status: "queued" | "running" | "succeeded" | "failed" | "canceled";
   outputs: Array<{
@@ -43,13 +44,7 @@ type Task = {
 
 ## Upload reference media
 
-```http
-POST /v1/media
-Authorization: Bearer <API_KEY>
-Content-Type: multipart/form-data
-```
-
-Send the file in multipart field `file`; `type` is optional (`image` or `video`) and must match the MIME type. Re-uploading identical ready content for the same API client and media type returns the existing media object.
+`POST /v1/media` accepts multipart field `file`; optional `type` must match the MIME type. Identical ready content for the same client and media type is content-deduplicated.
 
 ```json
 {
@@ -64,9 +59,9 @@ Send the file in multipart field `file`; `type` is optional (`image` or `video`)
 }
 ```
 
-Use `GET /v1/media/{media_id}` for metadata. The `url` for an uploaded reference needs the same Bearer header when downloading bytes.
+Use `GET /v1/media/{media_id}` for metadata. Uploaded media content URLs require the same Bearer authorization.
 
-## Unified generation contract
+## Unified generation
 
 ```http
 POST /v1/generations
@@ -74,12 +69,10 @@ Content-Type: application/json
 Authorization: Bearer <API_KEY>
 ```
 
-Image example:
-
 ```json
 {
   "kind": "image",
-  "prompt": "A premium blue perfume bottle on a white pedestal",
+  "prompt": "A premium blue perfume bottle",
   "media_ids": ["123456789012345"],
   "options": {
     "model": "banana_pro",
@@ -89,47 +82,17 @@ Image example:
 }
 ```
 
-Video example:
+`kind` is `image`, `video`, or `omni`. Provider-specific normalization, account scheduling, Google Flow project/media mapping, capacity and retries remain internal.
 
-```json
-{
-  "kind": "video",
-  "prompt": "Slow vertical camera push-in, soft reflections",
-  "media_ids": ["123456789012345"],
-  "options": {
-    "quality": "lite",
-    "aspect_ratio": "9:16"
-  }
-}
-```
-
-Omni example:
-
-```json
-{
-  "kind": "omni",
-  "prompt": "The referenced objects assemble into a cinematic scene",
-  "media_ids": ["123456789012345", "234567890123456"],
-  "options": {
-    "duration": 4,
-    "aspect_ratio": "9:16"
-  }
-}
-```
-
-`kind` is `image`, `video`, or `omni`. The Provider owns model/aspect/quality normalization, account scheduling/capacity, Google Flow project/media mapping, and retry behavior.
-
-The legacy native endpoints remain available for compatibility:
+Compatibility generation endpoints remain available:
 
 - `POST /v1/images/generations`
 - `POST /v1/videos/image-to-video`
 - `POST /v1/videos/omni-generations`
 
-New application backends should use `/v1/generations` so they do not couple their orchestration layer to provider-specific endpoint shapes.
+## Status polling
 
-## Task response and polling
-
-All generation endpoints return this shape with `202`:
+All generation endpoints return `202` with:
 
 ```json
 {"task_id":"job_abc123","status":"queued","outputs":[],"error":null}
@@ -138,11 +101,11 @@ All generation endpoints return this shape with `202`:
 Poll:
 
 ```http
-GET /v1/tasks/{task_id}
+GET /v1/status/{task_id}
 Authorization: Bearer <API_KEY>
 ```
 
-Successful video example:
+Successful video:
 
 ```json
 {
@@ -158,20 +121,20 @@ Successful video example:
 }
 ```
 
-`thumbnail_url` is returned only when Google Flow provides one. Generated URLs are upstream-owned and may expire; copy successful output to your own durable storage if it must persist.
+Generated URLs are upstream-owned and may expire. Copy important outputs to durable application storage.
 
-A queued/running task remains the same task while FlowProviderAPI handles capacity and retry. Do not submit a duplicate task merely because dispatch is delayed.
-
-Other task endpoints:
+Other status endpoints:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /v1/tasks/{task_id}/cancel` | Cooperative cancellation; upstream work may already be dispatched. |
-| `GET /v1/tasks?limit=20&after={task_id}&status=&type=` | List caller-owned tasks; `limit` max 100. |
+| `POST /v1/status/{task_id}/cancel` | Cooperative cancellation. |
+| `GET /v1/status?limit=20&after={task_id}&status=&type=` | List caller-owned generation statuses; `limit` max 100. |
+
+`status` accepts only `queued`, `running`, `succeeded`, `failed`, `canceled`. `type` accepts only `image`, `video`, `omni`; invalid values return validation errors instead of an empty list.
 
 ## Error contract
 
-Synchronous HTTP errors use one envelope:
+Synchronous errors use one envelope:
 
 ```json
 {
@@ -179,31 +142,20 @@ Synchronous HTTP errors use one envelope:
     "status_code": 422,
     "code": "VALIDATION_ERROR",
     "message": "Request validation failed.",
-    "details": [{"field":"media_ids","code":"MISSING","message":"Field required"}],
+    "details": [],
     "request_id": "req_...",
     "retryable": false
   }
 }
 ```
 
-| Status | Typical code | Action |
-|---:|---|---|
-| 400 | `INVALID_JSON` | Fix payload. |
-| 401 | `INVALID_API_KEY` | Fix/rotate server secret. |
-| 404 | `MEDIA_NOT_FOUND`, `JOB_NOT_FOUND` | Check ID and ownership. |
-| 413 | `MEDIA_TOO_LARGE`, `REFERENCE_MEDIA_TOO_LARGE` | Reduce media size. |
-| 422 | `VALIDATION_ERROR`, `INVALID_MEDIA_REFERENCE`, `INVALID_MEDIA_TYPE` | Fix request/reference. |
-| 429 | `RATE_LIMIT_EXCEEDED` | Back off; respect `Retry-After` if supplied. |
-| 5xx | `INTERNAL_ERROR` or provider issue | Retry only when `retryable` is true; log `request_id`. |
-
-Provider failures can also occur inside task polling: task lookup returns `200` with terminal `status: "failed"` and a structured `error`.
+Provider failures can occur inside status polling: `GET /v1/status/{task_id}` still returns HTTP `200` when a known generation has terminal `status: "failed"`; inspect its nested `error`.
 
 ## Integration checklist
 
 1. Store `task_id` immediately after `202`.
-2. Store `media_id` as a 15-digit string and send it back as a JSON string.
-3. Poll the existing task; do not create duplicate jobs for delayed capacity.
-4. Log `X-Request-Id` and task `error.request_id`.
-5. Copy completed direct output URLs to durable application storage when persistence is required.
-
-For the minimal application-orchestrator boundary, see [orchestrator-contract.md](orchestrator-contract.md).
+2. Store `media_id` as a 15-digit string.
+3. Poll `/v1/status/{task_id}`; do not resubmit a generation merely because capacity is delayed.
+4. If your own product needs deduplication, implement it in your application layer before calling FlowProviderAPI.
+5. Log `X-Request-Id` and nested error `request_id`.
+6. Copy direct output URLs to durable storage when persistence is required.
