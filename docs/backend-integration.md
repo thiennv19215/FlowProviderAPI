@@ -10,12 +10,12 @@ Keep the API key on your server only. A Bearer key owns its generation statuses 
 ## Contract rules
 
 - Generation calls are asynchronous and return `202 Accepted` with a server-generated `task_id`.
-- Every generation POST is a new submission. `Idempotency-Key` is not part of V1.
+- Application orchestrators should prefer `POST /v1/generations` and send a stable `Idempotency-Key` for each logical submission.
+- Retrying the same normalized unified submission with the same API client and key returns the same durable task; reusing that key for a different normalized submission returns `409 IDEMPOTENCY_KEY_CONFLICT`.
 - Poll `GET /v1/status/{task_id}` every 3–5 seconds while `status` is `queued` or `running`.
 - `media_id` is a **15-digit JSON string** such as `"123456789012345"`.
 - `task_id` is an opaque string.
-- Pass `X-Request-Id` to correlate logs; the response returns the same header.
-- Application orchestrators should prefer `POST /v1/generations`.
+- Pass `X-Request-Id` to correlate logs; the response returns the same header. FlowCanvas uses the same logical submission key for both `Idempotency-Key` and `X-Request-Id`.
 
 ```ts
 type MediaId = string;
@@ -67,6 +67,8 @@ Use `GET /v1/media/{media_id}` for metadata. Uploaded media content URLs require
 POST /v1/generations
 Content-Type: application/json
 Authorization: Bearer <API_KEY>
+Idempotency-Key: flowcanvas:42:image:0
+X-Request-Id: flowcanvas:42:image:0
 ```
 
 ```json
@@ -84,15 +86,19 @@ Authorization: Bearer <API_KEY>
 
 `kind` is `image`, `video`, or `omni`. Provider-specific normalization, account scheduling, Google Flow project/media mapping, capacity and retries remain internal.
 
+If a unified generation POST times out after the Provider may have accepted it, retry the exact same logical submission with the same `Idempotency-Key`. Do not mint a new key for that retry.
+
 Compatibility generation endpoints remain available:
 
 - `POST /v1/images/generations`
 - `POST /v1/videos/image-to-video`
 - `POST /v1/videos/omni-generations`
 
+The compatibility endpoints keep their native request shapes. The server-to-server idempotency guarantee described above belongs to the unified `/v1/generations` contract.
+
 ## Status polling
 
-All generation endpoints return `202` with:
+Generation endpoints return `202` with:
 
 ```json
 {"task_id":"job_abc123","status":"queued","outputs":[],"error":null}
@@ -153,9 +159,9 @@ Provider failures can occur inside status polling: `GET /v1/status/{task_id}` st
 
 ## Integration checklist
 
-1. Store `task_id` immediately after `202`.
-2. Store `media_id` as a 15-digit string.
-3. Poll `/v1/status/{task_id}`; do not resubmit a generation merely because capacity is delayed.
-4. If your own product needs deduplication, implement it in your application layer before calling FlowProviderAPI.
+1. Generate one stable `Idempotency-Key` per logical unified generation submission and persist the returned `task_id` immediately after `202`.
+2. If the initial submit result is ambiguous, retry the same normalized request with the same key.
+3. Store `media_id` as a 15-digit string.
+4. Poll `/v1/status/{task_id}`; do not resubmit a generation merely because capacity is delayed.
 5. Log `X-Request-Id` and nested error `request_id`.
 6. Copy direct output URLs to durable storage when persistence is required.

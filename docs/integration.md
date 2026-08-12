@@ -13,14 +13,14 @@ Authorization: Bearer fpa_live_...
 Content-Type: application/json
 ```
 
-Every generation POST creates a new server task. `Idempotency-Key` is not part of the V1 contract.
+Application backends should use the unified generation endpoint with one stable `Idempotency-Key` for each logical submission. Retrying the same normalized unified request with the same API client and key returns the same durable task; reusing that key for a different submission returns `409 IDEMPOTENCY_KEY_CONFLICT`.
 
 ## Create a generation
 
-Application backends should prefer:
-
 ```http
 POST /v1/generations
+Idempotency-Key: flowcanvas:42:image:0
+X-Request-Id: flowcanvas:42:image:0
 ```
 
 Example:
@@ -44,7 +44,7 @@ Compatibility endpoints remain available:
 - `POST /v1/videos/image-to-video`
 - `POST /v1/videos/omni-generations`
 
-The response is `202 Accepted` and contains a server-generated `task_id`.
+The response is `202 Accepted` and contains a server-generated `task_id`. Persist it immediately. If the initial unified submit response is ambiguous, retry the exact same logical request with the same `Idempotency-Key` rather than minting a new key.
 
 ## Poll generation status
 
