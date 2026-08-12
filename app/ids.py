@@ -9,3 +9,8 @@ def new_id(prefix: str) -> str:
 def new_compact_id(prefix: str) -> str:
     """Return a URL-safe public ID with 96 bits of randomness."""
     return f"{prefix}_{secrets.token_urlsafe(12)}"
+
+
+def new_numeric_id() -> str:
+    """Return a JavaScript-safe, 15-digit public media identifier."""
+    return str(secrets.randbelow(900_000_000_000_000) + 100_000_000_000_000)

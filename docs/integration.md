@@ -40,7 +40,7 @@ Successful output:
 {
   "task_id": "task_xxx",
   "status": "succeeded",
-  "outputs": [{"id": "media_xxx", "type": "image", "url": "https://flow-content.google/..."}],
+  "outputs": [{"media_id": 123456789012345, "type": "image", "url": "https://flow-content.google/..."}],
   "error": null
 }
 ```
@@ -57,18 +57,18 @@ curl -X POST https://api.shopcongngheso5.io.vn/v1/media \
   -F 'file=@reference.png;type=image/png'
 ```
 
-The returned `id` is the media reference used by `reference_media_ids` and `start_media_id`. `GET /v1/media/{media_id}` returns metadata and its usable `url`.
+The returned `media_id` is the media reference used by `reference_media_ids` and `start_media_id`. `GET /v1/media/{media_id}` returns metadata and its usable `url`.
 
 ## Use generated media as a reference
 
-Pass one or more returned asset IDs:
+Pass one or more returned media IDs:
 
 ```json
 {
   "prompt": "Create a new studio scene using these references",
   "model": "banana_pro",
   "aspect_ratio": "9:16",
-  "reference_media_ids": ["media_xxx", "media_yyy"]
+  "reference_media_ids": [123456789012345, 234567890123456]
 }
 ```
 
@@ -78,7 +78,7 @@ Pass one or more returned asset IDs:
 curl -X POST https://api.shopcongngheso5.io.vn/v1/videos/image-to-video \
   -H "Authorization: Bearer $FLOW_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d '{"prompt":"Slow cinematic camera movement","start_media_id":"media_xxx","quality":"lite","aspect_ratio":"9:16"}'
+  -d '{"prompt":"Slow cinematic camera movement","start_media_id":123456789012345,"quality":"lite","aspect_ratio":"9:16"}'
 ```
 
 Video results use the same `/v1/tasks/{task_id}` polling contract. A video output includes `thumbnail_url` when Google Flow provides a preview image; it is `null` for image output or when Flow has no preview. For multi-reference video use `/v1/videos/omni-generations` with `reference_media_ids` and `duration` (`2`, `4`, `8`, or `10`).

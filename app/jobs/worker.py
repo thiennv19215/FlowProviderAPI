@@ -205,7 +205,14 @@ class JobWorker:
 
     async def _handle_error(self,db,job,exc):
         db.rollback();safe_to_retry=job.stage in {"preparing"} and job.attempt_count<self.runtime.settings.max_attempts_before_dispatch and (not isinstance(exc,ProviderError) or exc.retryable)
-        if safe_to_retry:
+        # Capacity is transient: credits can refresh and another account can
+        # connect. Do not burn the normal dispatch-attempt budget in seconds
+        # and turn an otherwise valid task into a terminal failure.
+        if isinstance(exc,ProviderError) and exc.code=="PROVIDER_ACCOUNT_UNAVAILABLE" and job.stage=="preparing":
+            job.status="queued";job.stage="queued";job.provider_account_id=None
+            self._set_error(job,exc,fallback_code="PROVIDER_ACCOUNT_UNAVAILABLE",retryable=True)
+            job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.account_unavailable_retry_seconds);job.lease_owner=None;job.lease_expires_at=None
+        elif safe_to_retry:
             job.status="queued";job.stage="queued";job.provider_account_id=None;self._set_error(job,exc,fallback_code="PROVIDER_UNAVAILABLE",retryable=True);job.next_run_at=utcnow()+timedelta(seconds=min(30,2**job.attempt_count));job.lease_owner=None;job.lease_expires_at=None
         else:
             job.status="failed";job.stage="completed";self._set_error(job,exc,fallback_code="PROVIDER_ERROR");job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None

@@ -7,9 +7,10 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.db.models import MediaAsset, ProjectMediaMapping
-from app.ids import new_compact_id, new_id
+from app.ids import new_id, new_numeric_id
 from app.providers.base import ProviderMedia
 
 PROVIDER_MEDIA_HOSTS={"labs.google","flow.google","flow-content.google","storage.googleapis.com","googleusercontent.com"}
@@ -24,6 +25,14 @@ class AssetService:
         if not suffix:suffix=mimetypes.guess_extension(mime_type) or ""
         return f"clients/{client_id}/{asset_id}{suffix[:12]}"
 
+    @staticmethod
+    def _new_available_id(db)->str:
+        for _ in range(8):
+            candidate=new_numeric_id()
+            lookup=getattr(db,"get",None)
+            if lookup is None or lookup(MediaAsset,candidate) is None:return candidate
+        raise RuntimeError("media_id_allocation_failed")
+
     def _provider_url_allowed(self,value:str)->bool:
         try:
             parsed=urlparse(value);host=(parsed.hostname or "").lower()
@@ -32,9 +41,14 @@ class AssetService:
         except Exception:return False
 
     def create_pending(self,db,*,client_id:str,filename:str,mime_type:str,asset_type:str,size_bytes:int|None=None)->MediaAsset:
-        aid=new_compact_id("media");key=self.storage_key(client_id,aid,filename,mime_type)
-        asset=MediaAsset(id=aid,client_id=client_id,status="pending",type=asset_type,storage_key=key,filename=filename,mime_type=mime_type,size_bytes=size_bytes)
-        db.add(asset);db.commit();db.refresh(asset);return asset
+        for _ in range(3):
+            aid=self._new_available_id(db);key=self.storage_key(client_id,aid,filename,mime_type)
+            asset=MediaAsset(id=aid,client_id=client_id,status="pending",type=asset_type,storage_key=key,filename=filename,mime_type=mime_type,size_bytes=size_bytes)
+            db.add(asset)
+            try:
+                db.commit();db.refresh(asset);return asset
+            except IntegrityError:db.rollback()
+        raise RuntimeError("media_id_allocation_failed")
 
     async def _reject_pending_object(self,asset:MediaAsset,code:str):
         try:
@@ -77,7 +91,7 @@ class AssetService:
             raise
 
     async def ingest_provider_media(self,db,*,client_id:str,job_id:str,provider:str,media:ProviderMedia,asset_type:str,provider_project_id:str|None=None)->MediaAsset:
-        mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=new_compact_id("media")
+        mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=self._new_available_id(db)
         key=None;external_url=None;size=None;checksum_value=None;stored=False
         limit=getattr(self.settings,"max_provider_output_bytes",1024*1024*1024)
         if media.url:

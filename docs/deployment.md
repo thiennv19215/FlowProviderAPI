@@ -81,7 +81,7 @@ The default production configuration keeps user-supplied reference uploads in th
 FLOW_PROVIDER_LOCAL_STORAGE_PATH=/app/.data/assets
 ```
 
-Generated Google Flow outputs are not copied into this volume. Their compact `asset_id`, internal Flow media mapping, and direct output URL are registered in PostgreSQL. The direct URL can be returned immediately to the calling backend.
+Generated Google Flow outputs are not copied into this volume. Their compact numeric `media_id`, internal Flow media mapping, and direct output URL are registered in PostgreSQL. The direct URL can be returned immediately to the calling backend.
 
 Direct Flow output URLs remain upstream-owned and may expire or be revoked. An integrating backend that requires permanent output media should download each successful result promptly into its own storage.
 
@@ -114,6 +114,7 @@ Treat this hostname as an API/WebSocket origin:
 - do not put an interactive browser challenge in front of API or WebSocket requests;
 - if Cloudflare Access is enabled, clients and the Chrome extension need a non-interactive service-token flow, which FlowProvider does not currently inject automatically;
 - keep normal WAF/DDoS protections;
+- if a valid API request is blocked with Cloudflare error `1010`, open its Ray ID in **Security events** and narrow or remove the matching custom rule for this API hostname. Do not use a browser-integrity or interactive-challenge rule on `/v1/*`;
 - the connector endpoint is intentionally unauthenticated, so add an IP-based rate-limit rule for WebSocket handshake requests to `/api/extensions/ws`; do not use an interactive challenge for that path.
 
 ## 5. Deploy
@@ -172,6 +173,8 @@ For a custom deployment, change the Provider server in the extension popup to yo
 `/api/extensions/ws` is public by design. Anyone who can reach it can attempt to register a connector, so connector identity is not an authentication boundary. Use Cloudflare WAF/DDoS protection and an IP-based handshake rate limit to reduce abuse while preserving automatic extension connections.
 
 After the extension connects, submit a real generation through the public API and poll its task until completion. The mock E2E suite is not a replacement for this live acceptance test.
+
+`GET /v1/health` reports both `ready_accounts` and `video_lite_ready_accounts`. The latter is the number of connected accounts currently able to cover the 20-credit Lite-video minimum. If it is zero, video tasks remain queued and retry after `FLOW_PROVIDER_ACCOUNT_UNAVAILABLE_RETRY_SECONDS` instead of being failed immediately.
 
 ## 8. Database backups
 

@@ -85,14 +85,14 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         direct_url = f"{media.base_url}/media/mock-image-1-1"
         assert job["outputs"][0]["url"] == direct_url
         content = client.get(
-            f"/media/{job['outputs'][0]['id']}",
+            f"/media/{job['outputs'][0]['media_id']}",
             headers=auth,
             follow_redirects=False,
         )
         assert content.status_code == 307
         assert content.headers["location"] == direct_url
         with app.state.runtime.session_factory() as db:
-            asset = db.scalar(select(MediaAsset).where(MediaAsset.id == job["outputs"][0]["id"]))
+            asset = db.scalar(select(MediaAsset).where(MediaAsset.id == job["outputs"][0]["media_id"]))
             assert asset.external_url == direct_url
             assert asset.storage_key is None
 
@@ -102,7 +102,7 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
             json={
                 "prompt": "the same product in dramatic lighting",
                 "provider": "google_flow",
-                "reference_media_ids": [job["outputs"][0]["id"]],
+                "reference_media_ids": [job["outputs"][0]["media_id"]],
             },
         )
         assert referenced.status_code == 202

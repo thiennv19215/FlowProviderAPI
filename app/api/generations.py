@@ -15,8 +15,8 @@ CLIENT_WORKSPACE_KEY="__api_client__"
 
 
 def _reference_media_ids(data:dict,kind:str)->list[str]:
-    if kind=="video":return [data["start_media_id"]]
-    return data.get("reference_media_ids") or []
+    if kind=="video":return [str(data["start_media_id"])]
+    return [str(media_id) for media_id in data.get("reference_media_ids") or []]
 
 
 def _validate_reference_assets(request:Request,db,client,data:dict,kind:str)->None:
@@ -36,6 +36,8 @@ def _validate_reference_assets(request:Request,db,client,data:dict,kind:str)->No
 
 def _submit(request: Request, db, client, payload, kind: str):
     data=payload.model_dump(mode="json")
+    if kind=="video":data["start_media_id"]=str(data["start_media_id"])
+    else:data["reference_media_ids"]=[str(media_id) for media_id in data.get("reference_media_ids") or []]
     provider=payload.provider;model=getattr(payload,"model",None)
     request.app.state.runtime.providers.get(provider)
     _validate_reference_assets(request,db,client,data,kind)

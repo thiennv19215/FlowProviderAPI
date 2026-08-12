@@ -8,7 +8,7 @@ Shared, developer-facing Google Flow media API through a Chrome MV3 connector. T
 - durable PostgreSQL generation jobs with leases
 - provider account scheduling/capacity and cooldowns
 - Google Flow project/media mapping
-- compact `asset_*` references with direct Google Flow output URLs
+- compact numeric media references with direct Google Flow output URLs
 - durable reference-upload storage in a local Docker volume
 - direct Chrome extension WebSocket protocol v7
 - API keys, client concurrency limits, rate-limit headers, structured errors
@@ -62,7 +62,7 @@ Operational probes `/health/live` and `/health/ready`, plus the extension-only `
 
 The current V1 preserves provider account identity across extension reconnects, invalidates stale signed-out accounts, reserves estimated credits from active jobs, uses duration-aware Omni credit costs, distinguishes terminal provider failures from transient polling failures, and bounds consecutive polling failures so jobs cannot remain `running` forever on a persistent provider error.
 
-Provider output URLs are host-allowlisted before they enter the public task result. The API preserves a compact media `id` and project-local Flow media mapping so a generated image can be reused as a reference without uploading it again. A user-supplied file is validated and stored by `POST /v1/media`; Google Flow reference uploads have a separate in-memory hard limit before base64 encoding. Readiness checks both the database and configured reference-upload storage backend.
+Provider output URLs are host-allowlisted before they enter the public task result. The API preserves a compact `media_id` and project-local Flow media mapping so a generated image can be reused as a reference without uploading it again. A user-supplied file is validated and stored by `POST /v1/media`; Google Flow reference uploads have a separate in-memory hard limit before base64 encoding. Readiness checks both the database and configured reference-upload storage backend.
 
 The public extension WebSocket accepts unauthenticated connector registrations by design. Anyone who can reach the hostname can attempt to connect, so do not treat connector identity as trusted. Keep Cloudflare's WAF/DDoS protections enabled and apply an IP-based rate limit to WebSocket handshake requests for `/api/extensions/ws` without adding an interactive challenge that would break the extension connection.
 

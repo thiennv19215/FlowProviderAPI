@@ -9,7 +9,7 @@ from fastapi.responses import RedirectResponse
 
 from app.api.deps import get_client, get_db
 from app.api.errors import APIError
-from app.api.schemas import MediaOutput
+from app.api.schemas import MediaId, MediaOutput
 from app.api.serializers import media_dict
 
 router=APIRouter(prefix="/v1/media",tags=["Media"])
@@ -49,15 +49,15 @@ async def create_media(request: Request,file: UploadFile=File(...),media_type: s
             except FileNotFoundError:pass
 
 @router.get("/{media_id}",response_model=MediaOutput,summary="Get media")
-def get_media(media_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
-    asset=request.app.state.runtime.assets.get_owned(db,media_id,client.id)
+def get_media(media_id: MediaId,request: Request,db=Depends(get_db),client=Depends(get_client)):
+    asset=request.app.state.runtime.assets.get_owned(db,str(media_id),client.id)
     if not asset:raise APIError(404,"MEDIA_NOT_FOUND","The requested media does not exist.")
     return media_dict(request.app.state.runtime,asset)
 
 
 @delivery_router.get("/media/{media_id}",include_in_schema=False)
-async def get_media_file(media_id: str,request: Request,db=Depends(get_db),client=Depends(get_client)):
-    asset=request.app.state.runtime.assets.get_owned(db,media_id,client.id)
+async def get_media_file(media_id: int,request: Request,db=Depends(get_db),client=Depends(get_client)):
+    asset=request.app.state.runtime.assets.get_owned(db,str(media_id),client.id)
     if not asset or asset.status!="ready":raise APIError(404,"MEDIA_NOT_FOUND","The requested media is not ready.")
     if asset.external_url:return RedirectResponse(asset.external_url,status_code=307)
     if not asset.storage_key:raise APIError(404,"MEDIA_CONTENT_NOT_FOUND","The requested media has no available content.")

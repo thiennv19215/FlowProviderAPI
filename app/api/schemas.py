@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from pydantic.json_schema import JsonSchemaValue
+
+MediaId = Annotated[StrictInt, Field(ge=100_000_000_000_000, le=999_999_999_999_999)]
 
 
 class ErrorDetail(BaseModel):
@@ -41,11 +43,11 @@ class ImageGenerationRequest(FlowGenerationRequest):
     model: Literal["banana_pro", "banana_2"] = "banana_pro"
     aspect_ratio: Literal["1:1", "16:9", "9:16"] = "9:16"
     output_count: int = Field(default=1, ge=1, le=4)
-    reference_media_ids: list[str] = Field(default_factory=list, max_length=8)
+    reference_media_ids: list[MediaId] = Field(default_factory=list, max_length=8)
 
 class ImageToVideoRequest(FlowGenerationRequest):
     prompt: str = Field(min_length=1, max_length=12000)
-    start_media_id: str = Field(min_length=8,max_length=80)
+    start_media_id: MediaId
     quality: Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"] = "lite"
     aspect_ratio: Literal["16:9", "9:16"] = "16:9"
 
@@ -53,10 +55,10 @@ class OmniVideoGenerationRequest(FlowGenerationRequest):
     prompt: str = Field(min_length=1, max_length=12000)
     duration: Literal[2, 4, 8, 10] = 8
     aspect_ratio: Literal["16:9", "9:16"] = "9:16"
-    reference_media_ids: list[str] = Field(min_length=1, max_length=8)
+    reference_media_ids: list[MediaId] = Field(min_length=1, max_length=8)
 
 class MediaOutput(BaseModel):
-    id: str
+    media_id: int
     object: Literal["media"] = "media"
     type: str
     status: str = "ready"
@@ -70,7 +72,7 @@ class MediaOutput(BaseModel):
 
 
 class TaskMediaOutput(BaseModel):
-    id: str
+    media_id: int
     type: str
     url: str | None = None
     thumbnail_url: str | None = None

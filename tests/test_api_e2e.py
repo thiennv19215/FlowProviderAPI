@@ -20,7 +20,8 @@ def test_image_generation_end_to_end(client, app, auth):
     assert body["status"] == "succeeded"
     assert len(body["outputs"]) == 1
     assert body["outputs"][0]["thumbnail_url"] is None
-    asset_id = body["outputs"][0]["id"]
+    asset_id = body["outputs"][0]["media_id"]
+    assert isinstance(asset_id, int)
     content = client.get(f"/media/{asset_id}", headers=auth)
     assert content.content == b"fake-image-bytes"
     assert content.headers["content-type"].startswith("image/png")
@@ -56,12 +57,13 @@ def test_server_generates_task_id(client,auth):
     assert response.json()["task_id"].startswith("job_")
 
 
-def test_new_media_ids_are_compact_and_url_safe(client,auth):
+def test_new_media_ids_are_numeric_and_url_safe(client,auth):
     response=client.post("/v1/media",headers=auth,files={"file":("ref.png",b"image","image/png")})
     assert response.status_code==201
-    media_id=response.json()["id"]
-    assert re.fullmatch(r"media_[A-Za-z0-9_-]{16}",media_id)
-    assert len(media_id)==22
+    media_id=response.json()["media_id"]
+    assert isinstance(media_id, int)
+    assert re.fullmatch(r"[1-9][0-9]{14}",str(media_id))
+    assert len(str(media_id))==15
 
 
 def test_structured_auth_error(client):
@@ -127,17 +129,20 @@ def test_openapi_exposes_typed_generation_and_asset_responses(client):
     assert "/media/{media_id}" not in schema["paths"]
     assert "/v1/assets/uploads" not in schema["paths"]
     assert upload["tags"]==["Media"]
+    get_media=schema["paths"]["/v1/media/{media_id}"]["get"]
+    assert get_media["parameters"][0]["schema"]["type"]=="integer"
 
 
 def test_upload_media_in_one_request(client,auth):
     response=client.post("/v1/media",headers=auth,files={"file":("reference.png",b"image-bytes","image/png")})
     assert response.status_code==201
     media=response.json()
-    assert set(media)>={"id","object","type","status","mime_type","url"}
+    assert set(media)>={"media_id","object","type","status","mime_type","url"}
     assert media["object"]=="media"
     assert media["type"]=="image"
     assert media["status"]=="ready"
-    assert media["url"].endswith(f"/media/{media['id']}")
+    assert isinstance(media["media_id"],int)
+    assert media["url"].endswith(f"/media/{media['media_id']}")
 
 
 def test_legacy_media_upload_routes_are_removed(client,auth):

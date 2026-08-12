@@ -11,7 +11,7 @@ from app.providers.base import ProviderDispatch, ProviderMedia, ProviderPollResu
 def upload_media(client,auth,*,filename:str,data:bytes,content_type:str):
     response=client.post("/v1/media",headers=auth,files={"file":(filename,data,content_type)})
     assert response.status_code==201
-    return response.json()["id"]
+    return response.json()["media_id"]
 
 
 class FakeProvider:

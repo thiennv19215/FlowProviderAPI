@@ -44,7 +44,7 @@ services:
     stop_grace_period: 30s
 
   cloudflared:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2025.8.1
     pull_policy: always
     restart: unless-stopped
     command:
