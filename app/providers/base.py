@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
 
 
 class ProviderError(RuntimeError):
@@ -32,13 +31,3 @@ class ProviderPollResult:
     done: bool
     outputs: list[ProviderMedia] = field(default_factory=list)
     error: str | None = None
-
-
-class ProviderAdapter(Protocol):
-    name: str
-    requires_account_pool: bool
-
-    async def generate_image(self, *, job, db, account_id: str | None) -> list[ProviderMedia]: ...
-    async def dispatch_video(self, *, job, db, account_id: str | None) -> ProviderDispatch: ...
-    async def dispatch_omni(self, *, job, db, account_id: str | None) -> ProviderDispatch: ...
-    async def poll_video(self, *, job, db, account_id: str | None, dispatch: ProviderDispatch) -> ProviderPollResult: ...

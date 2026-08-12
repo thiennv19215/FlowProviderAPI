@@ -28,12 +28,12 @@ class GlobalScheduler:
         rows=db.scalars(select(GenerationJob).where(GenerationJob.provider_account_id==account_id,GenerationJob.status=="running",GenerationJob.stage.in_(["preparing","dispatching","provider_running","storing_outputs"])))
         return sum(estimated_credit_cost(job.kind,job.request_payload) for job in rows)
 
-    def _workspace_accounts(self,db,*,client_id:str|None,workspace_key:str|None,provider:str|None)->set[str]:
+    def _workspace_accounts(self,db,*,client_id:str|None,provider:str|None)->set[str]:
         if not client_id or not provider:return set()
         return set(db.scalars(select(WorkspaceProject.provider_account_id).where(WorkspaceProject.client_id==client_id,WorkspaceProject.provider==provider)))
 
-    def _ranked_candidates(self,db,*,kind:str,payload:dict|None,client_id:str|None,workspace_key:str|None,provider:str|None):
-        required=estimated_credit_cost(kind,payload);sticky_accounts=self._workspace_accounts(db,client_id=client_id,workspace_key=workspace_key,provider=provider);candidates=[]
+    def _ranked_candidates(self,db,*,kind:str,payload:dict|None,client_id:str|None,provider:str|None):
+        required=estimated_credit_cost(kind,payload);sticky_accounts=self._workspace_accounts(db,client_id=client_id,provider=provider);candidates=[]
         for conn in self.bridge.ready_connections():
             active=active_count_for_account(db,conn.id);available=(conn.credits or 0)-self._reserved_credits(db,conn.id)
             if active>=conn.max_slots or available<required:continue
@@ -42,7 +42,7 @@ class GlobalScheduler:
 
     def reserve_account(self,db,job:GenerationJob)->str:
         required=estimated_credit_cost(job.kind,job.request_payload)
-        for account_id in self._ranked_candidates(db,kind=job.kind,payload=job.request_payload,client_id=job.client_id,workspace_key=job.workspace_key,provider=job.provider):
+        for account_id in self._ranked_candidates(db,kind=job.kind,payload=job.request_payload,client_id=job.client_id,provider=job.provider):
             self._lock_account(db,account_id)
             conn=self.bridge.get(account_id)
             if not conn or not conn.ready:continue
@@ -51,8 +51,3 @@ class GlobalScheduler:
             if active>=conn.max_slots or available<required:continue
             job.provider_account_id=account_id;db.commit();db.refresh(job);return account_id
         raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
-
-    def choose_account(self, db, *, kind: str, payload: dict | None = None, client_id: str|None = None, workspace_key: str|None = None, provider: str|None = None) -> str:
-        candidates=self._ranked_candidates(db,kind=kind,payload=payload,client_id=client_id,workspace_key=workspace_key,provider=provider)
-        if not candidates:raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
-        return candidates[0]

@@ -15,6 +15,3 @@ class ProviderRegistry:
         if provider is None:
             raise APIError(400, "UNSUPPORTED_PROVIDER", f"Provider '{name}' is not configured.", field="provider")
         return provider
-
-    def names(self) -> list[str]:
-        return sorted(self._providers)

@@ -34,23 +34,29 @@ def _scheduler_client(db,client_id:str):
     db.add(row);db.commit();return row
 
 
+def _choose_account(scheduler,db,*,kind:str,payload:dict|None=None,client_id:str|None=None,provider:str|None=None):
+    candidates=scheduler._ranked_candidates(db,kind=kind,payload=payload,client_id=client_id,provider=provider)
+    if not candidates:raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
+    return candidates[0]
+
+
 def test_scheduler_prefers_less_loaded_ready_account(app):
     bridge,a,b=_ready_accounts()
     scheduler=GlobalScheduler(bridge)
     with app.state.runtime.session_factory() as db:
-        assert scheduler.choose_account(db,kind="video") == b.id
+        assert _choose_account(scheduler,db,kind="video") == b.id
 
 
 def test_zero_credit_account_can_create_images_but_never_receives_video(app):
     bridge,a,b=_ready_accounts();a.credits=0;b.cooldown_until=time.time()+60
     scheduler=GlobalScheduler(bridge)
     with app.state.runtime.session_factory() as db:
-        assert scheduler.choose_account(db,kind="image") == a.id
+        assert _choose_account(scheduler,db,kind="image") == a.id
         with pytest.raises(ProviderError,match="No ready Google Flow account"):
-            scheduler.choose_account(db,kind="video")
+            _choose_account(scheduler,db,kind="video")
 
 
-def test_scheduler_prefers_existing_workspace_project(app):
+def test_scheduler_prefers_existing_client_project(app):
     from app.db.models import WorkspaceProject
 
     bridge,a,b=_ready_accounts()
@@ -62,13 +68,13 @@ def test_scheduler_prefers_existing_workspace_project(app):
             provider="google_flow",provider_account_id=a.id,provider_project_id="project-a",
         ))
         db.commit()
-        chosen=scheduler.choose_account(
-            db,kind="video",client_id=client_row.id,workspace_key="sticky:workspace",provider="google_flow"
+        chosen=_choose_account(
+            scheduler,db,kind="video",client_id=client_row.id,provider="google_flow"
         )
         assert chosen == a.id
 
 
-def test_scheduler_spills_over_when_workspace_account_is_saturated(app):
+def test_scheduler_spills_over_when_client_project_account_is_saturated(app):
     from app.db.models import GenerationJob, WorkspaceProject, utcnow
 
     bridge,a,b=_ready_accounts();a.max_slots=1
@@ -85,8 +91,8 @@ def test_scheduler_spills_over_when_workspace_account_is_saturated(app):
             request_payload={"prompt":"x"},provider_account_id=a.id,next_run_at=utcnow(),attempt_count=1,
         ))
         db.commit()
-        chosen=scheduler.choose_account(
-            db,kind="video",client_id=client_row.id,workspace_key="spill:workspace",provider="google_flow"
+        chosen=_choose_account(
+            scheduler,db,kind="video",client_id=client_row.id,provider="google_flow"
         )
         assert chosen == b.id
 
