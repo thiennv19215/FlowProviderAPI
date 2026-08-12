@@ -6,7 +6,11 @@ FlowProviderAPI exposes a small server-to-server generation boundary for applica
 
 `POST /v1/generations`
 
-Each POST is an independent generation submission. The API does not expose or honor `Idempotency-Key`; callers should store the returned `task_id` immediately and poll that task's status instead of resubmitting while it is still in progress.
+Send a stable `Idempotency-Key` header for each logical remote submission. Retrying the same logical submission with the same API client and key returns the same durable Provider task instead of creating duplicate generation work. Reusing the same key for a different normalized submission returns `409 IDEMPOTENCY_KEY_CONFLICT`.
+
+```http
+Idempotency-Key: flowcanvas:42:image:0
+```
 
 ```json
 {
@@ -38,6 +42,8 @@ Poll `GET /v1/status/{task_id}` while `status` is `queued` or `running`. Stop on
 
 List caller-owned generation statuses with `GET /v1/status`; request cooperative cancellation with `POST /v1/status/{task_id}/cancel`.
 
+If the caller cannot tell whether a prior `POST /v1/generations` completed, retry that POST with the same `Idempotency-Key`. Do not generate a new key for the same logical submission.
+
 ## Reference media
 
 Upload application-owned reference bytes with `POST /v1/media`. `media_id` is a **15-digit JSON string**, not a number. Within one API client, repeated uploads of identical ready content and media type are content-deduplicated by SHA-256 and return the existing media object.
@@ -46,4 +52,4 @@ Generated output URLs are upstream-owned and may expire. An application that nee
 
 ## Ownership boundary
 
-FlowProviderAPI owns provider-specific normalization, account scheduling, Google Flow projects/media mapping, leases, polling, provider errors, and connector credentials. The calling application owns its own jobs/workflows, user authorization, submission deduplication if desired, and durable result storage.
+FlowProviderAPI owns provider-specific normalization, account scheduling, Google Flow projects/media mapping, leases, polling, provider errors, connector credentials, and durable remote-submission idempotency. The calling application owns its own jobs/workflows, user authorization, stable logical idempotency keys, and durable result storage.
