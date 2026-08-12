@@ -29,3 +29,15 @@ jobs:
       - run: node --check extension/popup.js
       - run: node --test extension/tests/*.test.mjs
       - run: python -m json.tool extension/manifest.json >/dev/null
+  deploy-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate deployment shell scripts
+        run: bash -n scripts/deploy-production.sh scripts/backup-production-db.sh
+      - name: Validate production Compose config
+        run: |
+          cp .env.production.example .env.production
+          sed -i 's/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=ci_postgres_secret/' .env.production
+          sed -i 's/^CLOUDFLARE_TUNNEL_TOKEN=$/CLOUDFLARE_TUNNEL_TOKEN=ci_tunnel_token/' .env.production
+          docker compose --env-file .env.production -f compose.production.yaml config >/dev/null
