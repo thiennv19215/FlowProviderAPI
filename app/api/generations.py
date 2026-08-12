@@ -140,6 +140,7 @@ def _unified_payload(payload: UnifiedGenerationRequest):
         except (TypeError, ValueError):
             output_count = 1
         return ImageGenerationRequest(
+            provider=payload.provider,
             prompt=payload.prompt,
             model=_IMAGE_MODELS.get(model_value, "banana_pro"),
             aspect_ratio=aspect_ratio or "9:16",
@@ -157,6 +158,7 @@ def _unified_payload(payload: UnifiedGenerationRequest):
             )
         quality_value = str(options.get("quality") or "lite").lower()
         return ImageToVideoRequest(
+            provider=payload.provider,
             prompt=payload.prompt,
             start_media_id=payload.media_ids[0],
             quality=_VIDEO_QUALITIES.get(quality_value, "lite"),
@@ -178,6 +180,7 @@ def _unified_payload(payload: UnifiedGenerationRequest):
     if duration not in _OMNI_DURATIONS:
         duration = 8
     return OmniVideoGenerationRequest(
+        provider=payload.provider,
         prompt=payload.prompt,
         reference_media_ids=payload.media_ids,
         duration=duration,
