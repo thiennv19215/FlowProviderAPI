@@ -1,0 +1,29 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import test from 'node:test';
+
+const loader = fs.readFileSync(new URL('../background-loader.js', import.meta.url), 'utf8');
+const bridge = fs.readFileSync(new URL('../session-bridge.js', import.meta.url), 'utf8');
+const offscreen = fs.readFileSync(new URL('../offscreen.js', import.meta.url), 'utf8');
+
+test('session bridge loads after background so it can reuse connector state', () => {
+  assert.match(loader, /background\.js", "session-bridge\.js/);
+});
+
+test('frame session is accepted only from the signed-in labs.google content frame', () => {
+  assert.match(bridge, /sender\.id !== chrome\.runtime\.id/);
+  assert.match(bridge, /url\.hostname === "labs\.google"/);
+  assert.match(bridge, /FLOW_PROVIDER_FRAME_SESSION/);
+});
+
+test('captured frame session updates the bearer cache and pushes auth to the provider socket', () => {
+  assert.match(bridge, /cachedBearer = normalizedToken/);
+  assert.match(bridge, /cachedBearerAt = Date\.now\(\)/);
+  assert.match(bridge, /type: "token_captured"/);
+});
+
+test('offscreen keepalive wakes the service worker without maintaining a second token cache', () => {
+  assert.match(offscreen, /FLOW_PROVIDER_KEEPALIVE/);
+  assert.equal(offscreen.includes('FLOW_PROVIDER_TOKEN_CACHE_'), false);
+  assert.match(bridge, /keepAlive\(\)\.catch/);
+});
