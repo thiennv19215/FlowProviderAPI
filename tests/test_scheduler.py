@@ -1,10 +1,18 @@
 from app.providers.google_flow.client import FlowBridge
 from app.jobs.scheduler import GlobalScheduler
+from app.db.models import utcnow
+from app.jobs.repository import _claimable_query
+from sqlalchemy.dialects import postgresql
 
 
 class DummyWS:
     async def send(self, payload): pass
     async def close(self, *args, **kwargs): pass
+
+
+def test_postgres_claim_query_locks_only_generation_rows():
+    sql=str(_claimable_query(utcnow()).compile(dialect=postgresql.dialect()))
+    assert "FOR UPDATE OF generation_jobs SKIP LOCKED" in sql
 
 
 def _ready_accounts():

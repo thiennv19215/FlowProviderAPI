@@ -30,8 +30,7 @@ def active_count_for_account(db, account_id: str) -> int:
     return int(db.scalar(select(func.count()).select_from(GenerationJob).where(GenerationJob.provider_account_id==account_id,GenerationJob.status=="running",GenerationJob.stage.in_(["preparing","dispatching","provider_running","storing_outputs"]))) or 0)
 
 
-def claim_next(db, *, worker_id: str, lease_seconds: int):
-    now=utcnow()
+def _claimable_query(now):
     active=(
         select(GenerationJob.client_id.label("client_id"),func.count().label("active_count"))
         .where(GenerationJob.status=="running")
@@ -49,9 +48,15 @@ def claim_next(db, *, worker_id: str, lease_seconds: int):
             func.coalesce(active.c.active_count,0) < ApiClient.max_concurrent_jobs,
         )
         .order_by(GenerationJob.priority.desc(),GenerationJob.created_at.asc())
-        .with_for_update(skip_locked=True)
+        .with_for_update(skip_locked=True,of=GenerationJob)
         .limit(1)
     )
+    return query
+
+
+def claim_next(db, *, worker_id: str, lease_seconds: int):
+    now=utcnow()
+    query=_claimable_query(now)
     job=db.scalar(query)
     if not job:return None
     _advisory_xact_lock(db,f"client-capacity:{job.client_id}")
@@ -68,7 +73,7 @@ def claim_next(db, *, worker_id: str, lease_seconds: int):
 
 def due_poll(db, *, worker_id: str, lease_seconds: int):
     now=utcnow()
-    query=(select(GenerationJob).where(GenerationJob.status=="running",GenerationJob.stage.in_(["provider_running","storing_outputs"]),GenerationJob.next_run_at<=now,or_(GenerationJob.lease_expires_at.is_(None),GenerationJob.lease_expires_at<=now)).order_by(GenerationJob.next_run_at.asc()).with_for_update(skip_locked=True).limit(1))
+    query=(select(GenerationJob).where(GenerationJob.status=="running",GenerationJob.stage.in_(["provider_running","storing_outputs"]),GenerationJob.next_run_at<=now,or_(GenerationJob.lease_expires_at.is_(None),GenerationJob.lease_expires_at<=now)).order_by(GenerationJob.next_run_at.asc()).with_for_update(skip_locked=True,of=GenerationJob).limit(1))
     job=db.scalar(query)
     if job:
         job.lease_owner=worker_id;job.lease_expires_at=now+timedelta(seconds=lease_seconds);db.commit();db.refresh(job)
