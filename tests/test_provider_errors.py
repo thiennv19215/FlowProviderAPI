@@ -33,7 +33,7 @@ def test_task_preserves_flow_error(client,app,auth,status_code,code,message,retr
     assert created.status_code==202
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
 
-    response=client.get(f"/v1/tasks/{created.json()['task_id']}",headers=auth)
+    response=client.get(f"/v1/status/{created.json()['task_id']}",headers=auth)
     assert response.status_code==200
     assert response.json()["status"]=="failed"
     assert response.json()["error"]=={
@@ -70,7 +70,7 @@ def test_task_returns_sanitized_upstream_error_details(client,app,auth):
     app.state.runtime.providers.register(provider)
     created=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":provider.name})
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    error=client.get(f"/v1/tasks/{created.json()['task_id']}",headers=auth).json()["error"]
+    error=client.get(f"/v1/status/{created.json()['task_id']}",headers=auth).json()["error"]
     assert error["details"]==[{"field":None,"code":"RATE_LIMIT_EXCEEDED","message":"Image generation quota is exhausted."}]
 
 
@@ -79,5 +79,5 @@ def test_failed_task_keeps_submission_request_id(client,app,auth):
     app.state.runtime.providers.register(provider)
     created=client.post("/v1/images/generations",headers={**auth,"X-Request-Id":"req_generation_trace"},json={"prompt":"cat","provider":provider.name})
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    error=client.get(f"/v1/tasks/{created.json()['task_id']}",headers=auth).json()["error"]
+    error=client.get(f"/v1/status/{created.json()['task_id']}",headers=auth).json()["error"]
     assert error["request_id"]=="req_generation_trace"
