@@ -6,11 +6,7 @@ FlowProviderAPI exposes a small server-to-server generation boundary for applica
 
 `POST /v1/generations`
 
-Send a stable `Idempotency-Key` header for each logical remote submission. Retrying the same logical submission with the same API client and key returns the same durable Provider task instead of creating duplicate generation work.
-
-```http
-Idempotency-Key: flowcanvas:42:image:0
-```
+Each POST is an independent generation submission. The API does not expose or honor `Idempotency-Key`; callers should store the returned `task_id` immediately and poll that task's status instead of resubmitting while it is still in progress.
 
 ```json
 {
@@ -25,9 +21,9 @@ Idempotency-Key: flowcanvas:42:image:0
 }
 ```
 
-`kind` is `image`, `video`, or `omni`. `media_ids` are Provider-owned reference IDs returned by `POST /v1/media`. `options` are normalized and validated inside FlowProviderAPI; application orchestrators do not need to know Google Flow account, project, scheduling, capacity, or retry details.
+`kind` is `image`, `video`, or `omni`. `media_ids` are Provider-owned reference IDs returned by `POST /v1/media`. Provider-specific normalization, account selection, project handling, capacity and retry policy remain inside FlowProviderAPI.
 
-The response is the same asynchronous task shape as the existing generation endpoints:
+Response:
 
 ```json
 {
@@ -38,7 +34,9 @@ The response is the same asynchronous task shape as the existing generation endp
 }
 ```
 
-Poll `GET /v1/tasks/{task_id}` until the task is terminal. Do not resubmit a task merely because it remains queued; FlowProviderAPI owns dispatch/capacity policy. If the caller cannot tell whether a prior POST completed, retry the POST with the same `Idempotency-Key`.
+Poll `GET /v1/status/{task_id}` while `status` is `queued` or `running`. Stop on `succeeded`, `failed`, or `canceled`.
+
+List caller-owned generation statuses with `GET /v1/status`; request cooperative cancellation with `POST /v1/status/{task_id}/cancel`.
 
 ## Reference media
 
@@ -48,4 +46,4 @@ Generated output URLs are upstream-owned and may expire. An application that nee
 
 ## Ownership boundary
 
-FlowProviderAPI owns provider-specific normalization, account scheduling, Google Flow projects/media mapping, leases, polling, provider errors, and connector credentials. The calling application owns its own jobs/workflows, user authorization, and durable result storage.
+FlowProviderAPI owns provider-specific normalization, account scheduling, Google Flow projects/media mapping, leases, polling, provider errors, and connector credentials. The calling application owns its own jobs/workflows, user authorization, submission deduplication if desired, and durable result storage.
