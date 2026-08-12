@@ -14,7 +14,12 @@ from app.api.schemas import (
 )
 from app.api.serializers import job_dict
 from app.db.models import MediaAsset
-from app.jobs.repository import create_job
+from app.jobs.repository import (
+    JobIdempotencyConflict,
+    assert_idempotent_job_matches,
+    create_job,
+    get_idempotent_job,
+)
 
 router = APIRouter(tags=["Generations"])
 CLIENT_WORKSPACE_KEY = "__api_client__"
@@ -92,6 +97,14 @@ def _validate_reference_assets(request: Request, db, client, data: dict, kind: s
             )
 
 
+def _idempotency_conflict() -> APIError:
+    return APIError(
+        409,
+        "IDEMPOTENCY_KEY_CONFLICT",
+        "Idempotency-Key was already used for a different generation request.",
+    )
+
+
 def _submit(
     request: Request,
     db,
@@ -111,6 +124,29 @@ def _submit(
     provider = payload.provider
     model = getattr(payload, "model", None)
     runtime = request.app.state.runtime
+
+    # Idempotent replay must not depend on current account capacity or current
+    # reference availability. If this exact logical POST was already accepted,
+    # return its durable task first. Reusing the key for a different payload is
+    # rejected explicitly instead of silently returning unrelated work.
+    existing = get_idempotent_job(
+        db,
+        client_id=client.id,
+        idempotency_key=idempotency_key,
+    )
+    if existing is not None:
+        try:
+            assert_idempotent_job_matches(
+                existing,
+                kind=kind,
+                provider=provider,
+                model=model,
+                payload=data,
+            )
+        except JobIdempotencyConflict as exc:
+            raise _idempotency_conflict() from exc
+        return job_dict(runtime, db, existing)
+
     configured_provider = runtime.providers.get(provider)
     _validate_reference_assets(request, db, client, data, kind)
     has_online_account = getattr(configured_provider, "has_online_account", None)
@@ -125,17 +161,20 @@ def _submit(
             "No Google Flow account is currently online.",
             retryable=True,
         )
-    job = create_job(
-        db,
-        client=client,
-        kind=kind,
-        provider=provider,
-        model=model,
-        workspace_key=CLIENT_WORKSPACE_KEY,
-        payload=data,
-        request_id=request.state.request_id,
-        idempotency_key=idempotency_key,
-    )
+    try:
+        job = create_job(
+            db,
+            client=client,
+            kind=kind,
+            provider=provider,
+            model=model,
+            workspace_key=CLIENT_WORKSPACE_KEY,
+            payload=data,
+            request_id=request.state.request_id,
+            idempotency_key=idempotency_key,
+        )
+    except JobIdempotencyConflict as exc:
+        raise _idempotency_conflict() from exc
     return job_dict(runtime, db, job)
 
 
