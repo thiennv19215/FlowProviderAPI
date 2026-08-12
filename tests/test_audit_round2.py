@@ -70,7 +70,7 @@ def test_capacity_shortage_keeps_task_queued_for_a_later_account(client,app,auth
     app.state.runtime.providers.register(UnavailablePoolProvider())
     task_id=client.post("/v1/images/generations",headers=auth,json={"prompt":"wait for an account","provider":"unavailable_pool"}).json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    task=client.get(f"/v1/tasks/{task_id}",headers=auth).json()
+    task=client.get(f"/v1/status/{task_id}",headers=auth).json()
     assert task["status"]=="queued"
     assert task["error"]["code"]=="PROVIDER_ACCOUNT_UNAVAILABLE"
     assert task["error"]["status_code"]==503
