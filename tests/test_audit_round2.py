@@ -9,6 +9,7 @@ import pytest
 from app.assets.service import AssetService
 from app.providers.base import ProviderMedia
 from app.providers.google_flow.client import FlowBridge
+from conftest import upload_media
 
 
 class DummyWS:
@@ -17,24 +18,19 @@ class DummyWS:
 
 
 def test_video_start_asset_must_be_image(client,auth):
-    created=client.post("/v1/assets/uploads",headers=auth,json={"filename":"clip.mp4","content_type":"video/mp4","type":"video"})
-    assert created.status_code==201
-    aid=created.json()["asset"]["id"]
-    assert client.put(f"/v1/assets/{aid}/content",headers={**auth,"Content-Type":"application/octet-stream"},content=b"video").status_code==204
-    response=client.post("/v1/videos/image-to-video",headers=auth,json={"prompt":"move","provider":"fake","input":{"start_asset_id":aid},"workspace":{"key":"bad-ref"}})
+    aid=upload_media(client,auth,filename="clip.mp4",data=b"video",content_type="video/mp4")
+    response=client.post("/v1/videos/image-to-video",headers=auth,json={"prompt":"move","provider":"fake","start_media_id":aid,"workspace":{"key":"bad-ref"}})
     assert response.status_code==422
-    assert response.json()["error"]["code"]=="INVALID_ASSET_TYPE"
+    assert response.json()["error"]["code"]=="INVALID_MEDIA_TYPE"
 
 
 def test_direct_upload_enforces_stream_limit(client,app,auth):
     previous=app.state.runtime.settings.max_upload_bytes
     app.state.runtime.settings.max_upload_bytes=4
     try:
-        created=client.post("/v1/assets/uploads",headers=auth,json={"filename":"tiny.png","content_type":"image/png","type":"image"})
-        aid=created.json()["asset"]["id"]
-        response=client.put(f"/v1/assets/{aid}/content",headers={**auth,"Content-Type":"application/octet-stream"},content=b"12345")
+        response=client.post("/v1/media",headers=auth,files={"file":("tiny.png",b"12345","image/png")})
         assert response.status_code==413
-        assert response.json()["error"]["code"]=="ASSET_TOO_LARGE"
+        assert response.json()["error"]["code"]=="MEDIA_TOO_LARGE"
     finally:
         app.state.runtime.settings.max_upload_bytes=previous
 

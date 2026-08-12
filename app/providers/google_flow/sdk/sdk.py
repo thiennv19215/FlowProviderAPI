@@ -89,4 +89,6 @@ class FlowSDK:
                 for entry in op.get("media_entries") or []:
                     if not entry.get("url") and entry.get("media_id"):
                         entry["url"]=await self.client.resolve_media_url(entry["media_id"])
+                    if not entry.get("thumbnail_url") and entry.get("media_id"):
+                        entry["thumbnail_url"]=await self.client.resolve_media_url(entry["media_id"],thumbnail=True)
         return {"operations":summaries}

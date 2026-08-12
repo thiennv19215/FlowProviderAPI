@@ -9,6 +9,7 @@ from app.jobs.scheduler import estimated_credit_cost
 from app.providers.base import ProviderDispatch, ProviderMedia, ProviderPollResult
 from app.providers.google_flow.client import FlowBridge, resolve_paygate_tier
 from app.providers.google_flow.browser_bridge import FlowBridge as BrowserFlowBridge
+from conftest import upload_media
 
 
 class DummyWS:
@@ -122,14 +123,12 @@ class RecoveringStorageProvider:
 
 
 def _reference(client,auth):
-    created=client.post("/v1/assets/uploads",headers=auth,json={"filename":"start.png","content_type":"image/png","type":"image"}).json();aid=created["asset"]["id"]
-    assert client.put(f"/v1/assets/{aid}/content",headers={**auth,"Content-Type":"application/octet-stream"},content=b"start").status_code==204
-    return aid
+    return upload_media(client,auth,filename="start.png",data=b"start",content_type="image/png")
 
 
 def test_terminal_provider_failure_finishes_job(client,app,auth):
     app.state.runtime.providers.register(TerminalVideoProvider());aid=_reference(client,auth)
-    job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"terminal_video","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"terminal"}}).json()["task_id"]
+    job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"terminal_video","prompt":"x","start_media_id":aid,"workspace":{"key":"terminal"}}).json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once())
     assert asyncio.run(app.state.runtime.worker.run_once())
     body=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
@@ -139,7 +138,7 @@ def test_terminal_provider_failure_finishes_job(client,app,auth):
 
 def test_output_storage_failure_returns_to_poll_and_recovers(client,app,auth):
     app.state.runtime.providers.register(RecoveringStorageProvider());aid=_reference(client,auth)
-    job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"recover_storage","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"storage-retry"}}).json()["task_id"]
+    job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"recover_storage","prompt":"x","start_media_id":aid,"workspace":{"key":"storage-retry"}}).json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once())
     original=app.state.runtime.assets.ingest_provider_media;calls={"n":0}
     async def flaky(*args,**kwargs):

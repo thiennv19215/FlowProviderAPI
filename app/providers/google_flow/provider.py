@@ -32,7 +32,7 @@ class GoogleFlowProvider:
         if not account_id: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         conn,sdk,pid=await self._context(job,db,account_id);payload=job.request_payload
         refs=[]
-        for asset_id in payload.get("reference_asset_ids") or []:
+        for asset_id in payload.get("reference_media_ids") or []:
             refs.append(await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=asset_id,project_id=pid,sdk=sdk))
         job.stage="dispatching";db.commit()
         image_model=PUBLIC_IMAGE_MODELS[payload.get("model","banana_pro")]
@@ -44,7 +44,7 @@ class GoogleFlowProvider:
     async def dispatch_video(self, *, job, db, account_id: str|None):
         if not account_id: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         conn,sdk,pid=await self._context(job,db,account_id);p=job.request_payload
-        start=await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=p["start_asset_id"],project_id=pid,sdk=sdk)
+        start=await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=p["start_media_id"],project_id=pid,sdk=sdk)
         job.stage="dispatching";db.commit()
         result=await sdk.gen_video(prompt=p["prompt"],project_id=pid,start_media_id=start,aspect_ratio=VIDEO_ASPECT[p.get("aspect_ratio","16:9")],paygate_tier=conn.paygate_tier,video_quality=p.get("quality","lite"))
         if result.get("error"):
@@ -55,7 +55,7 @@ class GoogleFlowProvider:
         if not account_id: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         conn,sdk,pid=await self._context(job,db,account_id);p=job.request_payload
         refs=[]
-        for asset_id in p.get("reference_asset_ids") or []:
+        for asset_id in p.get("reference_media_ids") or []:
             refs.append(await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=asset_id,project_id=pid,sdk=sdk))
         job.stage="dispatching";db.commit()
         result=await sdk.gen_video_omni(prompt=p["prompt"],project_id=pid,ref_media_ids=refs,duration_s=p.get("duration",8),aspect_ratio=VIDEO_ASPECT[p.get("aspect_ratio","9:16")],paygate_tier=conn.paygate_tier)
@@ -79,5 +79,5 @@ class GoogleFlowProvider:
         outputs=[]
         for op in ops:
             for e in op.get("media_entries") or []:
-                outputs.append(ProviderMedia(media_id=e.get("media_id"),url=e.get("url"),mime_type="video/mp4"))
+                outputs.append(ProviderMedia(media_id=e.get("media_id"),url=e.get("url"),thumbnail_url=e.get("thumbnail_url"),mime_type="video/mp4"))
         return ProviderPollResult(done=True,outputs=outputs)

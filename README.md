@@ -49,8 +49,10 @@ Configure the Tunnel published application to route the Provider hostname to `ht
 - `POST /v1/videos/omni-generations`
 - `GET /v1/tasks/{task_id}`
 - `POST /v1/tasks/{task_id}/cancel`
-- `POST /v1/assets/uploads`
-- `GET /v1/assets/{asset_id}`
+
+For the current client-facing contract, see [docs/integration.md](docs/integration.md).
+- `POST /v1/media`
+- `GET /v1/media/{media_id}`
 - `GET /v1/accounts`
 - `GET /v1/health`
 
@@ -60,7 +62,7 @@ Operational probes `/health/live` and `/health/ready`, plus the extension-only `
 
 The current V1 preserves provider account identity across extension reconnects, invalidates stale signed-out accounts, reserves estimated credits from active jobs, uses duration-aware Omni credit costs, distinguishes terminal provider failures from transient polling failures, and bounds consecutive polling failures so jobs cannot remain `running` forever on a persistent provider error.
 
-Provider output URLs are host-allowlisted before they enter the public task result. The API preserves a compact `asset_id` and project-local Flow media mapping so a generated image can be reused as a reference without uploading it again. User-supplied upload completion validates declared size and content type; Google Flow reference uploads have a separate in-memory hard limit before base64 encoding. Readiness checks both the database and configured reference-upload storage backend.
+Provider output URLs are host-allowlisted before they enter the public task result. The API preserves a compact media `id` and project-local Flow media mapping so a generated image can be reused as a reference without uploading it again. A user-supplied file is validated and stored by `POST /v1/media`; Google Flow reference uploads have a separate in-memory hard limit before base64 encoding. Readiness checks both the database and configured reference-upload storage backend.
 
 The public extension WebSocket accepts unauthenticated connector registrations by design. Anyone who can reach the hostname can attempt to connect, so do not treat connector identity as trusted. Keep Cloudflare's WAF/DDoS protections enabled and apply an IP-based rate limit to WebSocket handshake requests for `/api/extensions/ws` without adding an interactive challenge that would break the extension connection.
 

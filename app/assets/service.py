@@ -32,7 +32,7 @@ class AssetService:
         except Exception:return False
 
     def create_pending(self,db,*,client_id:str,filename:str,mime_type:str,asset_type:str,size_bytes:int|None=None)->MediaAsset:
-        aid=new_compact_id("asset");key=self.storage_key(client_id,aid,filename,mime_type)
+        aid=new_compact_id("media");key=self.storage_key(client_id,aid,filename,mime_type)
         asset=MediaAsset(id=aid,client_id=client_id,status="pending",type=asset_type,storage_key=key,filename=filename,mime_type=mime_type,size_bytes=size_bytes)
         db.add(asset);db.commit();db.refresh(asset);return asset
 
@@ -77,11 +77,12 @@ class AssetService:
             raise
 
     async def ingest_provider_media(self,db,*,client_id:str,job_id:str,provider:str,media:ProviderMedia,asset_type:str,provider_project_id:str|None=None)->MediaAsset:
-        mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=new_compact_id("asset")
+        mime=media.mime_type or ("video/mp4" if asset_type=="video" else "image/png");aid=new_compact_id("media")
         key=None;external_url=None;size=None;checksum_value=None;stored=False
         limit=getattr(self.settings,"max_provider_output_bytes",1024*1024*1024)
         if media.url:
             if not self._provider_url_allowed(media.url):raise ValueError("provider_output_url_not_allowed")
+            if media.thumbnail_url and not self._provider_url_allowed(media.thumbnail_url):raise ValueError("provider_output_thumbnail_url_not_allowed")
             # Flow already returns a caller-consumable media URL. Persist only
             # its metadata so completing a generation never copies large output
             # files through this backend or into its local input volume.
@@ -93,7 +94,7 @@ class AssetService:
             checksum_value=hashlib.sha256(data).hexdigest()
             await self.storage.put_bytes(key,data,mime);stored=True
         else:raise ValueError("provider_output_has_no_content")
-        asset=MediaAsset(id=aid,client_id=client_id,status="ready",type=asset_type,storage_key=key,external_url=external_url,mime_type=mime,size_bytes=size,width=media.width,height=media.height,duration=media.duration,checksum_sha256=checksum_value,source_provider=provider,source_job_id=job_id)
+        asset=MediaAsset(id=aid,client_id=client_id,status="ready",type=asset_type,storage_key=key,external_url=external_url,thumbnail_url=media.thumbnail_url if asset_type=="video" else None,mime_type=mime,size_bytes=size,width=media.width,height=media.height,duration=media.duration,checksum_sha256=checksum_value,source_provider=provider,source_job_id=job_id)
         db.add(asset)
         if media.media_id and provider_project_id:
             db.add(ProjectMediaMapping(id=new_id("map"),asset_id=aid,provider=provider,provider_project_id=provider_project_id,provider_media_id=media.media_id))
@@ -142,11 +143,7 @@ class AssetService:
     def content_url(self,asset:MediaAsset)->str:
         if asset.external_url:return asset.external_url
         if not asset.storage_key:raise FileNotFoundError("asset_has_no_content")
-        return f"{self.settings.public_base_url.rstrip('/')}/v1/assets/{asset.id}/content"
-
-    def upload_descriptor(self,asset:MediaAsset)->dict:
-        if not asset.storage_key:raise ValueError("asset_is_not_uploadable")
-        return {"method":"PUT","url":f"{self.settings.public_base_url.rstrip('/')}/v1/assets/{asset.id}/content","headers":{"Content-Type":asset.mime_type,"Authorization":"Bearer <same API key>"},"expires_in":None}
+        return f"{self.settings.public_base_url.rstrip('/')}/media/{asset.id}"
 
     @staticmethod
     def get_owned(db,asset_id:str,client_id:str)->MediaAsset|None:return db.scalar(select(MediaAsset).where(MediaAsset.id==asset_id,MediaAsset.client_id==client_id))

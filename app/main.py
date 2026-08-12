@@ -9,7 +9,7 @@ from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.accounts import router as accounts_router
-from app.api.assets import router as assets_router
+from app.api.assets import delivery_router as media_delivery_router, router as assets_router
 from app.api.errors import APIError, PUBLIC_ERROR_RESPONSES, api_error_handler, http_error_handler, unexpected_error_handler, validation_error_handler
 from app.api.extensions import router as extensions_admin_router
 from app.api.generations import router as generations_router
@@ -42,7 +42,30 @@ def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->Fa
     @app.middleware("http")
     async def request_id_middleware(request:Request,call_next):
         request.state.request_id=request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
-        response=await call_next(request);response.headers["X-Request-Id"]=request.state.request_id
+        try:
+            if request.method=="POST" and request.url.path=="/v1/media":
+                # Bound the body before FastAPI's multipart parser can spool an
+                # unbounded upload to its temporary directory. A small allowance
+                # covers multipart headers and boundaries around the file bytes.
+                limit=settings.max_upload_bytes+1024*1024
+                content_length=request.headers.get("content-length")
+                if content_length:
+                    try:
+                        if int(content_length)>limit:raise APIError(413,"MEDIA_TOO_LARGE",f"Media exceeds the {settings.max_upload_bytes} byte upload limit.",field="file")
+                    except ValueError:raise APIError(400,"INVALID_CONTENT_LENGTH","Content-Length must be an integer.",field="Content-Length")
+                receive=request._receive;received=0
+                async def limited_receive():
+                    nonlocal received
+                    message=await receive()
+                    if message["type"]=="http.request":
+                        received+=len(message.get("body",b""))
+                        if received>limit:raise APIError(413,"MEDIA_TOO_LARGE",f"Media exceeds the {settings.max_upload_bytes} byte upload limit.",field="file")
+                    return message
+                request._receive=limited_receive
+            response=await call_next(request)
+        except APIError as exc:
+            response=await api_error_handler(request,exc)
+        response.headers["X-Request-Id"]=request.state.request_id
         if hasattr(request.state,"rate_limit"):
             limit,remaining,reset=request.state.rate_limit
             response.headers["X-RateLimit-Limit"]=str(limit);response.headers["X-RateLimit-Remaining"]=str(remaining);response.headers["X-RateLimit-Reset"]=str(reset)
@@ -52,7 +75,7 @@ def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->Fa
     app.add_exception_handler(RequestValidationError,validation_error_handler)
     app.add_exception_handler(StarletteHTTPException,http_error_handler)
     app.add_exception_handler(Exception,unexpected_error_handler)
-    for router in (health_router,generations_router,tasks_router,assets_router,accounts_router,extensions_admin_router,extension_router):app.include_router(router)
+    for router in (health_router,generations_router,tasks_router,assets_router,media_delivery_router,accounts_router,extensions_admin_router,extension_router):app.include_router(router)
     return app
 
 app=create_app()

@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from sqlalchemy import select
 
 from app.db.models import MediaAsset
+from conftest import upload_media
 
 from tests.mock_extension import MockExtensionSocket
 
@@ -47,20 +48,7 @@ async def _connect_mock(app, media_base_url: str):
 
 
 def _upload_reference(client, auth, filename="reference.png"):
-    created = client.post(
-        "/v1/assets/uploads",
-        headers=auth,
-        json={"filename": filename, "content_type": "image/png", "type": "image"},
-    )
-    assert created.status_code == 201
-    asset_id = created.json()["asset"]["id"]
-    uploaded = client.put(
-        f"/v1/assets/{asset_id}/content",
-        headers={**auth, "Content-Type": "application/octet-stream"},
-        content=b"reference-image-bytes",
-    )
-    assert uploaded.status_code == 204
-    return asset_id
+    return upload_media(client,auth,filename=filename,data=b"reference-image-bytes",content_type="image/png")
 
 
 def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
@@ -97,14 +85,14 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         direct_url = f"{media.base_url}/media/mock-image-1-1"
         assert job["outputs"][0]["url"] == direct_url
         content = client.get(
-            f"/v1/assets/{job['outputs'][0]['asset_id']}/content",
+            f"/media/{job['outputs'][0]['id']}",
             headers=auth,
             follow_redirects=False,
         )
         assert content.status_code == 307
         assert content.headers["location"] == direct_url
         with app.state.runtime.session_factory() as db:
-            asset = db.scalar(select(MediaAsset).where(MediaAsset.id == job["outputs"][0]["asset_id"]))
+            asset = db.scalar(select(MediaAsset).where(MediaAsset.id == job["outputs"][0]["id"]))
             assert asset.external_url == direct_url
             assert asset.storage_key is None
 
@@ -114,7 +102,7 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
             json={
                 "prompt": "the same product in dramatic lighting",
                 "provider": "google_flow",
-                "reference_asset_ids": [job["outputs"][0]["asset_id"]],
+                "reference_media_ids": [job["outputs"][0]["id"]],
             },
         )
         assert referenced.status_code == 202
@@ -137,7 +125,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
             json={
                 "prompt": "slow camera push in",
                 "provider": "google_flow",
-                "input": {"start_asset_id": reference_id},
+                "start_media_id": reference_id,
                 "aspect_ratio": "9:16",
                 "workspace": {"key": "mock:video:e2e"},
             },
@@ -151,6 +139,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         done = client.get(f"/v1/tasks/{video_id}", headers=auth).json()
         assert done["status"] == "succeeded"
         assert done["outputs"][0]["type"] == "video"
+        assert done["outputs"][0]["thumbnail_url"].endswith("-thumbnail")
 
         omni = client.post(
             "/v1/videos/omni-generations",
@@ -160,7 +149,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
                 "provider": "google_flow",
                 "duration": 4,
                 "aspect_ratio": "9:16",
-                "references": [{"asset_id": reference_id}],
+                "reference_media_ids": [reference_id],
                 "workspace": {"key": "mock:omni:e2e"},
             },
         )
@@ -171,6 +160,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         omni_done = client.get(f"/v1/tasks/{omni_id}", headers=auth).json()
         assert omni_done["status"] == "succeeded"
         assert omni_done["outputs"][0]["type"] == "video"
+        assert omni_done["outputs"][0]["thumbnail_url"].endswith("-thumbnail")
 
         assert mock.state.projects_created == 1
         assert mock.state.uploads == 1

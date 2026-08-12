@@ -14,24 +14,24 @@ router=APIRouter(tags=["Generations"])
 CLIENT_WORKSPACE_KEY="__api_client__"
 
 
-def _reference_asset_ids(data:dict,kind:str)->list[str]:
-    if kind=="video":return [data["start_asset_id"]]
-    return data.get("reference_asset_ids") or []
+def _reference_media_ids(data:dict,kind:str)->list[str]:
+    if kind=="video":return [data["start_media_id"]]
+    return data.get("reference_media_ids") or []
 
 
 def _validate_reference_assets(request:Request,db,client,data:dict,kind:str)->None:
-    ids=_reference_asset_ids(data,kind)
+    ids=_reference_media_ids(data,kind)
     if not ids:return
     rows=list(db.scalars(select(MediaAsset).where(MediaAsset.id.in_(ids),MediaAsset.client_id==client.id)))
     by_id={row.id:row for row in rows};limit=request.app.state.runtime.settings.max_reference_bytes
     for asset_id in ids:
         asset=by_id.get(asset_id)
         if not asset or asset.status!="ready":
-            raise APIError(422,"INVALID_ASSET_REFERENCE",f"Reference asset '{asset_id}' is missing or not ready.",field="reference_asset_ids")
+            raise APIError(422,"INVALID_MEDIA_REFERENCE",f"Reference media '{asset_id}' is missing or not ready.",field="reference_media_ids")
         if asset.type!="image" or not asset.mime_type.lower().startswith("image/"):
-            raise APIError(422,"INVALID_ASSET_TYPE",f"Reference asset '{asset_id}' must be an image.",field="reference_asset_ids")
+            raise APIError(422,"INVALID_MEDIA_TYPE",f"Reference media '{asset_id}' must be an image.",field="reference_media_ids")
         if asset.size_bytes is not None and asset.size_bytes>limit:
-            raise APIError(413,"REFERENCE_ASSET_TOO_LARGE",f"Reference asset '{asset_id}' exceeds the {limit} byte reference limit.",field="reference_asset_ids")
+            raise APIError(413,"REFERENCE_MEDIA_TOO_LARGE",f"Reference media '{asset_id}' exceeds the {limit} byte reference limit.",field="reference_media_ids")
 
 
 def _submit(request: Request, db, client, payload, kind: str):

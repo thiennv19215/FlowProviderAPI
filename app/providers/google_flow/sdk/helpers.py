@@ -73,7 +73,7 @@ def media_entries(resp: Any) -> list[dict]:
         image=item.get("image") if isinstance(item.get("image"),dict) else {}
         generated=image.get("generatedImage") if isinstance(image.get("generatedImage"),dict) else {}
         url=url or generated.get("fifeUrl") or generated.get("url") or item.get("thumbnailUrl")
-        out.append({"media_id":item["name"],"url":url,"mediaType":item.get("mediaFormat") or "image"})
+        out.append({"media_id":item["name"],"url":url,"thumbnail_url":item.get("thumbnailUrl"),"mediaType":item.get("mediaFormat") or "image"})
     return out
 
 
@@ -119,11 +119,11 @@ def poll_operations(resp: Any, requested: list[str]) -> list[dict]:
             mid=vm.get("mediaId"); url=vm.get("fifeUrl")
             failed=bool(status and any(x in str(status) for x in ("FAIL","ERROR","CANCEL")))
             done=failed or bool(inner.get("done")) or bool(status and any(x in str(status) for x in ("SUCCESS","SUCCEED","COMPLETE","DONE"))) or bool(mid and url)
-            by[name]={"name":name,"done":done,"error":str(status) if failed else None,"media_entries":[{"media_id":mid,"url":url,"mediaType":"video"}] if done and not failed and mid else []}
+            by[name]={"name":name,"done":done,"error":str(status) if failed else None,"media_entries":[{"media_id":mid,"url":url,"thumbnail_url":vm.get("thumbnailUrl"),"mediaType":"video"}] if done and not failed and mid else []}
         for item in data.get("media") or []:
             if not isinstance(item,dict) or not item.get("name"): continue
             name=item["name"]; meta=item.get("mediaMetadata") if isinstance(item.get("mediaMetadata"),dict) else {}; ms=meta.get("mediaStatus") if isinstance(meta.get("mediaStatus"),dict) else {}; status=ms.get("mediaGenerationStatus")
             failed=bool(status and any(x in str(status) for x in ("FAIL","ERROR","CANCEL")))
             done=failed or bool(ms.get("done")) or bool(item.get("downloadUrl")) or bool(status and any(x in str(status) for x in ("SUCCESS","SUCCEED","COMPLETE","DONE")))
-            by[name]={"name":name,"done":done,"error":str(status) if failed else None,"media_entries":[{"media_id":name,"url":item.get("downloadUrl"),"mediaType":"video"}] if done and not failed else []}
+            by[name]={"name":name,"done":done,"error":str(status) if failed else None,"media_entries":[{"media_id":name,"url":item.get("downloadUrl"),"thumbnail_url":item.get("thumbnailUrl"),"mediaType":"video"}] if done and not failed else []}
     return [by.get(name,{"name":name,"done":False,"error":None,"media_entries":[]}) for name in requested]

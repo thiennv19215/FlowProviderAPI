@@ -4,7 +4,7 @@ import asyncio
 import json
 import uuid
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 @dataclass
@@ -119,11 +119,11 @@ class MockExtensionSocket:
                 },
             }
         if "media.getMediaUrlRedirect" in url:
-            media_id = urlparse(url).query.split("name=", 1)[-1]
+            query=parse_qs(urlparse(url).query);media_id=query.get("name",[""])[0];thumbnail=query.get("mediaUrlType",[None])[0]=="MEDIA_URL_TYPE_THUMBNAIL"
             return {
                 "ok": True,
                 "status": 200,
-                "finalUrl": f"{self.state.media_base_url}/media/{media_id}",
+                "finalUrl": f"{self.state.media_base_url}/media/{media_id}{'-thumbnail' if thumbnail else ''}",
             }
         return {"ok": True, "status": 200, "data": {}}
 
@@ -222,11 +222,11 @@ class MockExtensionSocket:
             return {"ok": True, "status": 200, "data": {"operations": operations, "media": media}}
 
         if "media.getMediaUrlRedirect" in url:
-            media_id = urlparse(url).query.split("name=", 1)[-1]
+            query=parse_qs(urlparse(url).query);media_id=query.get("name",[""])[0];thumbnail=query.get("mediaUrlType",[None])[0]=="MEDIA_URL_TYPE_THUMBNAIL"
             return {
                 "ok": True,
                 "status": 200,
-                "finalUrl": f"{self.state.media_base_url}/media/{media_id}",
+                "finalUrl": f"{self.state.media_base_url}/media/{media_id}{'-thumbnail' if thumbnail else ''}",
             }
 
         return {"ok": True, "status": 200, "data": {}}

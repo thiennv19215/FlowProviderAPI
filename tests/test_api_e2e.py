@@ -1,6 +1,7 @@
 import asyncio
 import re
 
+from conftest import upload_media
 
 def test_image_generation_end_to_end(client, app, auth):
     response = client.post("/v1/images/generations", headers=auth, json={
@@ -18,18 +19,17 @@ def test_image_generation_end_to_end(client, app, auth):
     body = job.json()
     assert body["status"] == "succeeded"
     assert len(body["outputs"]) == 1
-    asset_id = body["outputs"][0]["asset_id"]
-    content = client.get(f"/v1/assets/{asset_id}/content", headers=auth)
+    assert body["outputs"][0]["thumbnail_url"] is None
+    asset_id = body["outputs"][0]["id"]
+    content = client.get(f"/media/{asset_id}", headers=auth)
     assert content.content == b"fake-image-bytes"
     assert content.headers["content-type"].startswith("image/png")
 
 
 def test_video_dispatch_and_poll_survives_db_state(client, app, auth):
-    upload = client.post("/v1/assets/uploads", headers=auth, json={"filename":"start.png","content_type":"image/png","type":"image"}).json()
-    asset_id = upload["asset"]["id"]
-    assert client.put(f"/v1/assets/{asset_id}/content", headers={**auth,"Content-Type":"application/octet-stream"}, content=b"start").status_code == 204
+    asset_id=upload_media(client,auth,filename="start.png",data=b"start",content_type="image/png")
     response = client.post("/v1/videos/image-to-video", headers=auth, json={
-        "prompt":"move", "provider":"fake", "input":{"start_asset_id":asset_id}, "workspace":{"key":"test:video:1"}
+        "prompt":"move", "provider":"fake", "start_media_id":asset_id, "workspace":{"key":"test:video:1"}
     })
     job_id=response.json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
@@ -56,12 +56,12 @@ def test_server_generates_task_id(client,auth):
     assert response.json()["task_id"].startswith("job_")
 
 
-def test_new_asset_ids_are_compact_and_url_safe(client,auth):
-    response=client.post("/v1/assets/uploads",headers=auth,json={"filename":"ref.png","content_type":"image/png","type":"image"})
+def test_new_media_ids_are_compact_and_url_safe(client,auth):
+    response=client.post("/v1/media",headers=auth,files={"file":("ref.png",b"image","image/png")})
     assert response.status_code==201
-    asset_id=response.json()["asset"]["id"]
-    assert re.fullmatch(r"asset_[A-Za-z0-9_-]{16}",asset_id)
-    assert len(asset_id)==22
+    media_id=response.json()["id"]
+    assert re.fullmatch(r"media_[A-Za-z0-9_-]{16}",media_id)
+    assert len(media_id)==22
 
 
 def test_structured_auth_error(client):
@@ -105,7 +105,7 @@ def test_openapi_exposes_typed_generation_and_asset_responses(client):
     assert "/v1/videos/generations" not in schema["paths"]
     assert "/v1/tasks/{task_id}" in schema["paths"]
     assert "/v1/jobs/{task_id}" not in schema["paths"]
-    assert set(schema["components"]["schemas"]["ImageToVideoRequest"]["properties"])=={"prompt","start_asset_id","quality","aspect_ratio"}
+    assert set(schema["components"]["schemas"]["ImageToVideoRequest"]["properties"])=={"prompt","start_media_id","quality","aspect_ratio"}
     image=schema["paths"]["/v1/images/generations"]["post"]
     assert image["responses"]["202"]["content"]["application/json"]["schema"]["$ref"].endswith("/JobOutput")
     assert image["responses"]["422"]["content"]["application/json"]["schema"]["$ref"].endswith("/ErrorResponse")
@@ -115,10 +115,39 @@ def test_openapi_exposes_typed_generation_and_asset_responses(client):
     assert "task_id" in schema["components"]["schemas"]["JobOutput"]["properties"]
     assert "workspace_key" not in schema["components"]["schemas"]["JobOutput"]["properties"]
     assert set(schema["components"]["schemas"]["JobOutput"]["properties"])=={"task_id","status","outputs","error"}
-    assert set(schema["components"]["schemas"]["ImageGenerationRequest"]["properties"])=={"prompt","model","aspect_ratio","output_count","reference_asset_ids"}
+    assert set(schema["components"]["schemas"]["ImageGenerationRequest"]["properties"])=={"prompt","model","aspect_ratio","output_count","reference_media_ids"}
     model_schema=schema["components"]["schemas"]["ImageGenerationRequest"]["properties"]["model"]
     assert model_schema["enum"]==["banana_pro","banana_2"]
     assert model_schema["default"]=="banana_pro"
     assert schema["components"]["schemas"]["ImageGenerationRequest"]["properties"]["aspect_ratio"]["default"]=="9:16"
-    upload=schema["paths"]["/v1/assets/uploads"]["post"]
-    assert upload["responses"]["201"]["content"]["application/json"]["schema"]["$ref"].endswith("/AssetUploadResponse")
+    upload=schema["paths"]["/v1/media"]["post"]
+    assert upload["responses"]["201"]["content"]["application/json"]["schema"]["$ref"].endswith("/MediaOutput")
+    assert "/v1/media/uploads" not in schema["paths"]
+    assert "/v1/media/{media_id}/content" not in schema["paths"]
+    assert "/media/{media_id}" not in schema["paths"]
+    assert "/v1/assets/uploads" not in schema["paths"]
+    assert upload["tags"]==["Media"]
+
+
+def test_upload_media_in_one_request(client,auth):
+    response=client.post("/v1/media",headers=auth,files={"file":("reference.png",b"image-bytes","image/png")})
+    assert response.status_code==201
+    media=response.json()
+    assert set(media)>={"id","object","type","status","mime_type","url"}
+    assert media["object"]=="media"
+    assert media["type"]=="image"
+    assert media["status"]=="ready"
+    assert media["url"].endswith(f"/media/{media['id']}")
+
+
+def test_legacy_media_upload_routes_are_removed(client,auth):
+    assert client.post("/v1/media/uploads",headers=auth,json={}).status_code==405
+    assert client.put("/v1/media/media_unused/content",headers=auth,content=b"").status_code==404
+    assert client.post("/v1/media/media_unused/complete",headers=auth).status_code==404
+
+
+def test_media_upload_body_is_limited_before_multipart_parsing(client,app,auth):
+    app.state.runtime.settings.max_upload_bytes=1024
+    response=client.post("/v1/media",headers=auth,files={"file":("too-large.png",b"x"*(2*1024*1024),"image/png")})
+    assert response.status_code==413
+    assert response.json()["error"]["code"]=="MEDIA_TOO_LARGE"

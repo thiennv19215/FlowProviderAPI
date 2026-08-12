@@ -78,6 +78,7 @@ class MediaAsset(Base):
     type: Mapped[str] = mapped_column(String(24), nullable=False)
     storage_key: Mapped[str | None] = mapped_column(String(512), unique=True)
     external_url: Mapped[str | None] = mapped_column(Text)
+    thumbnail_url: Mapped[str | None] = mapped_column(Text)
     filename: Mapped[str | None] = mapped_column(String(255))
     mime_type: Mapped[str] = mapped_column(String(120), nullable=False)
     size_bytes: Mapped[int | None] = mapped_column(Integer)

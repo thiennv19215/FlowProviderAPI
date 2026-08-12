@@ -13,6 +13,7 @@ class ProviderError(RuntimeError):
 class ProviderMedia:
     media_id: str | None = None
     url: str | None = None
+    thumbnail_url: str | None = None
     mime_type: str | None = None
     bytes_data: bytes | None = None
     width: int | None = None

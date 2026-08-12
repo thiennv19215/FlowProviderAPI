@@ -5,15 +5,18 @@ from sqlalchemy import select
 from app.db.models import MediaAsset
 
 
-def asset_dict(runtime, asset):
-    return {"id":asset.id,"object":"asset","type":asset.type,"status":asset.status,"mime_type":asset.mime_type,"size_bytes":asset.size_bytes,"width":asset.width,"height":asset.height,"duration":asset.duration,"content_url":runtime.assets.content_url(asset) if asset.status=="ready" else None,"created_at":asset.created_at}
+def media_dict(runtime, asset):
+    return {"id":asset.id,"object":"media","type":asset.type,"status":asset.status,"mime_type":asset.mime_type,"size_bytes":asset.size_bytes,"width":asset.width,"height":asset.height,"duration":asset.duration,"url":runtime.assets.content_url(asset) if asset.status=="ready" else None,"created_at":asset.created_at}
 
 
 def job_dict(runtime, db, job):
     outputs=[]
     for aid in (job.result_payload or {}).get("asset_ids",[]):
         asset=db.scalar(select(MediaAsset).where(MediaAsset.id==aid,MediaAsset.client_id==job.client_id))
-        if asset: outputs.append({"asset_id":asset.id,"type":asset.type,"url":runtime.assets.content_url(asset) if asset.status=="ready" else None})
+        if asset:
+            output={"id":asset.id,"type":asset.type,"url":runtime.assets.content_url(asset) if asset.status=="ready" else None}
+            if asset.type=="video":output["thumbnail_url"]=asset.thumbnail_url
+            outputs.append(output)
     error=None
     if job.error_code or job.error_message:
         metadata=(job.result_payload or {}).get("_error") or {}

@@ -270,8 +270,9 @@ class FlowBridge:
         if inner.get("ok") is False:out["error"]=inner.get("error") or f"{prefix}_{inner.get('status','?')}"
         return out
 
-    async def resolve_media_url(self,connection_id:str,media_id:str)->str|None:
-        url=f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}";response=await self.send_rpc(connection_id,"SW_FETCH",{"spec":{"url":url,"method":"GET","headers":{},"responseType":"none","timeoutMs":30000}},timeout=35);inner=response.get("data") if isinstance(response,dict) else None
+    async def resolve_media_url(self,connection_id:str,media_id:str,*,thumbnail:bool=False)->str|None:
+        suffix="&mediaUrlType=MEDIA_URL_TYPE_THUMBNAIL" if thumbnail else ""
+        url=f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}{suffix}";response=await self.send_rpc(connection_id,"SW_FETCH",{"spec":{"url":url,"method":"GET","headers":{},"responseType":"none","timeoutMs":30000}},timeout=35);inner=response.get("data") if isinstance(response,dict) else None
         if not isinstance(inner,dict) or inner.get("ok") is False:return None
         status=inner.get("status")
         if isinstance(status,int) and status>=400:return None
@@ -290,4 +291,4 @@ class BoundFlowClient:
     def __init__(self,bridge:FlowBridge,connection_id:str):self.bridge=bridge;self.connection_id=connection_id
     async def api_request(self,**kwargs):return await self.bridge.api_request(self.connection_id,**kwargs)
     async def trpc_request(self,**kwargs):return await self.bridge.trpc_request(self.connection_id,**kwargs)
-    async def resolve_media_url(self,media_id:str)->str|None:return await self.bridge.resolve_media_url(self.connection_id,media_id)
+    async def resolve_media_url(self,media_id:str,*,thumbnail:bool=False)->str|None:return await self.bridge.resolve_media_url(self.connection_id,media_id,thumbnail=thumbnail)

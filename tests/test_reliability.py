@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from app.db.models import ApiClient, GenerationJob, MediaAsset, utcnow
 from app.jobs.repository import recover_expired
 from app.providers.base import ProviderMedia
+from conftest import upload_media
 
 
 class PreparationFailureProvider:
@@ -147,12 +148,10 @@ def test_recoverable_output_registration_error_retries_without_generation(app):
 
 
 def test_omni_generation_uses_same_durable_job_contract(client, app, auth):
-    upload=client.post("/v1/assets/uploads",headers=auth,json={"filename":"ref.png","content_type":"image/png","type":"image"}).json()
-    asset_id=upload["asset"]["id"]
-    assert client.put(f"/v1/assets/{asset_id}/content",headers={**auth,"Content-Type":"application/octet-stream"},content=b"ref").status_code==204
+    asset_id=upload_media(client,auth,filename="ref.png",data=b"ref",content_type="image/png")
     response=client.post("/v1/videos/omni-generations",headers=auth,json={
         "prompt":"dance","provider":"fake","duration":8,"aspect_ratio":"9:16",
-        "references":[{"asset_id":asset_id}],"workspace":{"key":"omni:e2e"},
+        "reference_media_ids":[asset_id],"workspace":{"key":"omni:e2e"},
     })
     job_id=response.json()["task_id"]
     import asyncio

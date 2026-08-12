@@ -10,6 +10,7 @@ from starlette.websockets import WebSocketDisconnect
 from app.assets.service import AssetService
 from app.db.models import MediaAsset
 from app.providers.base import ProviderDispatch, ProviderMedia, ProviderPollResult
+from conftest import upload_media
 
 
 class PersistentPollErrorProvider:
@@ -21,10 +22,7 @@ class PersistentPollErrorProvider:
 
 
 def _reference(client,auth,data=b"start"):
-    created=client.post("/v1/assets/uploads",headers=auth,json={"filename":"start.png","content_type":"image/png","type":"image"}).json()
-    aid=created["asset"]["id"]
-    assert client.put(f"/v1/assets/{aid}/content",headers={**auth,"Content-Type":"application/octet-stream"},content=data).status_code==204
-    return aid
+    return upload_media(client,auth,filename="start.png",data=data,content_type="image/png")
 
 
 def test_persistent_poll_errors_eventually_fail_job(client,app,auth):
@@ -33,7 +31,7 @@ def test_persistent_poll_errors_eventually_fail_job(client,app,auth):
     app.state.runtime.settings.max_consecutive_poll_errors=2
     try:
         aid=_reference(client,auth)
-        job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"persistent_poll_error","prompt":"x","input":{"start_asset_id":aid},"workspace":{"key":"poll:bounded"}}).json()["task_id"]
+        job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"persistent_poll_error","prompt":"x","start_media_id":aid,"workspace":{"key":"poll:bounded"}}).json()["task_id"]
         assert asyncio.run(app.state.runtime.worker.run_once())
         assert asyncio.run(app.state.runtime.worker.run_once())
         mid=client.get(f"/v1/tasks/{job_id}",headers=auth).json()

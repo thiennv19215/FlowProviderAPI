@@ -6,6 +6,7 @@ import base64
 import httpx
 import pytest
 from sqlalchemy import select
+from conftest import upload_media
 
 import app.assets.service as asset_service_module
 from app.db.models import ApiClient, MediaAsset, ProjectMediaMapping
@@ -60,17 +61,7 @@ def test_provider_url_must_be_allowlisted(client,app):
 
 
 def test_uploaded_assets_still_use_local_storage(client,app,auth):
-    created=client.post(
-        "/v1/assets/uploads",
-        headers=auth,
-        json={"filename":"reference.png","content_type":"image/png","type":"image"},
-    ).json()
-    asset_id=created["asset"]["id"]
-    assert client.put(
-        f"/v1/assets/{asset_id}/content",
-        headers={**auth,"Content-Type":"application/octet-stream"},
-        content=b"input-reference",
-    ).status_code==204
+    asset_id=upload_media(client,auth,filename="reference.png",data=b"input-reference",content_type="image/png")
     with app.state.runtime.session_factory() as db:
         asset=db.get(MediaAsset,asset_id)
         assert asset.external_url is None
@@ -148,3 +139,14 @@ def test_generated_image_prefers_full_url_over_thumbnail():
         "image":{"generatedImage":{"fifeUrl":"https://lh3.googleusercontent.com/full.png"}},
     }]}})
     assert parsed[0]["url"]=="https://lh3.googleusercontent.com/full.png"
+
+
+def test_video_output_exposes_flow_thumbnail_only_for_video(client,app,auth):
+    with app.state.runtime.session_factory() as db:
+        client_id=db.scalar(select(ApiClient.id))
+        video=asyncio.run(app.state.runtime.assets.ingest_provider_media(
+            db,client_id=client_id,job_id="job_video_thumbnail",provider="google_flow",
+            media=ProviderMedia(media_id="flow-video",url="https://lh3.googleusercontent.com/video.mp4",thumbnail_url="https://lh3.googleusercontent.com/video-thumb.jpg",mime_type="video/mp4"),
+            asset_type="video",provider_project_id="flow-project-1",
+        ))
+        assert video.thumbnail_url=="https://lh3.googleusercontent.com/video-thumb.jpg"

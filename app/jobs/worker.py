@@ -159,7 +159,7 @@ class JobWorker:
     def _serializable_outputs(outputs)->list[dict]|None:
         items=list(outputs)
         if not items or any(not media.url for media in items):return None
-        return [{"media_id":media.media_id,"url":media.url,"mime_type":media.mime_type,"width":media.width,"height":media.height,"duration":media.duration} for media in items]
+        return [{"media_id":media.media_id,"url":media.url,"thumbnail_url":media.thumbnail_url,"mime_type":media.mime_type,"width":media.width,"height":media.height,"duration":media.duration} for media in items]
 
     async def _resume_outputs(self,db,job):
         raw=(job.result_payload or {}).get("_provider_outputs")
