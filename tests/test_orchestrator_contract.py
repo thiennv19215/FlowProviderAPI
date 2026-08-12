@@ -39,41 +39,60 @@ def test_unified_generation_normalizes_provider_options_and_runs(client, app, au
     assert done.json()["outputs"][0]["type"] == "image"
 
 
-def test_unified_generation_duplicate_submissions_create_new_tasks(client, app, auth):
+def test_unified_generation_idempotency_returns_same_durable_task(client, app, auth):
     payload = {
         "kind": "image",
-        "prompt": "two independent cats",
+        "prompt": "one logical cat",
         "provider": "fake",
         "options": {"aspect_ratio": "9:16"},
     }
-    headers = {**auth, "Idempotency-Key": "ignored-by-contract"}
+    headers = {**auth, "Idempotency-Key": "flowcanvas:42:image:0"}
 
     first = client.post("/v1/generations", headers=headers, json=payload)
     second = client.post("/v1/generations", headers=headers, json=payload)
 
     assert first.status_code == second.status_code == 202
-    assert first.json()["task_id"] != second.json()["task_id"]
+    assert first.json()["task_id"] == second.json()["task_id"]
     with app.state.runtime.session_factory() as db:
         rows = list(
             db.scalars(
                 select(GenerationJob).where(
-                    GenerationJob.id.in_(
-                        [first.json()["task_id"], second.json()["task_id"]]
-                    )
+                    GenerationJob.idempotency_key == "flowcanvas:42:image:0"
                 )
             )
         )
-        assert len(rows) == 2
-        assert all(row.idempotency_key is None for row in rows)
+        assert len(rows) == 1
 
 
-def test_unified_generation_openapi_has_no_idempotency_header(client):
+def test_unified_generation_idempotency_rejects_payload_conflict(client, auth):
+    headers = {**auth, "Idempotency-Key": "flowcanvas:42:image:conflict"}
+    first = client.post(
+        "/v1/generations",
+        headers=headers,
+        json={"kind": "image", "prompt": "first", "provider": "fake"},
+    )
+    second = client.post(
+        "/v1/generations",
+        headers=headers,
+        json={"kind": "image", "prompt": "different", "provider": "fake"},
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+
+
+def test_unified_generation_openapi_exposes_idempotency_and_status_contract(client):
     schema = client.get("/openapi.json").json()
     operation = schema["paths"]["/v1/generations"]["post"]
-    assert all(
-        parameter.get("name") != "Idempotency-Key"
+    assert any(
+        parameter.get("name") == "Idempotency-Key"
+        and parameter.get("in") == "header"
         for parameter in operation.get("parameters", [])
     )
+    assert "/v1/status/{task_id}" in schema["paths"]
+    assert "/v1/status/{task_id}/cancel" in schema["paths"]
+    assert "/v1/tasks/{task_id}" not in schema["paths"]
 
 
 def test_unified_video_requires_localized_start_media(client, auth):
