@@ -89,7 +89,7 @@ class JobWorker:
         job.error_code=exc.code if is_provider else fallback_code
         job.error_message=(exc.message if is_provider else str(exc))[:1000]
         payload=dict(getattr(job,"result_payload",None) or {})
-        payload["_error"]={"status_code":exc.status_code or fallback_status if is_provider else fallback_status,"retryable":exc.retryable if is_provider else retryable}
+        payload["_error"]={"status_code":exc.status_code or fallback_status if is_provider else fallback_status,"retryable":exc.retryable if is_provider else retryable,"details":exc.details if is_provider else []}
         job.result_payload=payload
 
     @staticmethod

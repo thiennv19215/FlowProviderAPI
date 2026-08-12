@@ -18,5 +18,6 @@ def job_dict(runtime, db, job):
     if job.error_code or job.error_message:
         metadata=(job.result_payload or {}).get("_error") or {}
         fallback_status=504 if job.error_code=="PROVIDER_OPERATION_TIMEOUT" else 502 if (job.error_code or "").startswith("PROVIDER") else 500
-        error={"status_code":metadata.get("status_code") or fallback_status,"code":job.error_code or "PROVIDER_ERROR","message":job.error_message or "Generation failed.","details":[],"request_id":None,"retryable":bool(metadata.get("retryable",job.status not in {"failed","canceled"}))}
+        details=metadata.get("details") if isinstance(metadata.get("details"),list) else []
+        error={"status_code":metadata.get("status_code") or fallback_status,"code":job.error_code or "PROVIDER_ERROR","message":job.error_message or "Generation failed.","details":details,"request_id":None,"retryable":bool(metadata.get("retryable",job.status not in {"failed","canceled"}))}
     return {"task_id":job.id,"status":job.status,"outputs":outputs,"error":error}

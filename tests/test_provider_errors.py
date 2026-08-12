@@ -47,9 +47,20 @@ def test_task_preserves_flow_error(client,app,auth,status_code,code,message,retr
 
 
 def test_google_error_parser_keeps_http_status_and_flow_code():
-    error=flow_error({"status":429,"data":{"error":{"code":429,"message":"Quota exceeded.","status":"RESOURCE_EXHAUSTED"}}})
+    error=flow_error({"status":429,"data":{"error":{"code":429,"message":"Quota exceeded.","status":"RESOURCE_EXHAUSTED","details":[{"reason":"RATE_LIMIT_EXCEEDED","message":"Image generation quota is exhausted.","internal":"never expose this"}]}}})
     assert error is not None
     assert error.status_code==429
     assert error.code=="RESOURCE_EXHAUSTED"
     assert error.message=="Quota exceeded."
     assert error.retryable is True
+    assert error.details==[{"field":None,"code":"RATE_LIMIT_EXCEEDED","message":"Image generation quota is exhausted."}]
+
+
+def test_task_returns_sanitized_upstream_error_details(client,app,auth):
+    provider=UpstreamFailureProvider(429,"RESOURCE_EXHAUSTED","Quota exceeded.",True)
+    provider.error.details=[{"field":None,"code":"RATE_LIMIT_EXCEEDED","message":"Image generation quota is exhausted."}]
+    app.state.runtime.providers.register(provider)
+    created=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":provider.name})
+    assert asyncio.run(app.state.runtime.worker.run_once()) is True
+    error=client.get(f"/v1/jobs/{created.json()['task_id']}",headers=auth).json()["error"]
+    assert error["details"]==[{"field":None,"code":"RATE_LIMIT_EXCEEDED","message":"Image generation quota is exhausted."}]
