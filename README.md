@@ -29,6 +29,18 @@ Open `http://localhost:8000/docs` for Swagger. Load `extension/` as an unpacked 
 
 For a live Google Flow test, open Google Flow in the same Chrome profile. The extension discovers the Google Flow API key from requests to Google's Flow API and supplies it to the backend for the lifetime of the connection. `FLOW_PROVIDER_FLOW_API_KEY` remains available as an optional server-side fallback. Local/test mode may leave the extension gateway token unset. Production requires `FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN` with at least 32 characters. In the extension popup, configure the Provider server as `https://provider.example.com` and put the same secret in the separate **Gateway token** field. The connector sends that secret only in the WebSocket subprotocol during the `/api/extensions/ws` handshake; it is not embedded in the request URL. Existing saved `/ext/<token>` settings are migrated automatically once to the separate token storage.
 
+## Production deployment
+
+The production VPS stack is defined in `compose.production.yaml`: PostgreSQL, FlowProviderAPI, and a remotely-managed Cloudflare Tunnel run together without publishing API or database ports on the VPS. Production media storage uses Cloudflare R2.
+
+```bash
+cp .env.production.example .env.production
+# fill the required PostgreSQL, Cloudflare Tunnel, R2 and Provider secrets
+bash scripts/deploy-production.sh
+```
+
+Configure the Tunnel published application to route the Provider hostname to `http://api:8000`. See [`docs/deployment.md`](docs/deployment.md) for the complete VPS, R2, Tunnel, backup, update, and live-acceptance procedure.
+
 ## Primary endpoints
 
 - `POST /v1/images/generations`
@@ -71,4 +83,4 @@ python -m pytest -q
 
 The mock extension is intentionally not a substitute for final live acceptance. Before production cutover, deploy the Provider, load `extension/` in a Chrome profile signed into Google Flow, and run real image/video/Omni generations.
 
-See [`docs/quickstart.md`](docs/quickstart.md) and [`docs/architecture.md`](docs/architecture.md).
+See [`docs/quickstart.md`](docs/quickstart.md), [`docs/architecture.md`](docs/architecture.md), and [`docs/deployment.md`](docs/deployment.md).
