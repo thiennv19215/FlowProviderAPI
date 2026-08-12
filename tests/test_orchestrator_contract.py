@@ -39,7 +39,7 @@ def test_unified_generation_normalizes_provider_options_and_runs(client, app, au
     assert done.json()["outputs"][0]["type"] == "image"
 
 
-def test_unified_generation_duplicate_submissions_create_new_tasks(client, auth):
+def test_unified_generation_duplicate_submissions_create_new_tasks(client, app, auth):
     payload = {
         "kind": "image",
         "prompt": "two independent cats",
