@@ -1,20 +1,32 @@
+let offscreenCreating = null;
+
 async function ensureFlowProviderOffscreen() {
   if (!chrome.offscreen?.createDocument) return;
-  try {
-    if (chrome.runtime.getContexts) {
-      const contexts = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"], documentUrls: [chrome.runtime.getURL("offscreen.html")] });
-      if (contexts.length) return;
+  if (offscreenCreating) return offscreenCreating;
+  offscreenCreating = (async () => {
+    try {
+      if (chrome.runtime.getContexts) {
+        const contexts = await chrome.runtime.getContexts({
+          contextTypes: ["OFFSCREEN_DOCUMENT"],
+          documentUrls: [chrome.runtime.getURL("offscreen.html")],
+        });
+        if (contexts.length) return;
+      }
+      await chrome.offscreen.createDocument({
+        url: "offscreen.html",
+        reasons: ["IFRAME_SCRIPTING"],
+        justification: "Host a hidden Google Flow frame so the connector can warm and observe the signed-in Flow session without opening a visible tab.",
+      });
+    } catch (error) {
+      const message = String(error?.message || error).toLowerCase();
+      if (!message.includes("single offscreen") && !message.includes("already exists")) {
+        console.warn("Flow Provider offscreen setup failed", error);
+      }
+    } finally {
+      offscreenCreating = null;
     }
-    await chrome.offscreen.createDocument({
-      url: "offscreen.html",
-      reasons: ["WORKERS"],
-      justification: "Keep the Flow Provider browser bridge and in-memory auth cache available without opening a visible Flow tab."
-    });
-  } catch (error) {
-    if (!String(error?.message || error).toLowerCase().includes("single offscreen")) {
-      console.warn("Flow Provider offscreen setup failed", error);
-    }
-  }
+  })();
+  return offscreenCreating;
 }
 
 ensureFlowProviderOffscreen().catch(() => {});
