@@ -9,6 +9,10 @@ from app.db.models import ApiClient, GenerationJob, utcnow
 from app.ids import new_id
 
 
+class JobIdempotencyConflict(RuntimeError):
+    """The caller reused an idempotency key for a different logical request."""
+
+
 def _advisory_xact_lock(db, key: str) -> None:
     if db.bind and db.bind.dialect.name == "postgresql":
         db.execute(
@@ -25,6 +29,39 @@ def _as_utc(value):
     )
 
 
+def get_idempotent_job(db, *, client_id: str, idempotency_key: str | None):
+    clean_key = (
+        idempotency_key.strip() if isinstance(idempotency_key, str) else None
+    )
+    if not clean_key:
+        return None
+    return db.scalar(
+        select(GenerationJob).where(
+            GenerationJob.client_id == client_id,
+            GenerationJob.idempotency_key == clean_key,
+        )
+    )
+
+
+def assert_idempotent_job_matches(
+    job: GenerationJob,
+    *,
+    kind: str,
+    provider: str,
+    model: str | None,
+    payload: dict,
+) -> None:
+    if (
+        job.kind != kind
+        or job.provider != provider
+        or job.model != model
+        or job.request_payload != payload
+    ):
+        raise JobIdempotencyConflict(
+            "Idempotency-Key was already used for a different generation request."
+        )
+
+
 def create_job(
     db,
     *,
@@ -37,17 +74,24 @@ def create_job(
     request_id: str | None = None,
     idempotency_key: str | None = None,
 ):
-    """Create one durable Provider job or return the caller-owned idempotent job."""
-    clean_key = idempotency_key.strip() if isinstance(idempotency_key, str) else None
-    if clean_key:
-        existing = db.scalar(
-            select(GenerationJob).where(
-                GenerationJob.client_id == client.id,
-                GenerationJob.idempotency_key == clean_key,
-            )
+    """Create one durable Provider job or return the matching idempotent job."""
+    clean_key = (
+        idempotency_key.strip() if isinstance(idempotency_key, str) else None
+    )
+    existing = get_idempotent_job(
+        db,
+        client_id=client.id,
+        idempotency_key=clean_key,
+    )
+    if existing is not None:
+        assert_idempotent_job_matches(
+            existing,
+            kind=kind,
+            provider=provider,
+            model=model,
+            payload=payload,
         )
-        if existing is not None:
-            return existing
+        return existing
 
     result_payload = {"_request_id": request_id} if request_id else None
     row = GenerationJob(
@@ -70,15 +114,20 @@ def create_job(
         db.commit()
     except IntegrityError:
         db.rollback()
-        if clean_key:
-            winner = db.scalar(
-                select(GenerationJob).where(
-                    GenerationJob.client_id == client.id,
-                    GenerationJob.idempotency_key == clean_key,
-                )
+        winner = get_idempotent_job(
+            db,
+            client_id=client.id,
+            idempotency_key=clean_key,
+        )
+        if winner is not None:
+            assert_idempotent_job_matches(
+                winner,
+                kind=kind,
+                provider=provider,
+                model=model,
+                payload=payload,
             )
-            if winner is not None:
-                return winner
+            return winner
         raise
     db.refresh(row)
     return row
