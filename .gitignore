@@ -3,7 +3,11 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.env.*
+!.env.example
+!.env.production.example
 .data/
+backups/
 .coverage
 htmlcov/
 .DS_Store
