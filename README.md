@@ -50,7 +50,7 @@ Configure the Tunnel published application to route the Provider hostname to `ht
 - `GET /v1/tasks/{task_id}`
 - `POST /v1/tasks/{task_id}/cancel`
 
-For the current client-facing contract, see [docs/integration.md](docs/integration.md). For a UI implementation, see the [frontend integration guide](docs/frontend-integration.md).
+For the current client-facing contract, see [docs/integration.md](docs/integration.md). Backend services should use the [backend integration reference](docs/backend-integration.md); UI implementations should use the [frontend integration guide](docs/frontend-integration.md).
 - `POST /v1/media`
 - `GET /v1/media/{media_id}`
 - `GET /v1/accounts`
