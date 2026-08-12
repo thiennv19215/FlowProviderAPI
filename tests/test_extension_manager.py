@@ -27,7 +27,7 @@ def _register(app):
     bridge=app.state.runtime.bridge
     ws=LoopbackExtension(bridge)
     conn=bridge.register(ws,{"installationId":"install_manage_1","runtimeId":"chrome","profileId":"profile_manage_1","profileName":"Managed Chrome","connectionId":"conn_manage_1"})
-    conn.account_email="managed@example.test";conn.flow_key="initial-token";conn.paygate_tier="PAYGATE_TIER_ONE";conn.credits=100
+    conn.account_email="managed@example.test";conn.flow_key="initial-token";conn.flow_api_key="AIzaMockFlowApiKey1234567890";conn.paygate_tier="PAYGATE_TIER_ONE";conn.credits=100
     app.state.runtime.extension_manager.connected(conn)
     return ws,conn
 

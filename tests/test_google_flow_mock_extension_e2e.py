@@ -141,8 +141,8 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         assert omni_done["status"] == "succeeded"
         assert omni_done["outputs"][0]["type"] == "video"
 
-        assert mock.state.projects_created == 2
-        assert mock.state.uploads == 2
+        assert mock.state.projects_created == 1
+        assert mock.state.uploads == 1
         assert mock.state.video_generations == 1
         assert mock.state.omni_generations == 1
         assert mock.state.polls >= 2

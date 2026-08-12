@@ -5,7 +5,7 @@ Shared, developer-facing AI media provider platform. V1 integrates Google Flow t
 ## What it owns
 
 - `/v1` image, video and Omni generation contracts
-- durable PostgreSQL generation jobs with idempotency and leases
+- durable PostgreSQL generation jobs with leases
 - provider account scheduling/capacity and cooldowns
 - Google Flow project/media mapping
 - Provider-owned assets in local storage or Cloudflare R2
@@ -27,7 +27,7 @@ uvicorn app.main:app --reload
 
 Open `http://localhost:8000/docs` for Swagger. Load `extension/` as an unpacked Chrome extension and point its popup at the Provider URL.
 
-For a live Google Flow test, set `FLOW_PROVIDER_FLOW_API_KEY` in `.env`. Local/test mode may leave the extension gateway token unset. Production requires `FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN` with at least 32 characters. In the extension popup, configure the Provider server as `https://provider.example.com` and put the same secret in the separate **Gateway token** field. The connector sends that secret only in the WebSocket subprotocol during the `/api/extensions/ws` handshake; it is not embedded in the request URL. Existing saved `/ext/<token>` settings are migrated automatically once to the separate token storage.
+For a live Google Flow test, open Google Flow in the same Chrome profile. The extension discovers the Google Flow API key from requests to Google's Flow API and supplies it to the backend for the lifetime of the connection. `FLOW_PROVIDER_FLOW_API_KEY` remains available as an optional server-side fallback. Local/test mode may leave the extension gateway token unset. Production requires `FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN` with at least 32 characters. In the extension popup, configure the Provider server as `https://provider.example.com` and put the same secret in the separate **Gateway token** field. The connector sends that secret only in the WebSocket subprotocol during the `/api/extensions/ws` handshake; it is not embedded in the request URL. Existing saved `/ext/<token>` settings are migrated automatically once to the separate token storage.
 
 ## Primary endpoints
 

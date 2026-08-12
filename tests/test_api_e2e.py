@@ -41,13 +41,21 @@ def test_video_dispatch_and_poll_survives_db_state(client, app, auth):
     assert done["outputs"][0]["type"] == "video"
 
 
-def test_idempotency_returns_same_job(client, auth):
+def test_duplicate_submissions_always_create_new_tasks(client, auth):
     payload={"prompt":"cat","provider":"fake","workspace":{"key":"idem:1"}}
     headers={**auth,"Idempotency-Key":"order-123"}
     first=client.post("/v1/images/generations",headers=headers,json=payload)
     second=client.post("/v1/images/generations",headers=headers,json=payload)
     assert first.status_code == second.status_code == 202
-    assert first.json()["id"] == second.json()["id"]
+    assert first.json()["id"] != second.json()["id"]
+    assert first.json()["task_id"] == first.json()["id"]
+
+
+def test_server_generates_task_id(client,auth):
+    response=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":"fake","workspace":{"key":"task:generated"}})
+    assert response.status_code==202
+    assert response.json()["task_id"]==response.json()["id"]
+    assert response.json()["task_id"].startswith("job_")
 
 
 def test_structured_auth_error(client):
@@ -61,5 +69,10 @@ def test_openapi_exposes_typed_generation_and_asset_responses(client):
     schema=client.get("/openapi.json").json()
     image=schema["paths"]["/v1/images/generations"]["post"]
     assert image["responses"]["202"]["content"]["application/json"]["schema"]["$ref"].endswith("/JobOutput")
+    assert all(parameter.get("name")!="Idempotency-Key" for parameter in image.get("parameters",[]))
+    assert "task_id" not in schema["components"]["schemas"]["ImageGenerationRequest"]["properties"]
+    assert "workspace" not in schema["components"]["schemas"]["ImageGenerationRequest"]["properties"]
+    assert "task_id" in schema["components"]["schemas"]["JobOutput"]["properties"]
+    assert "workspace_key" not in schema["components"]["schemas"]["JobOutput"]["properties"]
     upload=schema["paths"]["/v1/assets/uploads"]["post"]
     assert upload["responses"]["201"]["content"]["application/json"]["schema"]["$ref"].endswith("/AssetUploadResponse")

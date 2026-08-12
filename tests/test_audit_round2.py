@@ -16,21 +16,6 @@ class DummyWS:
     async def close(self,*args,**kwargs):pass
 
 
-def test_idempotency_rejects_different_payload(client,auth):
-    headers={**auth,"Idempotency-Key":"same-operation"}
-    first=client.post("/v1/images/generations",headers=headers,json={"prompt":"cat","provider":"fake","workspace":{"key":"idem:conflict"}})
-    assert first.status_code==202
-    second=client.post("/v1/images/generations",headers=headers,json={"prompt":"dog","provider":"fake","workspace":{"key":"idem:conflict"}})
-    assert second.status_code==409
-    assert second.json()["error"]["code"]=="IDEMPOTENCY_CONFLICT"
-
-
-def test_idempotency_key_length_is_validated(client,auth):
-    response=client.post("/v1/images/generations",headers={**auth,"Idempotency-Key":"x"*256},json={"prompt":"cat","provider":"fake","workspace":{"key":"idem:long"}})
-    assert response.status_code==422
-    assert response.json()["error"]["code"]=="VALIDATION_ERROR"
-
-
 def test_video_start_asset_must_be_image(client,auth):
     created=client.post("/v1/assets/uploads",headers=auth,json={"filename":"clip.mp4","content_type":"video/mp4","type":"video"})
     assert created.status_code==201

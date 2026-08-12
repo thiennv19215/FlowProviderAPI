@@ -8,6 +8,7 @@ from app.providers.google_flow.client import (
     FLOW_CREDITS_URL,
     RECAPTCHA_FALLBACK_KEY,
     FlowBridge as BaseFlowBridge,
+    resolve_paygate_tier,
 )
 
 
@@ -30,8 +31,13 @@ class FlowBridge(BaseFlowBridge):
         conn = self.get(connection_id)
         if not conn or not conn.flow_key:
             return
+        api_key = conn.flow_api_key or self.flow_api_key
+        if not api_key:
+            conn.last_error = "flow_api_key_unavailable"
+            await self._send_auth_ack(conn)
+            return
         spec = {
-            "url": f"{FLOW_CREDITS_URL}?key={self.flow_api_key}",
+            "url": f"{FLOW_CREDITS_URL}?key={api_key}",
             "method": "GET",
             "headers": {
                 "origin": "https://labs.google",
@@ -49,8 +55,8 @@ class FlowBridge(BaseFlowBridge):
         inner = response.get("data") if isinstance(response, dict) else None
         payload = inner.get("data") if isinstance(inner, dict) else None
         if isinstance(payload, dict):
-            tier = payload.get("userPaygateTier")
-            conn.paygate_tier = tier if tier in {"PAYGATE_TIER_ONE", "PAYGATE_TIER_TWO"} else None
+            conn.last_error = None
+            conn.paygate_tier = resolve_paygate_tier(payload)
             conn.credits = payload.get("credits") if isinstance(payload.get("credits"), int) else None
             conn.sku = payload.get("sku") if isinstance(payload.get("sku"), str) else None
         await self._send_auth_ack(conn)

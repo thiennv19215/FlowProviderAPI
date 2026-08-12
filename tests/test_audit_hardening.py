@@ -7,7 +7,8 @@ import pytest
 from app.config import Settings
 from app.jobs.scheduler import estimated_credit_cost
 from app.providers.base import ProviderDispatch, ProviderMedia, ProviderPollResult
-from app.providers.google_flow.client import FlowBridge
+from app.providers.google_flow.client import FlowBridge, resolve_paygate_tier
+from app.providers.google_flow.browser_bridge import FlowBridge as BrowserFlowBridge
 
 
 class DummyWS:
@@ -39,11 +40,39 @@ async def test_auth_error_invalidates_ready_account():
     assert conn.paygate_tier is None
 
 
+async def test_connection_supplied_flow_api_key_makes_account_ready_without_server_fallback():
+    class RecordingBridge(BrowserFlowBridge):
+        def __init__(self):
+            super().__init__(flow_api_key=None)
+            self.request_url=None
+            self.refresh_count=0
+
+        async def send_rpc(self,connection_id,rpc_type,params,*,timeout=None):
+            self.refresh_count+=1
+            self.request_url=params["spec"]["url"]
+            return {"data":{"data":{"userPaygateTier":"PAYGATE_TIER_ONE","credits":123,"sku":"test"}}}
+
+    bridge=RecordingBridge();ws=DummyWS();conn=bridge.register(ws,{"installationId":"dynamic-key-install"})
+    conn.flow_key="browser_owned";conn.account_email="flow@example.com"
+    await bridge.handle_message({"type":"flow_api_key","apiKey":"AIzaDynamicFlowKey1234567890"},ws)
+    await asyncio.sleep(0)
+    await bridge.handle_message({"type":"flow_api_key","apiKey":"AIzaDynamicFlowKey1234567890"},ws)
+    await asyncio.sleep(0)
+    assert conn.ready
+    assert conn.credits==123
+    assert bridge.request_url=="https://aisandbox-pa.googleapis.com/v1/credits?key=AIzaDynamicFlowKey1234567890"
+    assert bridge.refresh_count==1
+
+
 def test_omni_credit_cost_is_duration_aware():
     assert estimated_credit_cost("omni",{"duration":2})==10
     assert estimated_credit_cost("omni",{"duration":4})==15
     assert estimated_credit_cost("omni",{"duration":8})==25
     assert estimated_credit_cost("omni",{"duration":10})==30
+
+
+def test_freemium_sku_uses_tier_one_when_google_omits_legacy_tier():
+    assert resolve_paygate_tier({"sku":"G1_FREEMIUM","credits":50})=="PAYGATE_TIER_ONE"
 
 
 def test_production_configuration_rejects_dev_shape():

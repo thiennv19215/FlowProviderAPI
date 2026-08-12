@@ -60,6 +60,9 @@ class MockExtensionSocket:
             self,
         )
         await self.bridge.handle_message(
+            {"type": "flow_api_key", "apiKey": "AIzaMockFlowApiKey1234567890"}, self
+        )
+        await self.bridge.handle_message(
             {"type": "token_captured", "flowKey": "mock-bearer-token"}, self
         )
         for _ in range(30):

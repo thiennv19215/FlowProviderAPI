@@ -33,6 +33,14 @@ def test_auth_sync_never_sends_bearer_to_backend():
     assert "flowKey:" not in source
 
 
+def test_extension_discovers_and_sends_flow_api_key_only_from_google_host():
+    source = (ROOT / "extension/browser-transport.js").read_text(encoding="utf-8")
+    assert 'const FLOW_API_HOST = "aisandbox-pa.googleapis.com"' in source
+    assert 'type: "flow_api_key"' in source
+    assert 'url.hostname !== FLOW_API_HOST' in source
+    assert "chrome.webRequest.onBeforeRequest.addListener" in source
+
+
 def test_dispatch_disconnect_is_not_blindly_retried():
     source = (ROOT / "app/jobs/worker.py").read_text(encoding="utf-8")
     repository_source = (ROOT / "app/jobs/repository.py").read_text(encoding="utf-8")

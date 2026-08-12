@@ -11,6 +11,15 @@ from typing import Any
 logger=logging.getLogger(__name__)
 RECAPTCHA_FALLBACK_KEY="6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 FLOW_CREDITS_URL="https://aisandbox-pa.googleapis.com/v1/credits"
+SUPPORTED_PAYGATE_TIERS={"PAYGATE_TIER_ONE","PAYGATE_TIER_TWO"}
+
+
+def resolve_paygate_tier(payload:dict)->str|None:
+    tier=payload.get("userPaygateTier")
+    if tier in SUPPORTED_PAYGATE_TIERS:return tier
+    # Current freemium accounts omit the legacy tier while using tier-one models.
+    if payload.get("sku")=="G1_FREEMIUM":return "PAYGATE_TIER_ONE"
+    return None
 
 
 @dataclass
@@ -24,6 +33,7 @@ class ExtensionConnection:
     connected_at: float=field(default_factory=time.time)
     last_seen_at: float=field(default_factory=time.time)
     flow_key: str|None=None
+    flow_api_key: str|None=None
     user_info: dict|None=None
     account_email: str|None=None
     paygate_tier: str|None=None
@@ -51,7 +61,7 @@ class ExtensionConnection:
 class FlowBridge:
     DEFAULT_TIMEOUT=180.0;BEARER_TIMEOUT=30.0;TAB_TIMEOUT=30.0;CAPTCHA_TIMEOUT=45.0
 
-    def __init__(self,*,flow_api_key:str,slot_capacity:int=2,cooldown_seconds:int=180):
+    def __init__(self,*,flow_api_key:str|None,slot_capacity:int=2,cooldown_seconds:int=180):
         self.flow_api_key=flow_api_key;self.slot_capacity=slot_capacity;self.cooldown_seconds=cooldown_seconds
         self._connections:dict[str,ExtensionConnection]={}
         self._installation_to_id:dict[str,str]={}
@@ -136,6 +146,13 @@ class FlowBridge:
             token=data.get("flowKey")
             if isinstance(token,str) and token:conn.flow_key=token;asyncio.create_task(self.refresh_account(conn.id))
             return
+        if msg_type=="flow_api_key" and conn:
+            api_key=data.get("apiKey")
+            if isinstance(api_key,str) and 20<=len(api_key)<=100 and all(ch.isalnum() or ch in "-_" for ch in api_key):
+                changed=api_key!=conn.flow_api_key
+                conn.flow_api_key=api_key
+                if conn.flow_key and changed:asyncio.create_task(self.refresh_account(conn.id))
+            return
         if msg_type=="user_info" and conn:
             info=data.get("userInfo")
             if isinstance(info,dict):
@@ -164,13 +181,16 @@ class FlowBridge:
     async def refresh_account(self,connection_id:str)->None:
         conn=self.get(connection_id)
         if not conn or not conn.flow_key:return
-        spec={"url":f"{FLOW_CREDITS_URL}?key={self.flow_api_key}","method":"GET","headers":{"authorization":f"Bearer {conn.flow_key}","origin":"https://labs.google","referer":"https://labs.google/"},"responseType":"json","timeoutMs":30000}
+        api_key=conn.flow_api_key or self.flow_api_key
+        if not api_key:
+            conn.last_error="flow_api_key_unavailable";await self._send_auth_ack(conn);return
+        spec={"url":f"{FLOW_CREDITS_URL}?key={api_key}","method":"GET","headers":{"authorization":f"Bearer {conn.flow_key}","origin":"https://labs.google","referer":"https://labs.google/"},"responseType":"json","timeoutMs":30000}
         response=await self.send_rpc(connection_id,"SW_FETCH",{"spec":spec},timeout=35)
         if response.get("error"):
             self._invalidate_auth(conn,str(response["error"]));await self._send_auth_ack(conn);return
         inner=response.get("data") if isinstance(response,dict) else None;payload=inner.get("data") if isinstance(inner,dict) else None
         if isinstance(payload,dict):
-            tier=payload.get("userPaygateTier");conn.paygate_tier=tier if tier in {"PAYGATE_TIER_ONE","PAYGATE_TIER_TWO"} else None
+            conn.last_error=None;conn.paygate_tier=resolve_paygate_tier(payload)
             conn.credits=payload.get("credits") if isinstance(payload.get("credits"),int) else None;conn.sku=payload.get("sku") if isinstance(payload.get("sku"),str) else None
         await self._send_auth_ack(conn)
 

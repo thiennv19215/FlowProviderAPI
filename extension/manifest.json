@@ -17,6 +17,7 @@
     "identity",
     "offscreen",
     "declarativeNetRequest",
+    "webRequest",
     "identity.email"
   ],
   "host_permissions": [

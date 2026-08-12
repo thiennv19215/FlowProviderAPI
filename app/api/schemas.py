@@ -6,10 +6,6 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class WorkspaceRef(BaseModel):
-    key: str = Field(min_length=1, max_length=255)
-
-
 class AssetRef(BaseModel):
     asset_id: str = Field(min_length=8, max_length=80)
 
@@ -21,7 +17,6 @@ class ImageGenerationRequest(BaseModel):
     aspect_ratio: Literal["1:1", "16:9", "9:16"] = "16:9"
     output_count: int = Field(default=1, ge=1, le=4)
     references: list[AssetRef] = Field(default_factory=list, max_length=8)
-    workspace: WorkspaceRef
 
 
 class VideoInput(BaseModel):
@@ -35,7 +30,6 @@ class VideoGenerationRequest(BaseModel):
     quality: Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"] = "lite"
     aspect_ratio: Literal["16:9", "9:16"] = "16:9"
     input: VideoInput
-    workspace: WorkspaceRef
 
 
 class OmniVideoGenerationRequest(BaseModel):
@@ -45,7 +39,6 @@ class OmniVideoGenerationRequest(BaseModel):
     duration: Literal[2, 4, 8, 10] = 8
     aspect_ratio: Literal["16:9", "9:16"] = "9:16"
     references: list[AssetRef] = Field(min_length=1, max_length=8)
-    workspace: WorkspaceRef
 
 
 class AssetUploadRequest(BaseModel):
@@ -72,13 +65,13 @@ class AssetOutput(BaseModel):
 class JobOutput(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
+    task_id: str
     object: Literal["generation_job"] = "generation_job"
     type: str
     provider: str
     model: str | None = None
     status: str
     stage: str
-    workspace_key: str
     outputs: list[AssetOutput] = Field(default_factory=list)
     error: dict | None = None
     created_at: datetime

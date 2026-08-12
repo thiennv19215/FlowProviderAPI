@@ -64,8 +64,6 @@ class Settings(BaseSettings):
                 raise ValueError("Production requires R2 storage")
             if self.bootstrap_api_key and (self.bootstrap_api_key.startswith("fpa_dev_") or "change_me" in self.bootstrap_api_key.lower()):
                 raise ValueError("Disable bootstrap seeding or configure a non-development API key")
-            if not self.flow_api_key:
-                raise ValueError("FLOW_PROVIDER_FLOW_API_KEY is required in production")
             if not self.extension_gateway_token or len(self.extension_gateway_token)<32:
                 raise ValueError("Production requires FLOW_PROVIDER_EXTENSION_GATEWAY_TOKEN with at least 32 characters")
             parsed=urlparse(self.public_base_url)

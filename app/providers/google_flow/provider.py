@@ -23,7 +23,7 @@ class GoogleFlowProvider:
         conn=self.bridge.get(account_id)
         if not conn or not conn.ready: raise RuntimeError("provider_account_unavailable")
         sdk=self._sdk(account_id)
-        project_id=job.provider_project_id or await self.projects.get_or_create(db,client_id=job.client_id,workspace_key=job.workspace_key,account_id=account_id,sdk=sdk)
+        project_id=job.provider_project_id or await self.projects.get_or_create(db,client_id=job.client_id,account_id=account_id,sdk=sdk)
         job.provider_project_id=project_id;db.commit()
         return conn,sdk,project_id
 

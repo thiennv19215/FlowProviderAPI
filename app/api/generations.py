@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 
 from app.api.deps import get_client, get_db
@@ -11,6 +11,7 @@ from app.db.models import MediaAsset
 from app.jobs.repository import create_job
 
 router=APIRouter(tags=["Generations"])
+CLIENT_WORKSPACE_KEY="__api_client__"
 
 
 def _reference_asset_ids(data:dict,kind:str)->list[str]:
@@ -33,27 +34,24 @@ def _validate_reference_assets(request:Request,db,client,data:dict,kind:str)->No
             raise APIError(413,"REFERENCE_ASSET_TOO_LARGE",f"Reference asset '{asset_id}' exceeds the {limit} byte reference limit.",error_type="validation_error",param="references")
 
 
-def _submit(request: Request, db, client, payload, kind: str, idempotency_key: str|None):
+def _submit(request: Request, db, client, payload, kind: str):
     data=payload.model_dump(mode="json")
     request.app.state.runtime.providers.get(data.get("provider","google_flow"))
     _validate_reference_assets(request,db,client,data,kind)
-    job,created=create_job(db,client=client,kind=kind,provider=data.get("provider","google_flow"),model=data.get("model"),workspace_key=data["workspace"]["key"],payload=data,idempotency_key=idempotency_key)
-    return job_dict(request.app.state.runtime,db,job),created
-
-
-IdempotencyHeader=Header(default=None,alias="Idempotency-Key",min_length=1,max_length=255)
+    job=create_job(db,client=client,kind=kind,provider=data.get("provider","google_flow"),model=data.get("model"),workspace_key=CLIENT_WORKSPACE_KEY,payload=data)
+    return job_dict(request.app.state.runtime,db,job)
 
 
 @router.post("/v1/images/generations",status_code=202,response_model=JobOutput)
-def create_image_generation(payload: ImageGenerationRequest,request: Request,db=Depends(get_db),client=Depends(get_client),idempotency_key: str|None=IdempotencyHeader):
-    return _submit(request,db,client,payload,"image",idempotency_key)[0]
+def create_image_generation(payload: ImageGenerationRequest,request: Request,db=Depends(get_db),client=Depends(get_client)):
+    return _submit(request,db,client,payload,"image")
 
 
 @router.post("/v1/videos/generations",status_code=202,response_model=JobOutput)
-def create_video_generation(payload: VideoGenerationRequest,request: Request,db=Depends(get_db),client=Depends(get_client),idempotency_key: str|None=IdempotencyHeader):
-    return _submit(request,db,client,payload,"video",idempotency_key)[0]
+def create_video_generation(payload: VideoGenerationRequest,request: Request,db=Depends(get_db),client=Depends(get_client)):
+    return _submit(request,db,client,payload,"video")
 
 
 @router.post("/v1/videos/omni-generations",status_code=202,response_model=JobOutput)
-def create_omni_generation(payload: OmniVideoGenerationRequest,request: Request,db=Depends(get_db),client=Depends(get_client),idempotency_key: str|None=IdempotencyHeader):
-    return _submit(request,db,client,payload,"omni",idempotency_key)[0]
+def create_omni_generation(payload: OmniVideoGenerationRequest,request: Request,db=Depends(get_db),client=Depends(get_client)):
+    return _submit(request,db,client,payload,"omni")

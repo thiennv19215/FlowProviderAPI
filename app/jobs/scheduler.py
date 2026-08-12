@@ -28,8 +28,8 @@ class GlobalScheduler:
         return sum(estimated_credit_cost(job.kind,job.request_payload) for job in rows)
 
     def _workspace_accounts(self,db,*,client_id:str|None,workspace_key:str|None,provider:str|None)->set[str]:
-        if not client_id or not workspace_key or not provider:return set()
-        return set(db.scalars(select(WorkspaceProject.provider_account_id).where(WorkspaceProject.client_id==client_id,WorkspaceProject.workspace_key==workspace_key,WorkspaceProject.provider==provider)))
+        if not client_id or not provider:return set()
+        return set(db.scalars(select(WorkspaceProject.provider_account_id).where(WorkspaceProject.client_id==client_id,WorkspaceProject.provider==provider)))
 
     def _ranked_candidates(self,db,*,kind:str,payload:dict|None,client_id:str|None,workspace_key:str|None,provider:str|None):
         required=estimated_credit_cost(kind,payload);sticky_accounts=self._workspace_accounts(db,client_id=client_id,workspace_key=workspace_key,provider=provider);candidates=[]
