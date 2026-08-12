@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta, timezone
 
 from sqlalchemy import func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from app.db.models import ApiClient, GenerationJob, utcnow
 from app.ids import new_id
 
@@ -16,10 +17,74 @@ def _as_utc(value):
     return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
-def create_job(db, *, client, kind: str, provider: str, model: str|None, workspace_key: str, payload: dict):
-    row=GenerationJob(id=new_id("job"),client_id=client.id,kind=kind,provider=provider,model=model,workspace_key=workspace_key,status="queued",stage="queued",priority=client.priority,request_payload=payload,next_run_at=utcnow())
+class IdempotencyConflict(ValueError):
+    """The same client key was reused for a different generation request."""
+
+
+def _same_idempotent_request(row, *, kind: str, provider: str, model: str | None, payload: dict) -> bool:
+    return (
+        row.kind == kind
+        and row.provider == provider
+        and row.model == model
+        and row.request_payload == payload
+    )
+
+
+def create_job(
+    db,
+    *,
+    client,
+    kind: str,
+    provider: str,
+    model: str | None,
+    workspace_key: str,
+    payload: dict,
+    idempotency_key: str | None = None,
+):
+    if idempotency_key:
+        _advisory_xact_lock(db, f"job-idempotency:{client.id}:{idempotency_key}")
+        existing = db.scalar(
+            select(GenerationJob).where(
+                GenerationJob.client_id == client.id,
+                GenerationJob.idempotency_key == idempotency_key,
+            )
+        )
+        if existing is not None:
+            if not _same_idempotent_request(
+                existing,
+                kind=kind,
+                provider=provider,
+                model=model,
+                payload=payload,
+            ):
+                raise IdempotencyConflict(idempotency_key)
+            return existing
+
+    row=GenerationJob(id=new_id("job"),client_id=client.id,kind=kind,provider=provider,model=model,workspace_key=workspace_key,status="queued",stage="queued",priority=client.priority,request_payload=payload,next_run_at=utcnow(),idempotency_key=idempotency_key)
     db.add(row)
-    db.commit();db.refresh(row);return row
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if not idempotency_key:
+            raise
+        existing = db.scalar(
+            select(GenerationJob).where(
+                GenerationJob.client_id == client.id,
+                GenerationJob.idempotency_key == idempotency_key,
+            )
+        )
+        if existing is None or not _same_idempotent_request(
+            existing,
+            kind=kind,
+            provider=provider,
+            model=model,
+            payload=payload,
+        ):
+            raise IdempotencyConflict(idempotency_key) from None
+        return existing
+    db.refresh(row)
+    return row
 
 
 def active_count_for_client(db, client_id: str) -> int:
