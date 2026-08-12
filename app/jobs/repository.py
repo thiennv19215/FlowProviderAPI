@@ -3,9 +3,14 @@ from __future__ import annotations
 from datetime import timedelta, timezone
 
 from sqlalchemy import func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 
 from app.db.models import ApiClient, GenerationJob, utcnow
 from app.ids import new_id
+
+
+class IdempotencyConflict(RuntimeError):
+    """Raised when one client reuses a key for a different logical submission."""
 
 
 def _advisory_xact_lock(db, key: str) -> None:
@@ -24,6 +29,49 @@ def _as_utc(value):
     )
 
 
+def get_job_by_idempotency(db, *, client_id: str, idempotency_key: str):
+    return db.scalar(
+        select(GenerationJob).where(
+            GenerationJob.client_id == client_id,
+            GenerationJob.idempotency_key == idempotency_key,
+        )
+    )
+
+
+def _matches_submission(
+    job: GenerationJob,
+    *,
+    kind: str,
+    provider: str,
+    model: str | None,
+    payload: dict,
+) -> bool:
+    return (
+        job.kind == kind
+        and job.provider == provider
+        and job.model == model
+        and job.request_payload == payload
+    )
+
+
+def assert_idempotent_submission(
+    job: GenerationJob,
+    *,
+    kind: str,
+    provider: str,
+    model: str | None,
+    payload: dict,
+) -> None:
+    if not _matches_submission(
+        job,
+        kind=kind,
+        provider=provider,
+        model=model,
+        payload=payload,
+    ):
+        raise IdempotencyConflict("Idempotency key was already used for another submission.")
+
+
 def create_job(
     db,
     *,
@@ -34,8 +82,26 @@ def create_job(
     workspace_key: str,
     payload: dict,
     request_id: str | None = None,
+    idempotency_key: str | None = None,
 ):
-    """Create one durable Provider job for one accepted generation submission."""
+    """Create one durable Provider job or return the matching idempotent job."""
+    clean_key = idempotency_key.strip() if isinstance(idempotency_key, str) else None
+    if clean_key:
+        existing = get_job_by_idempotency(
+            db,
+            client_id=client.id,
+            idempotency_key=clean_key,
+        )
+        if existing is not None:
+            assert_idempotent_submission(
+                existing,
+                kind=kind,
+                provider=provider,
+                model=model,
+                payload=payload,
+            )
+            return existing
+
     result_payload = {"_request_id": request_id} if request_id else None
     row = GenerationJob(
         id=new_id("job"),
@@ -49,10 +115,30 @@ def create_job(
         priority=client.priority,
         request_payload=payload,
         result_payload=result_payload,
+        idempotency_key=clean_key,
         next_run_at=utcnow(),
     )
     db.add(row)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        if clean_key:
+            winner = get_job_by_idempotency(
+                db,
+                client_id=client.id,
+                idempotency_key=clean_key,
+            )
+            if winner is not None:
+                assert_idempotent_submission(
+                    winner,
+                    kind=kind,
+                    provider=provider,
+                    model=model,
+                    payload=payload,
+                )
+                return winner
+        raise
     db.refresh(row)
     return row
 
