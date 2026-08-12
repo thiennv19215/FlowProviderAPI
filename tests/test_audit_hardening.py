@@ -80,6 +80,10 @@ def test_production_configuration_rejects_dev_shape():
         Settings(env="production",database_url="sqlite:///bad.db",storage_backend="local",public_base_url="http://localhost:8000",flow_api_key=None)
 
 
+def test_extension_heartbeat_defaults_to_one_minute():
+    assert Settings().extension_heartbeat_seconds==60
+
+
 class TerminalVideoProvider:
     name="terminal_video";requires_account_pool=False
     async def generate_image(self,**kwargs):raise AssertionError("not used")

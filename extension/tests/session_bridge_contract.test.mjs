@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 const loader = fs.readFileSync(new URL('../background-loader.js', import.meta.url), 'utf8');
+const background = fs.readFileSync(new URL('../background.js', import.meta.url), 'utf8');
 const bridge = fs.readFileSync(new URL('../session-bridge.js', import.meta.url), 'utf8');
 const offscreen = fs.readFileSync(new URL('../offscreen.js', import.meta.url), 'utf8');
 
@@ -26,4 +27,16 @@ test('offscreen keepalive wakes the service worker without maintaining a second 
   assert.match(offscreen, /FLOW_PROVIDER_KEEPALIVE/);
   assert.equal(offscreen.includes('FLOW_PROVIDER_TOKEN_CACHE_'), false);
   assert.match(bridge, /keepAlive\(\)\.catch/);
+});
+
+test('offscreen owns the extension keepalive timer', () => {
+  assert.match(offscreen, /setInterval\(pingServiceWorker, KEEPALIVE_MS\)/);
+  assert.equal(background.includes('const KEEPALIVE_MS'), false);
+  assert.equal(background.includes('setInterval(() => { keepAlive()'), false);
+  assert.equal(background.includes('type: "pong"'), false);
+});
+
+test('auth synchronization is single-flight for each active socket', () => {
+  assert.match(background, /authSyncInFlight\?\.socket === targetSocket/);
+  assert.match(background, /if \(authSyncInFlight === entry\) authSyncInFlight = null/);
 });

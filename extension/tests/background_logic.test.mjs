@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../background.js', import.meta.url), 'utf8');
 
-function buildHarness(initialStorage = {}) {
+function buildHarness(initialStorage = {}, { fetchImpl = null } = {}) {
   const sockets = [];
   const fetchSignals = [];
   const storage = { ...initialStorage };
@@ -58,12 +58,12 @@ function buildHarness(initialStorage = {}) {
     setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {}, console, Date, Math,
     crypto: globalThis.crypto,
     navigator: {},
-    fetch: (_url, options = {}) => new Promise((_resolve, reject) => {
+    fetch: fetchImpl || ((_url, options = {}) => new Promise((_resolve, reject) => {
       const signal = options.signal;
       fetchSignals.push(signal);
       if (signal?.aborted) return reject(new Error('AbortError'));
       signal?.addEventListener('abort', () => reject(new Error('AbortError')), { once: true });
-    }),
+    })),
   };
   context.globalThis = context;
   vm.createContext(context);
@@ -124,4 +124,42 @@ test('legacy unused RPC handlers are removed', () => {
   assert.equal(source.includes('RELOAD_TAB'), false);
   assert.equal(source.includes('DOWNLOAD_FILE'), false);
   assert.equal(source.includes('ensureOffscreen'), false);
+});
+
+test('concurrent auth synchronization shares one labs session request', async () => {
+  let sessionFetches = 0;
+  let finishSessionFetch;
+  const sessionPending = new Promise((resolve) => { finishSessionFetch = resolve; });
+  const h = buildHarness({}, {
+    fetchImpl: async () => {
+      sessionFetches += 1;
+      await sessionPending;
+      return {
+        ok: true,
+        json: async () => ({ access_token: 'labs-token', user: { email: 'user@example.com' } }),
+      };
+    },
+  });
+  await flush();
+  const ws = h.sockets[0];
+  ws.readyState = h.context.WebSocket.OPEN;
+
+  const first = vm.runInContext('syncAuth()', h.context);
+  const second = vm.runInContext('syncAuth()', h.context);
+  await flush();
+  assert.equal(sessionFetches, 1);
+
+  finishSessionFetch();
+  await Promise.all([first, second]);
+  assert.equal(ws.sent.filter((frame) => frame.type === 'token_captured').length, 1);
+});
+
+test('local offscreen keepalive does not duplicate the backend websocket heartbeat', async () => {
+  const h = buildHarness();
+  await flush();
+  const ws = h.sockets[0];
+  ws.readyState = h.context.WebSocket.OPEN;
+
+  await vm.runInContext('lastAuthSyncAt = Date.now(); keepAlive()', h.context);
+  assert.equal(ws.sent.some((frame) => frame.type === 'pong'), false);
 });

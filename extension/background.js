@@ -8,7 +8,6 @@ const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
 const ALLOWED_FETCH_HOSTS = ["labs.google", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
 const AUTH_REFRESH_MS = 5 * 60 * 1000;
-const KEEPALIVE_MS = 20 * 1000;
 
 let socket = null;
 let reconnectTimer = null;
@@ -17,6 +16,7 @@ let cachedBearer = null;
 let cachedBearerAt = 0;
 let lastAuthSyncAt = 0;
 let accountState = { email: null, credits: null, ready: false };
+let authSyncInFlight = null;
 const inflightRpcControllers = new Map();
 
 function id(prefix = "id") {
@@ -127,19 +127,30 @@ async function getBearer({ force = false } = {}) {
 
 async function syncAuth(targetSocket = socket) {
   if (!targetSocket || targetSocket.readyState !== WebSocket.OPEN || targetSocket !== socket) return;
+  if (authSyncInFlight?.socket === targetSocket) return authSyncInFlight.promise;
+
+  const entry = { socket: targetSocket, promise: null };
+  entry.promise = (async () => {
+    try {
+      const session = await fetchLabsSession();
+      if (targetSocket !== socket || targetSocket.readyState !== WebSocket.OPEN) return;
+      lastAuthSyncAt = Date.now();
+      targetSocket.send(JSON.stringify({ type: "token_captured", flowKey: session.access_token }));
+      if (session.user) {
+        accountState.email = session.user.email || null;
+        targetSocket.send(JSON.stringify({ type: "user_info", userInfo: { email: session.user.email || "", name: session.user.name || "", picture: session.user.image || "", verified_email: true } }));
+      }
+    } catch (error) {
+      if (targetSocket === socket && targetSocket.readyState === WebSocket.OPEN) {
+        targetSocket.send(JSON.stringify({ type: "auth_sync_status", status: "needs_labs_sign_in", reason: error?.message || String(error) }));
+      }
+    }
+  })();
+  authSyncInFlight = entry;
   try {
-    const session = await fetchLabsSession();
-    if (targetSocket !== socket || targetSocket.readyState !== WebSocket.OPEN) return;
-    lastAuthSyncAt = Date.now();
-    targetSocket.send(JSON.stringify({ type: "token_captured", flowKey: session.access_token }));
-    if (session.user) {
-      accountState.email = session.user.email || null;
-      targetSocket.send(JSON.stringify({ type: "user_info", userInfo: { email: session.user.email || "", name: session.user.name || "", picture: session.user.image || "", verified_email: true } }));
-    }
-  } catch (error) {
-    if (targetSocket === socket && targetSocket.readyState === WebSocket.OPEN) {
-      targetSocket.send(JSON.stringify({ type: "auth_sync_status", status: "needs_labs_sign_in", reason: error?.message || String(error) }));
-    }
+    return await entry.promise;
+  } finally {
+    if (authSyncInFlight === entry) authSyncInFlight = null;
   }
 }
 
@@ -322,8 +333,6 @@ async function connect() {
 
 async function keepAlive() {
   if (socket?.readyState === WebSocket.OPEN) {
-    try { socket.send(JSON.stringify({ type: "pong", ts: Date.now() })); }
-    catch (_) { try { socket.close(); } catch (_) {} return; }
     if (Date.now() - lastAuthSyncAt >= AUTH_REFRESH_MS) await syncAuth(socket);
     return;
   }
@@ -348,6 +357,5 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 chrome.runtime.onInstalled.addListener(() => { setupDnr(); connect(); });
 chrome.runtime.onStartup.addListener(() => { setupDnr(); connect(); });
-setInterval(() => { keepAlive().catch(() => {}); }, KEEPALIVE_MS);
 setupDnr();
 connect();
