@@ -131,7 +131,7 @@ def test_terminal_provider_failure_finishes_job(client,app,auth):
     job_id=client.post("/v1/videos/image-to-video",headers=auth,json={"provider":"terminal_video","prompt":"x","start_media_id":aid,"workspace":{"key":"terminal"}}).json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once())
     assert asyncio.run(app.state.runtime.worker.run_once())
-    body=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
+    body=client.get(f"/v1/status/{job_id}",headers=auth).json()
     assert body["status"]=="failed"
     assert body["error"]["code"]=="PROVIDER_TERMINAL_ERROR"
 
@@ -147,6 +147,6 @@ def test_output_storage_failure_returns_to_poll_and_recovers(client,app,auth):
         return await original(*args,**kwargs)
     app.state.runtime.assets.ingest_provider_media=flaky
     assert asyncio.run(app.state.runtime.worker.run_once())
-    mid=client.get(f"/v1/tasks/{job_id}",headers=auth).json();assert mid["status"]=="running"
+    mid=client.get(f"/v1/status/{job_id}",headers=auth).json();assert mid["status"]=="running"
     assert asyncio.run(app.state.runtime.worker.run_once())
-    done=client.get(f"/v1/tasks/{job_id}",headers=auth).json();assert done["status"]=="succeeded"
+    done=client.get(f"/v1/status/{job_id}",headers=auth).json();assert done["status"]=="succeeded"
