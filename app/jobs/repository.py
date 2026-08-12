@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import timedelta, timezone
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +13,10 @@ from app.ids import new_id
 def _advisory_xact_lock(db,key:str)->None:
     if db.bind and db.bind.dialect.name=="postgresql":
         db.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),{"key":key})
+
+
+def _as_utc(value):
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
 
 
 def _assert_idempotency_match(existing:GenerationJob,*,kind:str,provider:str,model:str|None,workspace_key:str,payload:dict)->None:
@@ -75,7 +79,7 @@ def claim_next(db, *, worker_id: str, lease_seconds: int):
     _advisory_xact_lock(db,f"client-capacity:{job.client_id}")
     client=db.scalar(select(ApiClient).where(ApiClient.id==job.client_id).with_for_update())
     db.refresh(job)
-    if not client or not client.enabled or job.status!="queued" or job.next_run_at>now:
+    if not client or not client.enabled or job.status!="queued" or _as_utc(job.next_run_at)>now:
         db.rollback();return None
     if active_count_for_client(db,job.client_id)>=client.max_concurrent_jobs:
         db.rollback();return None
