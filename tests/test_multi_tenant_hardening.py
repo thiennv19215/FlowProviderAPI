@@ -67,14 +67,14 @@ def test_job_cursor_is_stable_when_created_at_timestamps_match(client,app,auth):
     finally:
         db.close()
 
-    first=client.get("/v1/tasks?limit=2",headers=auth)
+    first=client.get("/v1/status?limit=2",headers=auth)
     assert first.status_code==200
     first_body=first.json()
     assert first_body["has_more"] is True
     assert len(first_body["data"])==2
     cursor=first_body["next_cursor"]
 
-    second=client.get(f"/v1/tasks?limit=2&after={cursor}",headers=auth)
+    second=client.get(f"/v1/status?limit=2&after={cursor}",headers=auth)
     assert second.status_code==200
     second_ids=[item["task_id"] for item in second.json()["data"]]
     first_ids=[item["task_id"] for item in first_body["data"]]
@@ -87,6 +87,6 @@ def test_job_cursor_from_another_client_is_rejected(client,app,auth):
         "prompt":"admin","provider":"fake","workspace":{"key":"cursor:admin"}
     }).json()["task_id"]
     regular=_regular_auth(app)
-    response=client.get(f"/v1/tasks?after={admin_job}",headers=regular)
+    response=client.get(f"/v1/status?after={admin_job}",headers=regular)
     assert response.status_code==400
     assert response.json()["error"]["code"]=="INVALID_CURSOR"

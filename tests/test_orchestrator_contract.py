@@ -33,89 +33,47 @@ def test_unified_generation_normalizes_provider_options_and_runs(client, app, au
         assert job.request_payload["output_count"] == 2
 
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    done = client.get(f"/v1/tasks/{task_id}", headers=auth)
+    done = client.get(f"/v1/status/{task_id}", headers=auth)
     assert done.status_code == 200
     assert done.json()["status"] == "succeeded"
     assert done.json()["outputs"][0]["type"] == "image"
 
 
-def test_unified_generation_idempotency_returns_same_durable_task(client, app, auth):
-    headers = {**auth, "Idempotency-Key": "flowcanvas:42:image:0"}
+def test_unified_generation_duplicate_submissions_create_new_tasks(client, app, auth):
     payload = {
         "kind": "image",
-        "prompt": "idempotent cat",
+        "prompt": "two independent cats",
         "provider": "fake",
         "options": {"aspect_ratio": "9:16"},
     }
+    headers = {**auth, "Idempotency-Key": "ignored-by-contract"}
 
     first = client.post("/v1/generations", headers=headers, json=payload)
     second = client.post("/v1/generations", headers=headers, json=payload)
 
     assert first.status_code == second.status_code == 202
-    assert first.json()["task_id"] == second.json()["task_id"]
+    assert first.json()["task_id"] != second.json()["task_id"]
     with app.state.runtime.session_factory() as db:
         rows = list(
             db.scalars(
                 select(GenerationJob).where(
-                    GenerationJob.idempotency_key == "flowcanvas:42:image:0"
+                    GenerationJob.id.in_(
+                        [first.json()["task_id"], second.json()["task_id"]]
+                    )
                 )
             )
         )
-        assert len(rows) == 1
+        assert len(rows) == 2
+        assert all(row.idempotency_key is None for row in rows)
 
 
-def test_unified_generation_idempotency_rejects_key_reuse_for_different_payload(
-    client, auth
-):
-    headers = {**auth, "Idempotency-Key": "flowcanvas:43:image:0"}
-    first = client.post(
-        "/v1/generations",
-        headers=headers,
-        json={"kind": "image", "prompt": "first cat", "provider": "fake"},
+def test_unified_generation_openapi_has_no_idempotency_header(client):
+    schema = client.get("/openapi.json").json()
+    operation = schema["paths"]["/v1/generations"]["post"]
+    assert all(
+        parameter.get("name") != "Idempotency-Key"
+        for parameter in operation.get("parameters", [])
     )
-    conflict = client.post(
-        "/v1/generations",
-        headers=headers,
-        json={"kind": "image", "prompt": "different cat", "provider": "fake"},
-    )
-
-    assert first.status_code == 202
-    assert conflict.status_code == 409
-    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
-
-
-def test_idempotent_replay_returns_existing_task_before_reference_revalidation(
-    client, app, auth
-):
-    uploaded = client.post(
-        "/v1/media",
-        headers=auth,
-        files={"file": ("start.png", b"video-start-image", "image/png")},
-    )
-    assert uploaded.status_code == 201
-    media_id = uploaded.json()["media_id"]
-    headers = {**auth, "Idempotency-Key": "flowcanvas:44:video:0"}
-    payload = {
-        "kind": "video",
-        "prompt": "move slowly",
-        "provider": "fake",
-        "media_ids": [media_id],
-    }
-    first = client.post("/v1/generations", headers=headers, json=payload)
-    assert first.status_code == 202
-
-    # Simulate reference storage/database loss after the Provider already
-    # accepted this logical POST. An idempotent replay must still recover the
-    # durable task instead of revalidating transient input state first.
-    with app.state.runtime.session_factory() as db:
-        asset = db.get(MediaAsset, media_id)
-        assert asset is not None
-        db.delete(asset)
-        db.commit()
-
-    replay = client.post("/v1/generations", headers=headers, json=payload)
-    assert replay.status_code == 202
-    assert replay.json()["task_id"] == first.json()["task_id"]
 
 
 def test_unified_video_requires_localized_start_media(client, auth):

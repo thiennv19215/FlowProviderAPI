@@ -2,9 +2,7 @@
 
 This guide is for a web or mobile frontend consuming FlowProvider through its **own application backend**.
 
-> Do not put a FlowProvider Bearer API key in browser JavaScript, a mobile app bundle, or local storage. Keep it on your backend. The frontend calls your backend; your backend adds `Authorization: Bearer <API_KEY>` when it calls FlowProvider.
-
-Base URL: `https://api.shopcongngheso5.io.vn`
+> Do not put a FlowProvider Bearer API key in browser JavaScript, a mobile app bundle, or local storage. The frontend calls your backend; your backend calls FlowProvider with `Authorization: Bearer <API_KEY>`.
 
 ## Flow
 
@@ -14,34 +12,18 @@ Browser UI -> Your backend -> FlowProvider
       |---- task_id / result ----|
 ```
 
-1. Upload an optional reference image and keep its `media_id`.
-2. Submit an image, image-to-video, or Omni-video request.
-3. Store the returned `task_id` in UI state.
-4. Poll the task every 3–5 seconds while its status is `queued` or `running`.
-5. Render `outputs` when the status becomes `succeeded`; show the nested `error` if it becomes `failed`.
+1. Upload optional reference media and keep its `media_id`.
+2. Submit a generation request.
+3. Store the returned `task_id`.
+4. Poll `/v1/status/{task_id}` every 3–5 seconds while status is `queued` or `running`.
+5. Render `outputs` on `succeeded`; show the nested `error` on `failed`.
 
-Every submission creates a new task. Do not send a client-created task ID.
+Every generation POST is independent. V1 does not expose `Idempotency-Key`.
 
 ## TypeScript contract
 
-All public media IDs are opaque 15-digit JSON strings. Keep them as strings across storage, URLs, and generation requests.
-
 ```ts
 type MediaId = string;
-
-type Media = {
-  media_id: MediaId;
-  object: "media";
-  type: "image" | "video";
-  status: "ready";
-  mime_type: string;
-  size_bytes: number | null;
-  width: number | null;
-  height: number | null;
-  duration: number | null;
-  url: string | null;
-  created_at: string;
-};
 
 type TaskOutput = {
   media_id: MediaId;
@@ -59,7 +41,7 @@ type ProviderError = {
   retryable: boolean;
 };
 
-type Task = {
+type GenerationStatus = {
   task_id: string;
   status: "queued" | "running" | "succeeded" | "failed" | "canceled";
   outputs: TaskOutput[];
@@ -67,153 +49,66 @@ type Task = {
 };
 ```
 
-Use `media_id`, never the old `id` field.
+All public media IDs are opaque 15-digit JSON strings.
 
-## Upload a reference image
+## Upload a reference
 
-Your backend sends `multipart/form-data` to `POST /v1/media` with the file in field `file`.
+Your backend sends multipart form data to `POST /v1/media` with the file in field `file`. Keep the returned `media_id` for later generation requests.
 
-```ts
-const form = new FormData();
-form.set("file", file); // image/png, image/jpeg, or another image/* MIME type
+Uploaded media content URLs are authenticated Provider endpoints, so browser media elements should normally receive a proxied or application-owned URL. Generated Flow output URLs are direct upstream URLs and may expire; persist important output promptly.
 
-const media = await providerFetch<Media>("/v1/media", {
-  method: "POST",
-  body: form,
-});
-// Save media.media_id and pass it in a later generation request.
-```
+## Generate
 
-Do not set a `Content-Type` header yourself when sending `FormData`; the HTTP client adds the multipart boundary.
-
-For an uploaded file, `media.url` is an authenticated Provider endpoint. A browser `<img src={media.url}>` cannot attach the Bearer header. Preview it through your backend or fetch it with an authenticated request and create a blob URL:
+Application backends should prefer `POST /v1/generations`:
 
 ```ts
-const response = await providerFetchRaw(`/media/${media.media_id}`);
-const previewUrl = URL.createObjectURL(await response.blob());
-```
-
-Generated Flow outputs instead return direct upstream URLs. They can normally be used directly in `<img>`, `<video>`, or a download link, but may expire; persist important output in your own storage promptly.
-
-## Generate an image
-
-`POST /v1/images/generations` returns HTTP `202` immediately.
-
-```ts
-const task = await providerFetch<Task>("/v1/images/generations", {
+const task = await providerFetch<GenerationStatus>("/v1/generations", {
   method: "POST",
   body: JSON.stringify({
-    prompt: "A blue perfume bottle, premium product photography",
-    model: "banana_pro", // "banana_pro" | "banana_2"
-    aspect_ratio: "9:16", // "1:1" | "16:9" | "9:16"
-    output_count: 1, // 1–4
-    reference_media_ids: [uploadedMediaId], // optional, maximum 8
+    kind: "image",
+    prompt: "A premium blue perfume bottle",
+    media_ids: [uploadedMediaId],
+    options: {
+      model: "banana_pro",
+      aspect_ratio: "9:16",
+      output_count: 1,
+    },
   }),
 });
 ```
 
-Defaults: `model: "banana_pro"`, `aspect_ratio: "9:16"`, `output_count: 1`.
+Compatibility endpoints remain available for image, image-to-video, and Omni generation.
 
-## Generate a video from one image
-
-`POST /v1/videos/image-to-video` uses one image `start_media_id`.
+## Poll status
 
 ```ts
-const task = await providerFetch<Task>("/v1/videos/image-to-video", {
-  method: "POST",
-  body: JSON.stringify({
-    prompt: "Slow vertical camera push-in with soft reflections",
-    start_media_id: generatedImage.media_id,
-    quality: "lite", // lite | fast | quality | lite_relaxed | fast_relaxed
-    aspect_ratio: "9:16", // 16:9 | 9:16
-  }),
-});
-```
-
-Video only starts when a connected Google Flow account has sufficient credits. If none does, the task remains `queued` and reports a retryable `PROVIDER_ACCOUNT_UNAVAILABLE` error until capacity is available.
-
-## Generate Omni video from multiple images
-
-```ts
-const task = await providerFetch<Task>("/v1/videos/omni-generations", {
-  method: "POST",
-  body: JSON.stringify({
-    prompt: "The objects assemble into a cinematic vertical scene",
-    reference_media_ids: [firstImageId, secondImageId],
-    duration: 4, // 2 | 4 | 8 | 10 seconds
-    aspect_ratio: "9:16", // 16:9 | 9:16
-  }),
-});
-```
-
-## Poll a task
-
-Use a fixed 3–5 second interval. The API intentionally does not send `Retry-After` for task polling.
-
-```ts
-async function waitForTask(taskId: string): Promise<Task> {
+async function waitForGeneration(taskId: string): Promise<GenerationStatus> {
   for (;;) {
-    const task = await providerFetch<Task>(`/v1/tasks/${taskId}`);
-    if (task.status === "succeeded") return task;
-    if (task.status === "failed" || task.status === "canceled") {
-      throw new Error(task.error?.message ?? "Generation did not complete.");
+    const result = await providerFetch<GenerationStatus>(`/v1/status/${taskId}`);
+    if (result.status === "succeeded") return result;
+    if (result.status === "failed" || result.status === "canceled") {
+      throw new Error(result.error?.message ?? "Generation did not complete.");
     }
     await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
 }
 ```
 
-On success, use `outputs`:
+Do not create a new generation merely because an existing one is still queued. FlowProvider owns provider capacity and worker retry behavior.
 
-```ts
-const completed = await waitForTask(task.task_id);
-const output = completed.outputs[0];
+## Cancellation
 
-if (output.type === "image") {
-  imageElement.src = output.url!;
-} else {
-  videoElement.src = output.url!;
-  posterElement.src = output.thumbnail_url ?? "";
-}
+Your backend may call:
+
+```http
+POST /v1/status/{task_id}/cancel
 ```
 
-`thumbnail_url` is supplied only for video when Google Flow provides one. It is absent or `null` for images.
-
-## Request helper on your backend
-
-Keep this server-side. It normalizes both synchronous HTTP errors and successful task requests.
-
-```ts
-const baseUrl = "https://api.shopcongngheso5.io.vn";
-
-async function providerFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(baseUrl + path, {
-    ...init,
-    headers: {
-      Authorization: `Bearer ${process.env.FLOW_PROVIDER_API_KEY!}`,
-      ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
-      ...init.headers,
-    },
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(body?.error?.message ?? `FlowProvider request failed (${response.status})`);
-  }
-  return response.json() as Promise<T>;
-}
-
-async function providerFetchRaw(path: string): Promise<Response> {
-  const response = await fetch(baseUrl + path, {
-    headers: { Authorization: `Bearer ${process.env.FLOW_PROVIDER_API_KEY!}` },
-  });
-  if (!response.ok) throw new Error(`Media fetch failed (${response.status})`);
-  return response;
-}
-```
+Cancellation is cooperative and does not guarantee already-dispatched Google Flow work is stopped.
 
 ## Error handling
 
-Synchronous request errors have this envelope:
+Synchronous request errors use the standard envelope:
 
 ```json
 {
@@ -221,34 +116,23 @@ Synchronous request errors have this envelope:
     "status_code": 422,
     "code": "VALIDATION_ERROR",
     "message": "Request validation failed.",
-    "details": [{"field": "start_media_id", "code": "MISSING", "message": "Field required"}],
+    "details": [],
     "request_id": "req_...",
     "retryable": false
   }
 }
 ```
 
-Use `error.code` and `details[].code` for UI decisions. Task failures are different: `GET /v1/tasks/{task_id}` still returns HTTP `200`, with `status: "failed"` and the same error object nested under `error`.
-
-Typical frontend behavior:
-
-- `400` / `422`: show input validation feedback; do not retry automatically.
-- `401`: your backend API key is invalid or missing; alert operators, not end users.
-- `429`: back off the request.
-- `503 PROVIDER_ACCOUNT_UNAVAILABLE`: keep polling an existing task; it will retry when a video-capable account is available.
-- `429 RESOURCE_EXHAUSTED` or `403 PERMISSION_DENIED` inside a failed task: display a retry option and preserve `request_id` for support.
+A known `/v1/status/{task_id}` lookup returns HTTP `200` even when the generation itself has `status: "failed"`; inspect the nested `error`.
 
 ## Useful endpoints
 
-| Endpoint | Frontend use |
+| Endpoint | Purpose |
 |---|---|
-| `POST /v1/media` | Upload an image/video reference and receive `media_id` |
-| `GET /v1/media/{media_id}` | Retrieve media metadata for the same API client |
-| `POST /v1/images/generations` | Create an image task |
-| `POST /v1/videos/image-to-video` | Create a single-image video task |
-| `POST /v1/videos/omni-generations` | Create a multi-reference video task |
-| `GET /v1/tasks/{task_id}` | Poll one task |
-| `POST /v1/tasks/{task_id}/cancel` | Request cooperative cancellation |
-| `GET /v1/health` | Operational display only; not a user-facing feature |
-
-Provider-account and extension administration endpoints are not frontend endpoints.
+| `POST /v1/media` | Upload reference media |
+| `GET /v1/media/{media_id}` | Read media metadata |
+| `POST /v1/generations` | Preferred unified generation submission |
+| `GET /v1/status/{task_id}` | Poll one generation |
+| `GET /v1/status` | List caller-owned generation statuses |
+| `POST /v1/status/{task_id}/cancel` | Request cooperative cancellation |
+| `GET /v1/health` | Operational display only |

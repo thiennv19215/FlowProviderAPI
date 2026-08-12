@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 
 from app.api.deps import get_client, get_db
@@ -14,12 +14,7 @@ from app.api.schemas import (
 )
 from app.api.serializers import job_dict
 from app.db.models import MediaAsset
-from app.jobs.repository import (
-    JobIdempotencyConflict,
-    assert_idempotent_job_matches,
-    create_job,
-    get_idempotent_job,
-)
+from app.jobs.repository import create_job
 
 router = APIRouter(tags=["Generations"])
 CLIENT_WORKSPACE_KEY = "__api_client__"
@@ -97,23 +92,7 @@ def _validate_reference_assets(request: Request, db, client, data: dict, kind: s
             )
 
 
-def _idempotency_conflict() -> APIError:
-    return APIError(
-        409,
-        "IDEMPOTENCY_KEY_CONFLICT",
-        "Idempotency-Key was already used for a different generation request.",
-    )
-
-
-def _submit(
-    request: Request,
-    db,
-    client,
-    payload,
-    kind: str,
-    *,
-    idempotency_key: str | None = None,
-):
+def _submit(request: Request, db, client, payload, kind: str):
     data = payload.model_dump(mode="json")
     if kind == "video":
         data["start_media_id"] = str(data["start_media_id"])
@@ -124,30 +103,8 @@ def _submit(
     provider = payload.provider
     model = getattr(payload, "model", None)
     runtime = request.app.state.runtime
-
-    # Idempotent replay must not depend on current account capacity or current
-    # reference availability. If this exact logical POST was already accepted,
-    # return its durable task first. Reusing the key for a different payload is
-    # rejected explicitly instead of silently returning unrelated work.
-    existing = get_idempotent_job(
-        db,
-        client_id=client.id,
-        idempotency_key=idempotency_key,
-    )
-    if existing is not None:
-        try:
-            assert_idempotent_job_matches(
-                existing,
-                kind=kind,
-                provider=provider,
-                model=model,
-                payload=data,
-            )
-        except JobIdempotencyConflict as exc:
-            raise _idempotency_conflict() from exc
-        return job_dict(runtime, db, existing)
-
     configured_provider = runtime.providers.get(provider)
+
     _validate_reference_assets(request, db, client, data, kind)
     has_online_account = getattr(configured_provider, "has_online_account", None)
     if (
@@ -161,20 +118,17 @@ def _submit(
             "No Google Flow account is currently online.",
             retryable=True,
         )
-    try:
-        job = create_job(
-            db,
-            client=client,
-            kind=kind,
-            provider=provider,
-            model=model,
-            workspace_key=CLIENT_WORKSPACE_KEY,
-            payload=data,
-            request_id=request.state.request_id,
-            idempotency_key=idempotency_key,
-        )
-    except JobIdempotencyConflict as exc:
-        raise _idempotency_conflict() from exc
+
+    job = create_job(
+        db,
+        client=client,
+        kind=kind,
+        provider=provider,
+        model=model,
+        workspace_key=CLIENT_WORKSPACE_KEY,
+        payload=data,
+        request_id=request.state.request_id,
+    )
     return job_dict(runtime, db, job)
 
 
@@ -246,24 +200,11 @@ def _unified_payload(payload: UnifiedGenerationRequest):
 def create_generation(
     payload: UnifiedGenerationRequest,
     request: Request,
-    idempotency_key: str | None = Header(
-        default=None,
-        alias="Idempotency-Key",
-        min_length=8,
-        max_length=200,
-    ),
     db=Depends(get_db),
     client=Depends(get_client),
 ):
     provider_payload = _unified_payload(payload)
-    return _submit(
-        request,
-        db,
-        client,
-        provider_payload,
-        payload.kind,
-        idempotency_key=idempotency_key,
-    )
+    return _submit(request, db, client, provider_payload, payload.kind)
 
 
 @router.post("/v1/images/generations", status_code=202, response_model=JobOutput)

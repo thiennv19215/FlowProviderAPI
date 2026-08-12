@@ -23,7 +23,7 @@ Google Flow connections are runtime WebSockets. Durable generation state is in P
 
 One process starts multiple async worker lanes (`FLOW_PROVIDER_WORKER_CONCURRENCY`, default 8). Lanes claim different PostgreSQL jobs and can overlap long image dispatches. Provider account capacity remains the real dispatch limit: the global scheduler counts active jobs per connected account and will not exceed each account's advertised slot capacity. Active jobs also reserve estimated credits; Omni reservations are duration-aware.
 
-V1 intentionally keeps workers and the extension gateway in one process. The live socket registry and request rate limiter are process-local. Do not scale this deployment horizontally until a broker/router and distributed rate limiter are introduced. PostgreSQL job claiming itself is multi-worker safe, but extension socket ownership is not a multi-gateway design yet.
+V1 intentionally keeps workers and the extension gateway in one process. PostgreSQL job claiming and the database-backed per-client rate limiter are safe across API replicas, but extension WebSocket ownership remains process-local. Do not horizontally scale the extension gateway until a broker/router provides stable socket ownership and RPC routing across gateway replicas.
 
 ## Recovery boundaries
 

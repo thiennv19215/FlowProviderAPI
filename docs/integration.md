@@ -13,43 +13,67 @@ Authorization: Bearer fpa_live_...
 Content-Type: application/json
 ```
 
-## Create an image
+Every generation POST creates a new server task. `Idempotency-Key` is not part of the V1 contract.
 
-```bash
-curl -X POST https://api.shopcongngheso5.io.vn/v1/images/generations \
-  -H "Authorization: Bearer $FLOW_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"A cinematic glass perfume bottle","model":"banana_pro","aspect_ratio":"9:16"}'
-```
+## Create a generation
 
-The response is `202 Accepted` and contains `task_id`.
-
-Supported image models are `banana_pro` and `banana_2`. Supported ratios are `1:1`, `16:9`, and `9:16` (default).
-
-## Poll a task
+Application backends should prefer:
 
 ```http
-GET /v1/tasks/{task_id}
+POST /v1/generations
 ```
 
-Poll while `status` is `queued` or `running`. Stop on `succeeded`, `failed`, or `canceled`. Polling does not use `Retry-After`; the caller chooses its interval (for example, five seconds).
-
-Successful output:
+Example:
 
 ```json
 {
-  "task_id": "task_xxx",
+  "kind": "image",
+  "prompt": "A cinematic glass perfume bottle",
+  "media_ids": [],
+  "options": {
+    "model": "banana_pro",
+    "aspect_ratio": "9:16",
+    "output_count": 1
+  }
+}
+```
+
+Compatibility endpoints remain available:
+
+- `POST /v1/images/generations`
+- `POST /v1/videos/image-to-video`
+- `POST /v1/videos/omni-generations`
+
+The response is `202 Accepted` and contains a server-generated `task_id`.
+
+## Poll generation status
+
+```http
+GET /v1/status/{task_id}
+```
+
+Poll while `status` is `queued` or `running`. Stop on `succeeded`, `failed`, or `canceled`.
+
+```json
+{
+  "task_id": "job_xxx",
   "status": "succeeded",
-  "outputs": [{"media_id": "123456789012345", "type": "image", "url": "https://flow-content.google/..."}],
+  "outputs": [
+    {
+      "media_id": "123456789012345",
+      "type": "image",
+      "url": "https://flow-content.google/..."
+    }
+  ],
   "error": null
 }
 ```
 
-Task ownership is derived from the Bearer key. A different client cannot read another client's task.
+Ownership is derived from the Bearer key. A different client cannot read another client's generation status.
+
+Use `GET /v1/status` to list statuses. `status` only accepts `queued`, `running`, `succeeded`, `failed`, `canceled`; `type` only accepts `image`, `video`, `omni`.
 
 ## Upload your own media
-
-Use the Media resource for a file that will be referenced later. Upload the file in one request:
 
 ```bash
 curl -X POST https://api.shopcongngheso5.io.vn/v1/media \
@@ -57,36 +81,20 @@ curl -X POST https://api.shopcongngheso5.io.vn/v1/media \
   -F 'file=@reference.png;type=image/png'
 ```
 
-The returned `media_id` is the media reference used by `reference_media_ids` and `start_media_id`. `GET /v1/media/{media_id}` returns metadata and its usable `url`.
+The returned `media_id` is a 15-digit JSON string. Use it in `media_ids`, `reference_media_ids`, or `start_media_id` depending on the generation endpoint.
 
-## Use generated media as a reference
+## Cancellation
 
-Pass one or more returned media IDs:
-
-```json
-{
-  "prompt": "Create a new studio scene using these references",
-  "model": "banana_pro",
-  "aspect_ratio": "9:16",
-  "reference_media_ids": ["123456789012345", "234567890123456"]
-}
+```http
+POST /v1/status/{task_id}/cancel
 ```
 
-## Create a video
-
-```bash
-curl -X POST https://api.shopcongngheso5.io.vn/v1/videos/image-to-video \
-  -H "Authorization: Bearer $FLOW_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{"prompt":"Slow cinematic camera movement","start_media_id":"123456789012345","quality":"lite","aspect_ratio":"9:16"}'
-```
-
-Video results use the same `/v1/tasks/{task_id}` polling contract. A video output includes `thumbnail_url` when Google Flow provides a preview image; it is `null` for image output or when Flow has no preview. For multi-reference video use `/v1/videos/omni-generations` with `reference_media_ids` and `duration` (`2`, `4`, `8`, or `10`).
+Cancellation is cooperative. Work that has already been dispatched upstream may continue at Google Flow.
 
 ## Errors
 
-Synchronous errors use the standard `error` envelope. Asynchronous provider errors appear in the task's `error` field, preserving upstream status/code/message (for example `429 RESOURCE_EXHAUSTED`). The task lookup itself remains HTTP `200`; inspect the task status.
+Synchronous errors use the standard `error` envelope. Asynchronous provider failures appear in the generation status response's nested `error` field. A known generation status lookup remains HTTP `200`; inspect its `status` and `error`.
 
 ## Administration
 
-Bearer API keys are business-client credentials only. Extension/provider administration is a separate control plane using `X-Admin-Key` configured by `FLOW_PROVIDER_ADMIN_API_KEY`. Do not put either secret in a browser extension or frontend.
+Bearer API keys are business-client credentials only. Extension/provider administration uses a separate `X-Admin-Key`. Do not put either secret in browser JavaScript or a mobile bundle.

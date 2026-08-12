@@ -34,9 +34,8 @@ def test_preparation_failure_is_requeued(client, app, auth):
     app.state.runtime.providers.register(PreparationFailureProvider())
     response=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":"prep_fail","workspace":{"key":"retry:prep"}})
     job_id=response.json()["task_id"]
-    import asyncio
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    body=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
+    body=client.get(f"/v1/status/{job_id}",headers=auth).json()
     assert body["status"] == "queued"
 
 
@@ -44,9 +43,8 @@ def test_ambiguous_dispatch_failure_is_not_replayed(client, app, auth):
     app.state.runtime.providers.register(AmbiguousDispatchFailureProvider())
     response=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":"dispatch_fail","workspace":{"key":"retry:dispatch"}})
     job_id=response.json()["task_id"]
-    import asyncio
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    body=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
+    body=client.get(f"/v1/status/{job_id}",headers=auth).json()
     assert body["status"] == "failed"
 
 
@@ -154,9 +152,8 @@ def test_omni_generation_uses_same_durable_job_contract(client, app, auth):
         "reference_media_ids":[asset_id],"workspace":{"key":"omni:e2e"},
     })
     job_id=response.json()["task_id"]
-    import asyncio
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
-    body=client.get(f"/v1/tasks/{job_id}",headers=auth).json()
+    body=client.get(f"/v1/status/{job_id}",headers=auth).json()
     assert body["status"] == "succeeded"
     assert body["outputs"][0]["type"] == "video"
