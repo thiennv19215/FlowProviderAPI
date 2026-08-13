@@ -12,6 +12,7 @@ import app.assets.service as asset_service_module
 from app.db.models import ApiClient, MediaAsset, ProjectMediaMapping
 from app.providers.base import ProviderMedia
 from app.providers.google_flow.sdk.helpers import media_entries
+from app.providers.google_flow.sdk import FlowSDK
 
 
 def _mock_provider_download(monkeypatch, data: bytes, content_type: str = "image/png"):
@@ -172,7 +173,7 @@ def test_external_reference_redirect_is_validated_before_following(client, app, 
     assert requests == ["https://labs.google/fx/media/source"]
 
 
-def test_generated_image_prefers_full_url_over_thumbnail():
+def test_generated_image_parser_never_promotes_thumbnail_to_output():
     parsed = media_entries(
         {
             "data": {
@@ -191,7 +192,57 @@ def test_generated_image_prefers_full_url_over_thumbnail():
             }
         }
     )
-    assert parsed[0]["url"] == "https://lh3.googleusercontent.com/full.png"
+    assert parsed[0]["url"] is None
+    assert parsed[0]["generated_url"] == "https://lh3.googleusercontent.com/full.png"
+    assert parsed[0]["thumbnail_url"] == "https://lh3.googleusercontent.com/thumb.png"
+
+
+def test_generated_image_parser_does_not_use_thumbnail_without_full_url():
+    parsed = media_entries(
+        {
+            "data": {
+                "media": [
+                    {
+                        "name": "flow-image-thumbnail-only",
+                        "downloadUrl": None,
+                        "thumbnailUrl": "https://lh3.googleusercontent.com/thumb.png",
+                    }
+                ]
+            }
+        }
+    )
+    assert parsed[0]["url"] is None
+    assert parsed[0]["generated_url"] is None
+
+
+def test_generated_image_resolves_original_before_generated_fallback():
+    class Client:
+        def __init__(self):
+            self.resolved=[]
+
+        async def api_request(self,**kwargs):
+            return {
+                "data": {
+                    "media": [
+                        {
+                            "name":"flow-image-1",
+                            "downloadUrl":None,
+                            "thumbnailUrl":"https://lh3.googleusercontent.com/thumb.png",
+                            "image":{"generatedImage":{"fifeUrl":"https://lh3.googleusercontent.com/rendered.png"}},
+                        }
+                    ]
+                }
+            }
+
+        async def resolve_media_url(self,media_id,*,thumbnail=False):
+            self.resolved.append((media_id,thumbnail))
+            return "https://lh3.googleusercontent.com/original.png"
+
+    client=Client()
+    result=asyncio.run(FlowSDK(client).gen_image(prompt="cat",project_id="project",paygate_tier="PAYGATE_TIER_ONE",aspect_ratio="IMAGE_ASPECT_RATIO_SQUARE",image_model="NANO_BANANA_PRO"))
+    assert client.resolved==[("flow-image-1",False)]
+    assert result["media_entries"][0]["url"]=="https://lh3.googleusercontent.com/original.png"
+    assert "generated_url" not in result["media_entries"][0]
 
 
 def test_video_output_keeps_thumbnail_metadata(client, app, auth, monkeypatch):

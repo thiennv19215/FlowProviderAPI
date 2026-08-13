@@ -9,7 +9,7 @@ from sqlalchemy import select
 
 from app.db.models import GenerationJob, MediaAsset, utcnow
 from app.jobs import repository
-from app.providers.base import ProviderDispatch, ProviderError, ProviderMedia
+from app.providers.base import ProviderContext, ProviderDispatch, ProviderError, ProviderMedia, provider_capabilities
 
 logger=logging.getLogger(__name__)
 
@@ -54,15 +54,20 @@ class JobWorker:
                 await self._resume_outputs(db,job);return
             if job.stage=="provider_running":
                 await self._poll(db,job,provider);return
-            account_id=None
-            if provider.requires_account_pool:
-                if job.kind in {"video","omni"} and hasattr(provider,"refresh_video_capacity"):
-                    await provider.refresh_video_capacity()
+            prepare=getattr(provider,"prepare",None)
+            if callable(prepare):
+                context=await prepare(job=job,db=db)
+            elif provider_capabilities(provider).account_pool:
+                # Compatibility for V1 adapters. New providers own capacity
+                # selection in prepare() and never enter this branch.
                 account_id=self.runtime.scheduler.reserve_account(db,job)
+                context=ProviderContext(account_id=account_id)
+            else:
+                context=ProviderContext()
             if job.kind=="image":
-                outputs=await provider.generate_image(job=job,db=db,account_id=account_id)
+                outputs=await self._generate_image(provider,job,db,context)
                 await self._store_outputs(db,job,outputs,"image");return
-            dispatch=await (provider.dispatch_video(job=job,db=db,account_id=account_id) if job.kind=="video" else provider.dispatch_omni(job=job,db=db,account_id=account_id))
+            dispatch=await self._dispatch(provider,job,db,context)
             job.provider_operation_id=json.dumps({"operation_ids":dispatch.operation_ids,"workflows":dispatch.workflows,"dispatched_at":utcnow().isoformat()})
             job.stage="provider_running";job.next_run_at=utcnow()+timedelta(seconds=self.runtime.settings.video_poll_seconds);job.lease_owner=None;job.lease_expires_at=None;db.commit()
         except Exception as exc:
@@ -71,6 +76,25 @@ class JobWorker:
                 await self._retry_output_registration(db,fresh,exc)
             elif fresh:await self._handle_error(db,fresh,exc)
             else:raise
+
+    @staticmethod
+    async def _generate_image(provider,job,db,context:ProviderContext):
+        if callable(getattr(provider,"prepare",None)):
+            return await provider.generate_image(job=job,db=db,context=context)
+        return await provider.generate_image(job=job,db=db,account_id=context.account_id)
+
+    @staticmethod
+    async def _dispatch(provider,job,db,context:ProviderContext):
+        method=provider.dispatch_video if job.kind=="video" else provider.dispatch_omni
+        if callable(getattr(provider,"prepare",None)):
+            return await method(job=job,db=db,context=context)
+        return await method(job=job,db=db,account_id=context.account_id)
+
+    @staticmethod
+    async def _poll_provider(provider,job,db,context:ProviderContext,dispatch:ProviderDispatch):
+        poll=getattr(provider,"poll",None)
+        if callable(poll):return await poll(job=job,db=db,context=context,dispatch=dispatch)
+        return await provider.poll_video(job=job,db=db,account_id=context.account_id,dispatch=dispatch)
 
     @staticmethod
     def _poll_error_count(job:GenerationJob)->int:
@@ -127,7 +151,8 @@ class JobWorker:
         try:
             raw=self._operation_metadata(job)
             dispatch=ProviderDispatch(operation_ids=raw.get("operation_ids") or [],workflows=raw.get("workflows") or [])
-            result=await provider.poll_video(job=job,db=db,account_id=job.provider_account_id,dispatch=dispatch)
+            context=ProviderContext(account_id=job.provider_account_id)
+            result=await self._poll_provider(provider,job,db,context,dispatch)
             if result.error and result.done:
                 self._set_error(job,RuntimeError(result.error),fallback_code="PROVIDER_TERMINAL_ERROR")
                 job.status="failed";job.stage="completed";job.completed_at=utcnow();job.lease_owner=None;job.lease_expires_at=None;db.commit();return

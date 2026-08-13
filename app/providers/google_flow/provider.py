@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from app.providers.base import ProviderDispatch, ProviderError, ProviderMedia, ProviderPollResult
+from app.providers.base import ProviderCapabilities, ProviderContext, ProviderDispatch, ProviderError, ProviderMedia, ProviderPollResult
 from app.providers.google_flow.client import BoundFlowClient
 from app.providers.google_flow.sdk import FlowSDK
 from app.providers.google_flow.project_registry import ProjectRegistry
 from app.providers.google_flow.media_sync import MediaSync
+from app.providers.google_flow.scheduler import GoogleFlowScheduler
 
 IMAGE_ASPECT={"1:1":"IMAGE_ASPECT_RATIO_SQUARE","16:9":"IMAGE_ASPECT_RATIO_LANDSCAPE","9:16":"IMAGE_ASPECT_RATIO_PORTRAIT"}
 VIDEO_ASPECT={"16:9":"VIDEO_ASPECT_RATIO_LANDSCAPE","9:16":"VIDEO_ASPECT_RATIO_PORTRAIT"}
@@ -16,9 +17,16 @@ PUBLIC_IMAGE_MODELS={"banana_pro":"NANO_BANANA_PRO","banana_2":"NANO_BANANA_2"}
 class GoogleFlowProvider:
     name="google_flow"
     requires_account_pool=True
+    unavailable_message="No Google Flow account is currently online."
+    capabilities=ProviderCapabilities(image=True,video=True,omni=True,account_pool=True)
 
     def __init__(self, bridge, asset_service):
-        self.bridge=bridge;self.projects=ProjectRegistry();self.media_sync=MediaSync(asset_service)
+        self.bridge=bridge;self.projects=ProjectRegistry();self.media_sync=MediaSync(asset_service);self.scheduler=GoogleFlowScheduler(bridge)
+
+    async def prepare(self, *, job, db) -> ProviderContext:
+        if job.kind in {"video","omni"}:
+            await self.refresh_video_capacity()
+        return ProviderContext(account_id=self.scheduler.reserve_account(db,job))
 
     def _sdk(self, account_id: str): return FlowSDK(BoundFlowClient(self.bridge,account_id))
 
@@ -44,7 +52,8 @@ class GoogleFlowProvider:
         job.provider_project_id=project_id;db.commit()
         return conn,sdk,project_id
 
-    async def generate_image(self, *, job, db, account_id: str|None):
+    async def generate_image(self, *, job, db, context: ProviderContext):
+        account_id=context.account_id
         if not account_id: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         conn,sdk,pid=await self._context(job,db,account_id);payload=job.request_payload
         refs=[]
@@ -58,7 +67,8 @@ class GoogleFlowProvider:
         await self.bridge.refresh_account(account_id)
         return [ProviderMedia(media_id=e.get("media_id"),url=e.get("url"),mime_type="image/png") for e in result.get("media_entries") or []]
 
-    async def dispatch_video(self, *, job, db, account_id: str|None):
+    async def dispatch_video(self, *, job, db, context: ProviderContext):
+        account_id=context.account_id
         if not account_id: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         conn,sdk,pid=await self._context(job,db,account_id);p=job.request_payload
         start=await self.media_sync.ensure_media(db,client_id=job.client_id,asset_id=p["start_media_id"],project_id=pid,sdk=sdk)
@@ -69,7 +79,8 @@ class GoogleFlowProvider:
         await self.bridge.refresh_account(account_id)
         return ProviderDispatch(operation_ids=result["operation_names"],workflows=result.get("workflows") or [])
 
-    async def dispatch_omni(self, *, job, db, account_id: str|None):
+    async def dispatch_omni(self, *, job, db, context: ProviderContext):
+        account_id=context.account_id
         if not account_id: raise ProviderError("PROVIDER_ACCOUNT_UNAVAILABLE","No ready Google Flow account is currently available.",status_code=503,retryable=True)
         conn,sdk,pid=await self._context(job,db,account_id);p=job.request_payload
         refs=[]
@@ -82,7 +93,8 @@ class GoogleFlowProvider:
         await self.bridge.refresh_account(account_id)
         return ProviderDispatch(operation_ids=result["operation_names"],workflows=result.get("workflows") or [])
 
-    async def poll_video(self, *, job, db, account_id: str|None, dispatch: ProviderDispatch):
+    async def poll(self, *, job, db, context: ProviderContext, dispatch: ProviderDispatch):
+        account_id=context.account_id
         if not account_id or not job.provider_project_id:return ProviderPollResult(done=False,error="provider_context_missing")
         sdk=self._sdk(account_id)
         result=await sdk.check_async(operation_names=dispatch.operation_ids,project_id=job.provider_project_id,workflows_data=dispatch.workflows)

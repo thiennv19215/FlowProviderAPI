@@ -12,6 +12,7 @@ from app.api.schemas import (
     OmniVideoGenerationRequest,
     UnifiedGenerationRequest,
 )
+from app.providers.base import provider_capabilities
 from app.api.serializers import job_dict
 from app.db.models import MediaAsset
 from app.jobs.repository import (
@@ -125,6 +126,14 @@ def _submit(
     model = getattr(payload, "model", None)
     runtime = request.app.state.runtime
     configured_provider = runtime.providers.get(provider)
+    capabilities = provider_capabilities(configured_provider)
+    if not capabilities.supports(kind):
+        raise APIError(
+            400,
+            "UNSUPPORTED_PROVIDER_CAPABILITY",
+            f"Provider '{provider}' does not support {kind} generation.",
+            field="provider",
+        )
     clean_key = idempotency_key.strip() if isinstance(idempotency_key, str) else None
 
     # Lookup first: a retry after an ambiguous network failure must recover the
@@ -152,14 +161,14 @@ def _submit(
     _validate_reference_assets(request, db, client, data, kind)
     has_online_account = getattr(configured_provider, "has_online_account", None)
     if (
-        configured_provider.requires_account_pool
+        capabilities.account_pool
         and callable(has_online_account)
         and not has_online_account()
     ):
         raise APIError(
             503,
             "PROVIDER_ACCOUNT_UNAVAILABLE",
-            "No Google Flow account is currently online.",
+            getattr(configured_provider,"unavailable_message",f"No account for provider '{provider}' is currently online."),
             retryable=True,
         )
 

@@ -10,7 +10,7 @@ from app.extension.manager import ExtensionManager
 from app.jobs.scheduler import GlobalScheduler
 from app.jobs.worker import JobWorker
 from app.providers.google_flow.browser_bridge import FlowBridge
-from app.providers.google_flow.provider import GoogleFlowProvider
+from app.providers.factory import build_provider_registry
 from app.providers.registry import ProviderRegistry
 
 
@@ -34,7 +34,9 @@ def build_runtime(settings, *, extra_providers: list | None = None) -> Runtime:
     storage=build_storage(settings);assets=AssetService(storage,settings)
     bridge=FlowBridge(flow_api_key=settings.flow_api_key,slot_capacity=settings.account_slot_capacity,cooldown_seconds=settings.account_rate_limit_cooldown_seconds)
     extension_manager=ExtensionManager(bridge)
-    providers=ProviderRegistry();providers.register(GoogleFlowProvider(bridge,assets))
-    for provider in extra_providers or []: providers.register(provider)
-    runtime=Runtime(settings,engine,session_factory,storage,assets,bridge,extension_manager,providers,GlobalScheduler(bridge),RateLimiter())
+    providers=build_provider_registry(bridge=bridge,asset_service=assets,extra_providers=extra_providers)
+    google_flow=providers.get("google_flow")
+    # ``scheduler`` remains as a compatibility view; orchestration now calls
+    # provider.prepare() and Google Flow owns this scheduler.
+    runtime=Runtime(settings,engine,session_factory,storage,assets,bridge,extension_manager,providers,google_flow.scheduler,RateLimiter())
     runtime.worker=JobWorker(runtime);return runtime

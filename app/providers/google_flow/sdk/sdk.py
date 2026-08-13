@@ -46,6 +46,9 @@ class FlowSDK:
         for entry in entries:
             if not entry.get("url") and entry.get("media_id"):
                 entry["url"]=await self.client.resolve_media_url(entry["media_id"])
+            if not entry.get("url"):
+                entry["url"]=entry.get("generated_url")
+            entry.pop("generated_url",None)
         return {"media_entries":entries,"media_ids":[e["media_id"] for e in entries],"raw":resp}
 
     async def gen_video(self, *, prompt: str, project_id: str, start_media_id: str, aspect_ratio: str, paygate_tier: str, video_quality: str="lite") -> dict:
