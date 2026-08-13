@@ -18,7 +18,13 @@ import httpx
 from fastapi import APIRouter, Header, Request
 
 from app.api.errors import APIError
-from app.api.schemas import JobOutput, TaskMediaOutput, UnifiedGenerationRequest
+from app.api.schemas import (
+    ImageGenerationRequest,
+    ImageToVideoRequest,
+    JobOutput,
+    OmniVideoGenerationRequest,
+    TaskMediaOutput,
+)
 from app.providers.google_flow.client import BoundFlowClient
 from app.providers.google_flow.sdk import FlowSDK
 
@@ -118,14 +124,14 @@ async def _put_output(destination, data: bytes, mime_type: str, allowed: set[str
         raise APIError(502, "CALLER_OUTPUT_UPLOAD_FAILED", "Provider could not upload to caller storage.", retryable=True)
 
 
-def _validate_request(payload: UnifiedGenerationRequest) -> None:
-    if payload.kind == "image":
+def _validate_request(payload, kind: str) -> None:
+    if kind == "image":
         if len(payload.output_destinations) > 4:
             raise APIError(422, "OUTPUT_COUNT_UNSUPPORTED", "Google Flow image generation supports at most four outputs.")
         return
     if len(payload.output_destinations) != 1:
         raise APIError(422, "OUTPUT_COUNT_UNSUPPORTED", "Video generation requires exactly one output destination.")
-    if payload.kind == "video" and len(payload.inputs) != 1:
+    if kind == "video" and len(payload.inputs) != 1:
         raise APIError(422, "VIDEO_INPUT_COUNT_INVALID", "Image-to-video requires exactly one input image.")
 
 
@@ -173,9 +179,9 @@ async def _poll_video(sdk, dispatch: dict, project_id: str, settings) -> list[di
     raise APIError(504, "GOOGLE_FLOW_OPERATION_TIMEOUT", "Google Flow video generation did not finish in time.", retryable=True)
 
 
-async def _generate_entries(payload, sdk, project_id: str, references: list[str], connection, settings) -> list[dict]:
+async def _generate_entries(payload, kind: str, sdk, project_id: str, references: list[str], connection, settings) -> list[dict]:
     options = payload.options or {}
-    if payload.kind == "image":
+    if kind == "image":
         model = payload.model or options.get("model") or "banana_pro"
         if model not in PUBLIC_IMAGE_MODELS:
             raise APIError(422, "INVALID_IMAGE_MODEL", "Unsupported Google Flow image model.")
@@ -192,10 +198,10 @@ async def _generate_entries(payload, sdk, project_id: str, references: list[str]
             raise APIError(502, "GOOGLE_FLOW_GENERATION_FAILED", "Google Flow did not complete generation.", retryable=True)
         return result.get("media_entries") or []
 
-    ratio = options.get("aspect_ratio") or ("16:9" if payload.kind == "video" else "9:16")
+    ratio = options.get("aspect_ratio") or ("16:9" if kind == "video" else "9:16")
     if ratio not in VIDEO_ASPECT:
         raise APIError(422, "INVALID_ASPECT_RATIO", "Unsupported video aspect ratio.")
-    if payload.kind == "video":
+    if kind == "video":
         quality = options.get("quality") or "lite"
         if quality not in {"lite", "fast", "quality", "lite_relaxed", "fast_relaxed"}:
             raise APIError(422, "INVALID_VIDEO_QUALITY", "Unsupported Google Flow video quality.")
@@ -218,9 +224,9 @@ async def _generate_entries(payload, sdk, project_id: str, references: list[str]
     return await _poll_video(sdk, dispatch, project_id, settings)
 
 
-@router.post("/v1/generations", response_model=JobOutput)
-async def generate(
-    payload: UnifiedGenerationRequest,
+async def _generate(
+    payload,
+    kind: str,
     request: Request,
     authorization: str | None = Header(default=None),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
@@ -232,7 +238,7 @@ async def generate(
         raise APIError(400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required and must not exceed 255 characters.")
     if payload.storage_mode != "caller_owned":
         raise APIError(422, "CALLER_OWNED_REQUIRED", "Generation requests must use caller-owned storage.")
-    _validate_request(payload)
+    _validate_request(payload, kind)
     allowed = _caller_hosts(settings)
     if not allowed:
         raise APIError(503, "CALLER_STORAGE_POLICY_MISSING", "Caller storage hostname policy is not configured.")
@@ -251,19 +257,40 @@ async def generate(
     if not project_id:
         raise APIError(502, "FLOW_PROJECT_CREATE_FAILED", "Google Flow did not create a project.", retryable=True)
     references = await _upload_references(payload, sdk, project_id, allowed, settings.max_reference_in_memory_bytes)
-    entries = await _generate_entries(payload, sdk, project_id, references, connection, settings)
+    entries = await _generate_entries(payload, kind, sdk, project_id, references, connection, settings)
     if len(entries) != len(payload.output_destinations):
         raise APIError(502, "GOOGLE_FLOW_OUTPUT_COUNT_MISMATCH", "Google Flow returned an unexpected output count.", retryable=True)
     outputs = []
     for destination, entry in zip(payload.output_destinations, entries, strict=True):
         data = entry.get("bytes_data")
-        mime_type = "image/png" if payload.kind == "image" else "video/mp4"
+        mime_type = "image/png" if kind == "image" else "video/mp4"
         if not data:
             url = entry.get("url")
             if not isinstance(url, str):
                 raise APIError(502, "GOOGLE_FLOW_OUTPUT_MISSING", "Google Flow did not return an output.", retryable=True)
             data, mime_type = await _read_google_output(url, settings.max_provider_output_bytes)
         await _put_output(destination, data, mime_type, allowed)
-        outputs.append(TaskMediaOutput(output_index=destination.output_index, type="image" if payload.kind == "image" else "video", mime_type=mime_type, size_bytes=len(data), checksum_sha256=hashlib.sha256(data).hexdigest(), uploaded=True))
+        outputs.append(TaskMediaOutput(output_index=destination.output_index, type="image" if kind == "image" else "video", mime_type=mime_type, size_bytes=len(data), checksum_sha256=hashlib.sha256(data).hexdigest(), uploaded=True))
     connection.success_count += 1
     return JobOutput(task_id=_task_id(idempotency_key), status="done", outputs=outputs)
+
+
+@router.post("/v1/images/generations", response_model=JobOutput)
+async def generate_image(payload: ImageGenerationRequest, request: Request,
+    authorization: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> JobOutput:
+    return await _generate(payload, "image", request, authorization, idempotency_key)
+
+
+@router.post("/v1/videos/image-to-video", response_model=JobOutput)
+async def generate_image_to_video(payload: ImageToVideoRequest, request: Request,
+    authorization: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> JobOutput:
+    return await _generate(payload, "video", request, authorization, idempotency_key)
+
+
+@router.post("/v1/videos/omni-generations", response_model=JobOutput)
+async def generate_omni_video(payload: OmniVideoGenerationRequest, request: Request,
+    authorization: str | None = Header(default=None),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> JobOutput:
+    return await _generate(payload, "omni", request, authorization, idempotency_key)

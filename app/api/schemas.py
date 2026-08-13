@@ -73,9 +73,8 @@ class CallerOwnedOutputDestination(BaseModel):
         return normalized
 
 
-class UnifiedGenerationRequest(BaseModel):
+class CallerOwnedGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    kind: Literal["image", "video", "omni"]
     prompt: str = Field(min_length=1, max_length=12000)
     storage_mode: Literal["caller_owned"]
     model: str | None = Field(default=None, min_length=1, max_length=120)
@@ -88,8 +87,26 @@ class UnifiedGenerationRequest(BaseModel):
         indexes = [item.output_index for item in self.output_destinations]
         if sorted(indexes) != list(range(len(indexes))):
             raise ValueError("output_destinations must use contiguous output_index values from zero")
-        if self.kind in {"video", "omni"} and not self.inputs:
-            raise ValueError(f"caller_owned {self.kind} requests require an input")
+        return self
+
+
+class ImageGenerationRequest(CallerOwnedGenerationRequest):
+    pass
+
+
+class ImageToVideoRequest(CallerOwnedGenerationRequest):
+    @model_validator(mode="after")
+    def require_one_input(self):
+        if len(self.inputs) != 1:
+            raise ValueError("image-to-video requests require exactly one input")
+        return self
+
+
+class OmniVideoGenerationRequest(CallerOwnedGenerationRequest):
+    @model_validator(mode="after")
+    def require_inputs(self):
+        if not self.inputs:
+            raise ValueError("omni video requests require at least one input")
         return self
 
 

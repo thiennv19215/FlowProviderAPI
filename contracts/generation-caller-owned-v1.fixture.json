@@ -1,7 +1,6 @@
 {
   "contract_version": "2026-08-13",
   "request": {
-    "kind": "image",
     "model": "banana_pro",
     "prompt": "A studio portrait of a red fox",
     "inputs": [{"asset_key": "asset:tenant-a:input-1", "checksum_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "mime_type": "image/png", "size_bytes": 123, "download_url": "https://storage.flowcanvas.example/download/input-1"}],

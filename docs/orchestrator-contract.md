@@ -1,10 +1,9 @@
 # FlowCanvas gateway contract
 
-`POST /v1/generations` is a synchronous server-to-server execution boundary. Required headers are `Authorization: Bearer ...` and a stable `Idempotency-Key` of at most 255 characters.
+The synchronous server-to-server execution boundary is split by operation: `POST /v1/images/generations`, `POST /v1/videos/image-to-video`, and `POST /v1/videos/omni-generations`. Required headers are `Authorization: Bearer ...` and a stable `Idempotency-Key` of at most 255 characters.
 
 ```json
 {
-  "kind": "image",
   "prompt": "A premium product shot",
   "storage_mode": "caller_owned",
   "inputs": [{
@@ -22,7 +21,7 @@
 }
 ```
 
-`kind` supports `image`, `video`, and `omni`. Image supports one to four destinations. Image-to-video requires exactly one input and one destination. Omni requires one to eight image inputs and exactly one destination.
+The endpoint identifies the operation, so the request body has no `kind` field. Image supports one to four destinations. Image-to-video requires exactly one input and one destination. Omni requires one to eight image inputs and exactly one destination.
 
 Successful responses have `status: "done"` and include only `output_index`, type, MIME, size, SHA-256 and `uploaded`. FlowCanvas must verify the stored object and create its final Asset record.
 

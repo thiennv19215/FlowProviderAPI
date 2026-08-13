@@ -4,14 +4,20 @@ Stateless Google Flow execution gateway for FlowCanvas through a Chrome MV3 conn
 
 ## Production contract
 
-FlowCanvas calls `POST /v1/generations` with:
+FlowCanvas calls the endpoint matching the requested operation:
+
+- `POST /v1/images/generations`
+- `POST /v1/videos/image-to-video`
+- `POST /v1/videos/omni-generations`
+
+Each endpoint uses:
 
 - `Authorization: Bearer <FLOW_PROVIDER_BOOTSTRAP_API_KEY>`
 - a stable `Idempotency-Key` for the logical FlowCanvas submission
 - `storage_mode: "caller_owned"`
 - signed HTTPS input and output URLs on explicitly allowlisted hosts
 
-The endpoint supports `image`, image-to-`video`, and `omni`. It creates a temporary Google Flow project, uploads caller references when needed, executes or polls the generation, uploads every output directly to FlowCanvas storage, and returns output index, MIME type, byte size and SHA-256 checksum. It never returns Google URLs, signed caller URLs, or Provider media IDs.
+Together these endpoints support image generation, image-to-video, and Omni video. Each creates a temporary Google Flow project, uploads caller references when needed, executes or polls the generation, uploads every output directly to FlowCanvas storage, and returns output index, MIME type, byte size and SHA-256 checksum. They never return Google URLs, signed caller URLs, or Provider media IDs.
 
 The gateway contains no PostgreSQL, Alembic migrations, worker, R2/local asset storage, media API or admin dashboard. The legacy V1 runtime has been removed.
 
