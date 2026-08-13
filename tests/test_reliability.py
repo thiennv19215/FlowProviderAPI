@@ -178,5 +178,5 @@ def test_omni_generation_uses_same_durable_job_contract(client, app, auth):
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
     body=client.get(f"/v1/status/{job_id}",headers=auth).json()
-    assert body["status"] == "succeeded"
+    assert body["status"] == "done"
     assert body["outputs"][0]["type"] == "video"

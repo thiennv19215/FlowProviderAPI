@@ -81,12 +81,12 @@ def list_generation_statuses(
     client=Depends(get_client),
     limit: int = Query(default=20, ge=1, le=100),
     after: str | None = None,
-    status: Literal["queued", "running", "succeeded", "failed", "canceled"] | None = None,
+    status: Literal["queued", "running", "done", "failed", "canceled"] | None = None,
     type: Literal["image", "video", "omni"] | None = Query(default=None),
 ):
     q = select(GenerationJob).where(GenerationJob.client_id == client.id)
     if status:
-        q = q.where(GenerationJob.status == status)
+        q = q.where(GenerationJob.status == ("succeeded" if status == "done" else status))
     if type:
         q = q.where(GenerationJob.kind == type)
     if after:

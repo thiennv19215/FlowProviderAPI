@@ -155,4 +155,4 @@ def test_output_storage_failure_returns_to_poll_and_recovers(client,app,auth):
     assert asyncio.run(app.state.runtime.worker.run_once())
     mid=client.get(f"/v1/status/{job_id}",headers=auth).json();assert mid["status"]=="running"
     assert asyncio.run(app.state.runtime.worker.run_once())
-    done=client.get(f"/v1/status/{job_id}",headers=auth).json();assert done["status"]=="succeeded"
+    done=client.get(f"/v1/status/{job_id}",headers=auth).json();assert done["status"]=="done"

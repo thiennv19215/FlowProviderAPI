@@ -71,7 +71,7 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
 
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         job = client.get(f"/v1/status/{job_id}", headers=auth).json()
-        assert job["status"] == "succeeded"
+        assert job["status"] == "done"
         assert len(job["outputs"]) == 2
         assert mock.state.projects_created == 1
         assert mock.state.image_generations == 1
@@ -103,7 +103,7 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         assert referenced.status_code == 202
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         referenced_job = client.get(f"/v1/status/{referenced.json()['task_id']}", headers=auth).json()
-        assert referenced_job["status"] == "succeeded"
+        assert referenced_job["status"] == "done"
         assert mock.state.projects_created == 1
         assert mock.state.image_generations == 2
         # Generated media was already mapped to the same Flow project, so it is
@@ -134,7 +134,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         assert mid["status"] == "running"
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         done = client.get(f"/v1/status/{video_id}", headers=auth).json()
-        assert done["status"] == "succeeded"
+        assert done["status"] == "done"
         assert done["outputs"][0]["type"] == "video"
         assert done["outputs"][0]["thumbnail_url"].endswith("-thumbnail")
         stored_video = client.get(done["outputs"][0]["url"], headers=auth)
@@ -158,7 +158,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         omni_done = client.get(f"/v1/status/{omni_id}", headers=auth).json()
-        assert omni_done["status"] == "succeeded"
+        assert omni_done["status"] == "done"
         assert omni_done["outputs"][0]["type"] == "video"
         assert omni_done["outputs"][0]["thumbnail_url"].endswith("-thumbnail")
 

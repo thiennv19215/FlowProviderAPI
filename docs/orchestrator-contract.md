@@ -38,7 +38,7 @@ Response:
 }
 ```
 
-Poll `GET /v1/status/{task_id}` while `status` is `queued` or `running`. Stop on `succeeded`, `failed`, or `canceled`.
+Poll `GET /v1/status/{task_id}` while `status` is `queued` or `running`. Stop on `done`, `failed`, or `canceled`.
 
 List caller-owned generation statuses with `GET /v1/status`; request cooperative cancellation with `POST /v1/status/{task_id}/cancel`.
 
@@ -46,9 +46,9 @@ If the caller cannot tell whether a prior `POST /v1/generations` completed, retr
 
 ## Reference media
 
-Upload application-owned reference bytes with `POST /v1/media`. `media_id` is a **15-digit JSON string**, not a number. Within one API client, repeated uploads of identical ready content and media type are content-deduplicated by SHA-256 and return the existing media object.
+Upload application-owned reference bytes with `POST /v1/media`. A successfully stored media response uses `status: "done"`. `media_id` is a **15-digit JSON string**, not a number. Within one API client, repeated uploads of identical stored content and media type are content-deduplicated by SHA-256 and return the existing media object.
 
-Generated output URLs are upstream-owned and may expire. An application that needs durable media must copy successful output bytes into its own storage.
+Generated output bytes are copied into Provider-owned storage. Successful tasks return the authenticated Provider `/media/{media_id}` delivery URL.
 
 ## Ownership boundary
 

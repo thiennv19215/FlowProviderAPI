@@ -31,7 +31,7 @@ type ApiError = {
 
 type GenerationStatus = {
   task_id: string;
-  status: "queued" | "running" | "succeeded" | "failed" | "canceled";
+  status: "queued" | "running" | "done" | "failed" | "canceled";
   outputs: Array<{
     media_id: MediaId;
     type: "image" | "video";
@@ -51,7 +51,7 @@ type GenerationStatus = {
   "media_id": "123456789012345",
   "object": "media",
   "type": "image",
-  "status": "ready",
+  "status": "done",
   "mime_type": "image/png",
   "size_bytes": 182731,
   "url": "https://api.shopcongngheso5.io.vn/media/123456789012345",
@@ -116,7 +116,7 @@ Successful video:
 ```json
 {
   "task_id": "job_abc123",
-  "status": "succeeded",
+  "status": "done",
   "outputs": [{
     "media_id": "345678901234567",
     "type": "video",
@@ -136,7 +136,7 @@ Other status endpoints:
 | `POST /v1/status/{task_id}/cancel` | Cooperative cancellation. |
 | `GET /v1/status?limit=20&after={task_id}&status=&type=` | List caller-owned generation statuses; `limit` max 100. |
 
-`status` accepts only `queued`, `running`, `succeeded`, `failed`, `canceled`. `type` accepts only `image`, `video`, `omni`; invalid values return validation errors instead of an empty list.
+`status` accepts only `queued`, `running`, `done`, `failed`, `canceled`. `type` accepts only `image`, `video`, `omni`; invalid values return validation errors instead of an empty list.
 
 ## Error contract
 

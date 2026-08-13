@@ -18,8 +18,8 @@ curl -H 'Authorization: Bearer fpa_live_...' \
   https://api.shopcongngheso5.io.vn/v1/status/job_xxx
 ```
 
-Poll while `status` is `queued` or `running`; stop on `succeeded`, `failed`, or `canceled`.
+Poll while `status` is `queued` or `running`; stop on `done`, `failed`, or `canceled`.
 
-When `status` becomes `succeeded`, `outputs` contains a string `media_id`, `type`, and the direct Google Flow `url`. `media_id` can be reused in later reference-based generation calls.
+When `status` becomes `done`, `outputs` contains a string `media_id`, `type`, and the Provider delivery `url`. `media_id` can be reused in later reference-based generation calls.
 
 FlowProvider does not guarantee durable generated output URLs. Direct Provider URLs may expire or be revoked, so download successful outputs promptly if your application needs durable media.

@@ -16,7 +16,7 @@ Browser UI -> Your backend -> FlowProvider
 2. Submit a generation request.
 3. Store the returned `task_id`.
 4. Poll `/v1/status/{task_id}` every 3–5 seconds while status is `queued` or `running`.
-5. Render `outputs` on `succeeded`; show the nested `error` on `failed`.
+5. Render `outputs` on `done`; show the nested `error` on `failed`.
 
 Every generation POST is independent. V1 does not expose `Idempotency-Key`.
 
@@ -43,7 +43,7 @@ type ProviderError = {
 
 type GenerationStatus = {
   task_id: string;
-  status: "queued" | "running" | "succeeded" | "failed" | "canceled";
+  status: "queued" | "running" | "done" | "failed" | "canceled";
   outputs: TaskOutput[];
   error: ProviderError | null;
 };
@@ -85,7 +85,7 @@ Compatibility endpoints remain available for image, image-to-video, and Omni gen
 async function waitForGeneration(taskId: string): Promise<GenerationStatus> {
   for (;;) {
     const result = await providerFetch<GenerationStatus>(`/v1/status/${taskId}`);
-    if (result.status === "succeeded") return result;
+    if (result.status === "done") return result;
     if (result.status === "failed" || result.status === "canceled") {
       throw new Error(result.error?.message ?? "Generation did not complete.");
     }

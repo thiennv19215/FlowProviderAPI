@@ -35,7 +35,7 @@ def test_unified_generation_normalizes_provider_options_and_runs(client, app, au
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
     done = client.get(f"/v1/status/{task_id}", headers=auth)
     assert done.status_code == 200
-    assert done.json()["status"] == "succeeded"
+    assert done.json()["status"] == "done"
     assert done.json()["outputs"][0]["type"] == "image"
 
 

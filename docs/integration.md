@@ -52,12 +52,12 @@ The response is `202 Accepted` and contains a server-generated `task_id`. Persis
 GET /v1/status/{task_id}
 ```
 
-Poll while `status` is `queued` or `running`. Stop on `succeeded`, `failed`, or `canceled`.
+Poll while `status` is `queued` or `running`. Stop on `done`, `failed`, or `canceled`.
 
 ```json
 {
   "task_id": "job_xxx",
-  "status": "succeeded",
+  "status": "done",
   "outputs": [
     {
       "media_id": "123456789012345",
@@ -71,7 +71,7 @@ Poll while `status` is `queued` or `running`. Stop on `succeeded`, `failed`, or 
 
 Ownership is derived from the Bearer key. A different client cannot read another client's generation status.
 
-Use `GET /v1/status` to list statuses. `status` only accepts `queued`, `running`, `succeeded`, `failed`, `canceled`; `type` only accepts `image`, `video`, `omni`.
+Use `GET /v1/status` to list statuses. `status` only accepts `queued`, `running`, `done`, `failed`, `canceled`; `type` only accepts `image`, `video`, `omni`.
 
 ## Upload your own media
 

@@ -25,7 +25,7 @@ def test_image_generation_end_to_end(client, app, auth):
     job = client.get(f"/v1/status/{job_id}", headers=auth)
     assert job.status_code == 200
     body = job.json()
-    assert body["status"] == "succeeded"
+    assert body["status"] == "done"
     assert len(body["outputs"]) == 1
     assert body["outputs"][0]["thumbnail_url"] is None
     asset_id = body["outputs"][0]["media_id"]
@@ -59,7 +59,7 @@ def test_video_dispatch_and_poll_survives_db_state(client, app, auth):
     assert mid["status"] == "running"
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
     done = client.get(f"/v1/status/{job_id}", headers=auth).json()
-    assert done["status"] == "succeeded"
+    assert done["status"] == "done"
     assert done["outputs"][0]["type"] == "video"
 
 
@@ -276,7 +276,7 @@ def test_openapi_exposes_typed_generation_and_asset_responses(client):
     assert params["status"]["schema"]["anyOf"][0]["enum"] == [
         "queued",
         "running",
-        "succeeded",
+        "done",
         "failed",
         "canceled",
     ]
@@ -298,7 +298,7 @@ def test_upload_media_in_one_request(client, auth):
     assert set(media) >= {"media_id", "object", "type", "status", "mime_type", "url"}
     assert media["object"] == "media"
     assert media["type"] == "image"
-    assert media["status"] == "ready"
+    assert media["status"] == "done"
     assert isinstance(media["media_id"], str)
     assert media["url"].endswith(f"/media/{media['media_id']}")
 

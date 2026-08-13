@@ -79,7 +79,7 @@ class MediaOutput(BaseModel):
     media_id: MediaId
     object: Literal["media"] = "media"
     type: str
-    status: str = "ready"
+    status: Literal["done"] = "done"
     mime_type: str
     size_bytes: int | None = None
     width: int | None = None
@@ -99,7 +99,7 @@ class TaskMediaOutput(BaseModel):
 class JobOutput(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     task_id: str
-    status: str
+    status: Literal["queued", "running", "done", "failed", "canceled"]
     outputs: list[TaskMediaOutput] = Field(default_factory=list)
     error: ErrorObject | None = None
 

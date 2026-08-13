@@ -1,8 +1,8 @@
 # Media
 
-Provider outputs are represented by compact string IDs and returned with the direct image or video URL supplied by Google Flow. The output bytes are not copied into Provider-owned storage. Google Flow media IDs remain internal and are never part of the public contract.
+Provider outputs are represented by compact string IDs. Image and video bytes are copied into Provider-owned storage, and the API returns its authenticated `/media/{media_id}` delivery URL. Google Flow media IDs remain internal and are never part of the public contract.
 
-For user-supplied reference media, call `POST /v1/media` with the file as multipart field `file`. The API validates and stores it before returning a ready media object. In production, user uploads are backed by a durable Docker volume.
+For user-supplied reference media, call `POST /v1/media` with the file as multipart field `file`. The API validates and stores it before returning a media object with `status: "done"`. In production, user uploads are stored in R2.
 
 `media_id` is an opaque media reference. Generation accepts `reference_media_ids` and `start_media_id`.
 

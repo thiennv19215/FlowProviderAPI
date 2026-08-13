@@ -1,6 +1,6 @@
 # Generation status
 
-Public generation states are `queued`, `running`, `succeeded`, `failed`, and `canceled`. Internal worker stages are deliberately not exposed in the public response.
+Public generation states are `queued`, `running`, `done`, `failed`, and `canceled`. Internal worker stages are deliberately not exposed in the public response.
 
 Use `GET /v1/status/{task_id}` to read one generation status and `GET /v1/status` to list caller-owned statuses. Filters are validated: `status` accepts only the public states above and `type` accepts `image`, `video`, or `omni`.
 
