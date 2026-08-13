@@ -8,7 +8,7 @@ Shared, developer-facing Google Flow media API through a Chrome MV3 connector. T
 - durable PostgreSQL generation jobs with leases
 - provider account scheduling/capacity and cooldowns
 - Google Flow project/media mapping
-- compact 15-digit string media references with direct Google Flow output URLs
+- compact 15-digit string media references with authenticated Provider delivery URLs
 - durable, content-deduplicated reference-upload storage in a local Docker volume
 - durable idempotency for unified application-orchestrator submissions
 - direct Chrome extension WebSocket protocol v7
@@ -59,7 +59,7 @@ Native compatibility generation endpoints remain available:
 
 Additional operational/client endpoints include `GET /v1/accounts` and `GET /v1/health`.
 
-Backend services should use the [backend integration reference](docs/backend-integration.md) or the smaller [orchestrator contract](docs/orchestrator-contract.md). Teams updating an existing integration should start with the [endpoint update and migration guide](docs/endpoint-update.md). UI implementations should use the [frontend integration guide](docs/frontend-integration.md).
+Backend services should start with the [backend integration reference](docs/backend-integration.md), which includes upload, image, image-to-video, Omni, polling, thumbnail, and authenticated media-delivery examples. Teams updating an existing integration should use the [endpoint update and migration guide](docs/endpoint-update.md). UI implementations should use the [frontend integration guide](docs/frontend-integration.md).
 
 Operational probes `/health/live` and `/health/ready`, plus the extension-only `/api/health`, remain available but are intentionally hidden from the public OpenAPI document.
 

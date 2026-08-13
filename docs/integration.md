@@ -62,7 +62,7 @@ Poll while `status` is `queued` or `running`. Stop on `done`, `failed`, or `canc
     {
       "media_id": "123456789012345",
       "type": "image",
-      "url": "https://flow-content.google/..."
+    "url": "https://api.shopcongngheso5.io.vn/media/123456789012345"
     }
   ],
   "error": null
@@ -81,7 +81,14 @@ curl -X POST https://api.shopcongngheso5.io.vn/v1/media \
   -F 'file=@reference.png;type=image/png'
 ```
 
-The returned `media_id` is a 15-digit JSON string. Use it in `media_ids`, `reference_media_ids`, or `start_media_id` depending on the generation endpoint.
+The returned `media_id` is a 15-digit JSON string. Use it in `media_ids`, `reference_media_ids`, or `start_media_id` depending on the generation endpoint. Generated image output IDs can be passed directly to image-to-video or Omni; do not upload that image again.
+
+## Media delivery
+
+Task output URLs are authenticated Provider API URLs, not direct Flow URLs. Call
+`GET /media/{media_id}` with the same Bearer key; the API redirects to a
+short-lived R2 download URL. Video task outputs also include
+`/media/{media_id}/thumbnail`. Keep the key server-side.
 
 ## Cancellation
 
