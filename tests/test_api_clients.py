@@ -69,5 +69,6 @@ def test_admin_ui_and_assets_are_served(client):
     assert page.status_code == 200
     assert "FlowProvider" in page.text
     assert "/admin-assets/app.js" in page.text
+    assert "Sao chép key" in page.text
     assert client.get("/admin-assets/app.js").status_code == 200
     assert client.get("/admin-assets/styles.css").status_code == 200

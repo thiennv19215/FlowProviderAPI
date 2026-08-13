@@ -95,7 +95,13 @@
     <div class="dialog-form">
       <div class="success-icon">✓</div><h2>API key đã được cấp</h2>
       <p>Hãy sao chép và gửi qua kênh an toàn. Key này sẽ không hiển thị lại.</p>
-      <div class="issued-key"><code id="issued-key"></code><button id="copy-key" class="button dark" type="button">Sao chép</button></div>
+      <div class="issued-key">
+        <label for="issued-key">API key</label>
+        <div class="copy-row">
+          <input id="issued-key" type="text" readonly spellcheck="false" aria-label="API key vừa được cấp">
+          <button id="copy-key" class="button dark" type="button">Sao chép key</button>
+        </div>
+      </div>
       <button id="key-done" class="button primary full" type="button">Tôi đã lưu key</button>
     </div>
   </dialog>

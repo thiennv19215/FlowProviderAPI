@@ -91,7 +91,8 @@
       const created = await request("/v1/api-clients", {method:"POST", body:JSON.stringify(data)});
       createDialog.close();
       event.currentTarget.reset();
-      $("#issued-key").textContent = created.api_key;
+      $("#issued-key").value = created.api_key;
+      $("#copy-key").textContent = "Sao chép key";
       keyDialog.showModal();
       await loadClients();
     } catch (error) { toast(error.message, true); }
@@ -106,9 +107,29 @@
     catch (error) { toast(error.message, true); button.disabled = false; }
   });
 
-  $("#copy-key").addEventListener("click", async () => {
-    try { await navigator.clipboard.writeText($("#issued-key").textContent); toast("Đã sao chép API key"); }
-    catch { toast("Không thể truy cập clipboard; hãy sao chép thủ công.", true); }
+  $("#copy-key").addEventListener("click", async (event) => {
+    const input = $("#issued-key");
+    let copied = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(input.value);
+        copied = true;
+      }
+    } catch { copied = false; }
+    if (!copied) {
+      input.focus();
+      input.select();
+      input.setSelectionRange(0, input.value.length);
+      try { copied = document.execCommand("copy"); } catch { copied = false; }
+    }
+    if (copied) {
+      event.currentTarget.textContent = "✓ Đã sao chép";
+      toast("Đã sao chép API key");
+    } else {
+      input.focus();
+      input.select();
+      toast("Key đã được chọn; nhấn Ctrl+C để sao chép.", true);
+    }
   });
-  $("#key-done").addEventListener("click", () => { $("#issued-key").textContent = ""; keyDialog.close(); });
+  $("#key-done").addEventListener("click", () => { $("#issued-key").value = ""; keyDialog.close(); });
 })();
