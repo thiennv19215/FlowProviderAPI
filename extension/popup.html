@@ -7,8 +7,15 @@
 <body>
   <main>
     <h1>Flow Provider</h1>
-    <div id="status" class="status">Checking…</div>
+    <div id="status" class="status">Checking...</div>
     <p id="account"></p>
+    <section class="activity">
+      <div class="activity-head">
+        <span>Activity</span>
+        <span id="job" class="job idle">Idle</span>
+      </div>
+      <div id="logs" class="logs"><div class="empty">No activity yet</div></div>
+    </section>
     <button id="flow">Open Google Flow</button>
     <p id="error" class="error"></p>
   </main>

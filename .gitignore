@@ -11,3 +11,13 @@ backups/
 .coverage
 htmlcov/
 .DS_Store
+
+# Test run folders
+.test-run*
+
+# IDE & Editor files
+.vscode/
+.idea/
+
+# Logs
+*.log

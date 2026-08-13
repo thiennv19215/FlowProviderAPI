@@ -266,3 +266,15 @@ test('local offscreen keepalive does not duplicate the backend websocket heartbe
   await vm.runInContext('lastAuthSyncAt = Date.now(); keepAlive()', h.context);
   assert.equal(ws.sent.some((frame) => frame.type === 'pong'), false);
 });
+
+test('popup state exposes a bounded activity log for provider RPC progress', async () => {
+  const h = buildHarness();
+  await flush();
+  for (let index = 0; index < 20; index += 1) {
+    vm.runInContext(`appendActivity("event ${index}", "done")`, h.context);
+  }
+  const state = await vm.runInContext('connectionState()', h.context);
+  assert.equal(state.activity.logs.length, 12);
+  assert.equal(state.activity.logs[0].label, 'event 19');
+  assert.equal(state.activity.activeCount, 0);
+});

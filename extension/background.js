@@ -8,6 +8,7 @@ const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
 const ALLOWED_FETCH_HOSTS = ["labs.google", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
 const AUTH_REFRESH_MS = 5 * 60 * 1000;
+const MAX_ACTIVITY_LOGS = 12;
 
 let socket = null;
 let reconnectTimer = null;
@@ -18,6 +19,36 @@ let lastAuthSyncAt = 0;
 let accountState = { email: null, credits: null, ready: false };
 let authSyncInFlight = null;
 const inflightRpcControllers = new Map();
+let activityState = { activeCount: 0, current: null, logs: [] };
+
+function activityLabel(message) {
+  if (message.type === "OPEN_FLOW_TAB") return "Preparing Flow";
+  if (message.type === "INJECT_RECAPTCHA") return "Solving captcha";
+  if (message.type === "INJECT_PAGE_FETCH") return "Calling Flow";
+  if (message.type === "GET_BEARER") return "Refreshing session";
+  if (message.type === "SW_FETCH" && String(message.spec?.url || "").includes("/credits")) return "Refreshing credits";
+  if (message.type === "SW_FETCH") return "Calling provider";
+  return String(message.type || "Provider request").replaceAll("_", " ").toLowerCase();
+}
+
+function appendActivity(label, status, detail = null) {
+  activityState.logs = [{ at: Date.now(), label, status, detail }, ...activityState.logs].slice(0, MAX_ACTIVITY_LOGS);
+}
+
+function beginActivity(message) {
+  const activity = { label: activityLabel(message), startedAt: Date.now() };
+  activityState.activeCount += 1;
+  activityState.current = activity;
+  appendActivity(activity.label, "running");
+  return activity;
+}
+
+function finishActivity(activity, error = null) {
+  activityState.activeCount = Math.max(0, activityState.activeCount - 1);
+  if (!activityState.activeCount) activityState.current = null;
+  const durationMs = Math.max(0, Date.now() - activity.startedAt);
+  appendActivity(activity.label, error ? "error" : "done", error ? String(error).slice(0, 160) : `${durationMs} ms`);
+}
 
 function id(prefix = "id") {
   return `${prefix}_${globalThis.crypto?.randomUUID?.() || `${Date.now()}_${Math.random().toString(36).slice(2)}`}`;
@@ -284,7 +315,7 @@ async function handleRpc(msg, signal) {
 
 async function connectionState() {
   const config = await getConnectionConfig();
-  return { serverUrl: config.serverUrl, connected: socket?.readyState === WebSocket.OPEN, account: accountState, version: chrome.runtime.getManifest().version };
+  return { serverUrl: config.serverUrl, connected: socket?.readyState === WebSocket.OPEN, account: accountState, activity: activityState, version: chrome.runtime.getManifest().version };
 }
 
 function scheduleReconnect() {
@@ -318,6 +349,7 @@ async function connect() {
     socket = ws;
     ws.onopen = async () => {
       reconnectAttempt = 0;
+      appendActivity("Backend connected", "done");
       const meta = await getProfileMeta();
       if (ws !== socket || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: "extension_ready", installationId: await getInstallationId(), protocolVersion: PROTOCOL_VERSION, connectionId: id("conn"), ...meta }));
@@ -339,14 +371,22 @@ async function connect() {
         }
         if (msg.id != null) {
           const controller = new AbortController();
+          const activity = beginActivity(msg);
           inflightRpcControllers.set(String(msg.id), controller);
-          try { ws.send(JSON.stringify({ id: msg.id, data: await handleRpc(msg, controller.signal) })); }
-          catch (error) { if (ws === socket && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: msg.id, error: error?.message || String(error) })); }
+          try {
+            ws.send(JSON.stringify({ id: msg.id, data: await handleRpc(msg, controller.signal) }));
+            finishActivity(activity);
+          }
+          catch (error) {
+            const message = error?.message || String(error);
+            finishActivity(activity, message);
+            if (ws === socket && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: msg.id, error: message }));
+          }
           finally { inflightRpcControllers.delete(String(msg.id)); }
         }
       } catch (error) { console.error("Flow Provider message error", error); }
     };
-    ws.onclose = () => { if (ws === socket) { socket = null; accountState.ready = false; scheduleReconnect(); } };
+    ws.onclose = () => { if (ws === socket) { socket = null; accountState.ready = false; appendActivity("Backend disconnected", "error"); scheduleReconnect(); } };
     ws.onerror = () => {};
   } catch (error) {
     console.warn("Flow Provider connect failed", error?.message || error);

@@ -1,5 +1,5 @@
 body {
-  width: 280px;
+  width: 320px;
   margin: 0;
   background: #0d1117;
   color: #e6edf3;
@@ -11,6 +11,22 @@ h1 { margin: 0 0 12px; font-size: 18px; }
 .status { color: #9da7b3; }
 .status.connected { color: #3fb950; }
 p { margin: 8px 0 0; overflow-wrap: anywhere; }
+.activity {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #21262d;
+}
+.activity-head { display: flex; justify-content: space-between; font-size: 12px; color: #9da7b3; }
+.job { color: #d29922; }
+.job.idle { color: #7d8590; }
+.logs { max-height: 150px; margin-top: 7px; overflow-y: auto; font: 11px ui-monospace, monospace; }
+.log { display: grid; grid-template-columns: 48px 12px 1fr; gap: 4px; padding: 3px 0; color: #9da7b3; }
+.log .mark.done { color: #3fb950; }
+.log .mark.running { color: #d29922; }
+.log .mark.error { color: #ff7b72; }
+.log .message { color: #c9d1d9; overflow-wrap: anywhere; }
+.log .detail { color: #7d8590; }
+.empty { padding: 8px 0; color: #7d8590; }
 button {
   width: 100%;
   margin-top: 14px;
