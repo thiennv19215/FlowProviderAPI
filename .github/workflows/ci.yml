@@ -13,12 +13,6 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: python -m compileall -q app
       - run: python -m pytest -q
-      - run: alembic upgrade head
-        env:
-          FLOW_PROVIDER_ENV: test
-          FLOW_PROVIDER_DATABASE_URL: sqlite:///./.data/migration-test.db
-          FLOW_PROVIDER_WORKER_ENABLED: "false"
-          FLOW_PROVIDER_BOOTSTRAP_API_KEY: fpa_ci_key
   extension:
     runs-on: ubuntu-latest
     steps:
@@ -34,10 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate deployment shell scripts
-        run: bash -n scripts/deploy-production.sh scripts/backup-production-db.sh
+        run: bash -n scripts/deploy-production.sh
       - name: Validate production Compose config
         run: |
           cp .env.production.example .env.production
-          sed -i 's/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=ci_postgres_secret/' .env.production
           sed -i 's/^CLOUDFLARE_TUNNEL_TOKEN=$/CLOUDFLARE_TUNNEL_TOKEN=ci_tunnel_token/' .env.production
           docker compose --env-file .env.production -f compose.production.yaml config >/dev/null
