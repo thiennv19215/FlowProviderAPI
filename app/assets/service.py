@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import mimetypes
 import os
@@ -318,7 +319,7 @@ class AssetService:
         try:
             if size > limit:
                 raise ValueError("external_asset_too_large")
-            return await __import__("asyncio").to_thread(path.read_bytes)
+            return await asyncio.to_thread(path.read_bytes)
         finally:
             try:
                 os.unlink(path)
@@ -328,25 +329,21 @@ class AssetService:
     async def bytes_for_asset(self, asset: MediaAsset, *, max_bytes: int | None = None) -> bytes:
         if asset.storage_key:
             data = await self.storage.read_bytes(asset.storage_key)
-            limit = max_bytes or self.settings.max_reference_in_memory_bytes
-            if len(data) > limit:
+            if max_bytes is not None and len(data) > max_bytes:
                 raise ValueError("external_asset_too_large")
             return data
         if asset.external_url:
             # Backward compatibility for rows created before Provider-owned
             # object storage. New media always receives a storage_key.
-            limit = max_bytes or self.settings.max_reference_in_memory_bytes
+            limit = max_bytes or self.settings.max_provider_output_bytes
             return await self._external_bytes(asset.external_url, limit)
         raise FileNotFoundError("asset_has_no_content")
 
     def content_url(self, asset: MediaAsset) -> str:
         if asset.storage_key:
-            signer = getattr(self.storage, "create_download_url", None)
-            if callable(signer):
-                return signer(
-                    asset.storage_key,
-                    expires_seconds=self.settings.r2_download_url_expires_seconds,
-                )
+            # Keep the Provider API as the authorization boundary. The delivery
+            # route reads from R2 (or legacy local fallback) server-side, so old
+            # rows remain valid during the storage migration.
             return f"{self.settings.public_base_url.rstrip('/')}/media/{asset.id}"
         if asset.external_url:
             return asset.external_url
