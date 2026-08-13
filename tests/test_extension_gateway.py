@@ -1,27 +1,27 @@
-def test_direct_extension_protocol_registers_connection(client):
-    with client.websocket_connect("/api/extensions/ws") as ws:
-        ws.send_json({
-            "type":"extension_ready",
-            "protocolVersion":7,
-            "installationId":"install-test-123456",
-            "runtimeId":"chrome",
-            "profileId":"profile-test",
-            "profileName":"Test Chrome",
-        })
-        health=client.get("/v1/health").json()
-        assert health["extension_connected"] is True
-    assert client.get("/v1/health").json()["extension_connected"] is False
+from fastapi.testclient import TestClient
+
+from app.config import Settings
+from app.main import create_app
 
 
-def test_previous_extension_subprotocol_remains_compatible(client):
-    with client.websocket_connect(
-        "/api/extensions/ws",
-        subprotocols=["flow-provider-v7","flow-token.legacy-ignored"],
-    ) as ws:
-        assert ws.accepted_subprotocol=="flow-provider-v7"
-        ws.send_json({
-            "type":"extension_ready",
-            "protocolVersion":7,
-            "installationId":"install-legacy-protocol",
-        })
-        assert client.get("/v1/health").json()["extension_connected"] is True
+def test_extension_connects_only_on_v2_runtime_path():
+    app = create_app(Settings(env="test", bootstrap_api_key="test", video_poll_seconds=0))
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/extensions/ws", subprotocols=["flow-provider-v7"]) as ws:
+            assert ws.accepted_subprotocol == "flow-provider-v7"
+            ws.send_json({"type": "extension_ready", "protocolVersion": 7,
+                "installationId": "install-test", "profileName": "Test Chrome"})
+            assert client.get("/api/health").json()["ok"] is True
+            assert app.state.runtime.bridge.connected is True
+        assert app.state.runtime.bridge.connected is False
+
+
+def test_legacy_extension_websocket_is_removed():
+    app = create_app(Settings(env="test", bootstrap_api_key="test", video_poll_seconds=0))
+    paths = {
+        route.path
+        for included in app.routes
+        for route in getattr(getattr(included, "original_router", None), "routes", [])
+    }
+    assert "/api/extensions/ws" in paths
+    assert "/v1/extensions/ws" not in paths

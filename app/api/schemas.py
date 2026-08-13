@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Annotated, Any, Literal
+import ipaddress
+from typing import Any, Literal
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr
-from pydantic.json_schema import JsonSchemaValue
-
-MediaId = Annotated[StrictStr, Field(pattern=r"^[1-9][0-9]{14}$")]
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ErrorDetail(BaseModel):
@@ -28,108 +26,84 @@ class ErrorResponse(BaseModel):
     error: ErrorObject
 
 
-class ApiClientCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=160)
-    priority: int = Field(default=20, ge=0, le=100)
-    max_concurrent_jobs: int = Field(default=5, ge=1, le=1000)
-    rate_limit_per_minute: int = Field(default=120, ge=1, le=100000)
+def _safe_https_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise ValueError("URL must be an absolute HTTPS URL")
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        return value
+    if address.is_private or address.is_loopback or address.is_link_local or address.is_reserved:
+        raise ValueError("URL host must not be a private, loopback, link-local, or reserved address")
+    return value
 
 
-class ApiClientOutput(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+class CallerOwnedInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    asset_key: str = Field(min_length=1, max_length=255)
+    checksum_sha256: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{64}$")
+    mime_type: str = Field(min_length=3, max_length=120)
+    size_bytes: int = Field(ge=1, le=2 * 1024 * 1024 * 1024)
+    download_url: str = Field(min_length=12, max_length=4096)
 
-    id: str
-    name: str
-    key_prefix: str
-    enabled: bool
-    priority: int
-    max_concurrent_jobs: int
-    rate_limit_per_minute: int
-    created_at: datetime
-
-
-class ApiClientCreated(ApiClientOutput):
-    api_key: str
-
-
-class FlowGenerationRequest(BaseModel):
-    provider: str = Field(default="google_flow", exclude=True)
-
+    @field_validator("download_url")
     @classmethod
-    def __get_pydantic_json_schema__(cls, core_schema, handler) -> JsonSchemaValue:
-        schema = handler(core_schema)
-        properties = schema.get("properties", {})
-        properties.pop("provider", None)
-        return schema
+    def safe_download_url(cls, value: str) -> str:
+        return _safe_https_url(value)
 
 
-class UnifiedGenerationRequest(FlowGenerationRequest):
-    """Stable backend-to-backend contract used by application orchestrators.
+class CallerOwnedOutputDestination(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    output_index: int = Field(ge=0, le=7)
+    upload_url: str = Field(min_length=12, max_length=4096)
+    headers: dict[str, str] = Field(default_factory=dict)
 
-    Provider-specific defaults and validation stay inside FlowProviderAPI.  A
-    caller only selects the media job kind, supplies its prompt/localized media
-    references, and forwards optional generation settings.
-    """
+    @field_validator("upload_url")
+    @classmethod
+    def safe_upload_url(cls, value: str) -> str:
+        return _safe_https_url(value)
 
+    @field_validator("headers")
+    @classmethod
+    def safe_headers(cls, value: dict[str, str]) -> dict[str, str]:
+        normalized = {str(key).lower(): str(item) for key, item in value.items()}
+        if set(normalized) - {"content-type"}:
+            raise ValueError("only the content-type destination header is supported")
+        return normalized
+
+
+class UnifiedGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     kind: Literal["image", "video", "omni"]
     prompt: str = Field(min_length=1, max_length=12000)
-    media_ids: list[MediaId] = Field(default_factory=list, max_length=8)
+    storage_mode: Literal["caller_owned"]
+    model: str | None = Field(default=None, min_length=1, max_length=120)
+    inputs: list[CallerOwnedInput] = Field(default_factory=list, max_length=8)
+    output_destinations: list[CallerOwnedOutputDestination] = Field(min_length=1, max_length=8)
     options: dict[str, Any] = Field(default_factory=dict)
 
-
-class ImageGenerationRequest(FlowGenerationRequest):
-    prompt: str = Field(min_length=1, max_length=12000)
-    model: Literal["banana_pro", "banana_2"] = "banana_pro"
-    aspect_ratio: Literal["1:1", "16:9", "9:16"] = "9:16"
-    output_count: int = Field(default=1, ge=1, le=4)
-    reference_media_ids: list[MediaId] = Field(default_factory=list, max_length=8)
-
-
-class ImageToVideoRequest(FlowGenerationRequest):
-    prompt: str = Field(min_length=1, max_length=12000)
-    start_media_id: MediaId
-    quality: Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"] = "lite"
-    aspect_ratio: Literal["16:9", "9:16"] = "16:9"
-
-
-class OmniVideoGenerationRequest(FlowGenerationRequest):
-    prompt: str = Field(min_length=1, max_length=12000)
-    duration: Literal[2, 4, 8, 10] = 8
-    aspect_ratio: Literal["16:9", "9:16"] = "9:16"
-    reference_media_ids: list[MediaId] = Field(min_length=1, max_length=8)
-
-
-class MediaOutput(BaseModel):
-    media_id: MediaId
-    object: Literal["media"] = "media"
-    type: str
-    status: Literal["done"] = "done"
-    mime_type: str
-    size_bytes: int | None = None
-    width: int | None = None
-    height: int | None = None
-    duration: float | None = None
-    url: str | None = None
-    created_at: datetime
+    @model_validator(mode="after")
+    def validate_shape(self):
+        indexes = [item.output_index for item in self.output_destinations]
+        if sorted(indexes) != list(range(len(indexes))):
+            raise ValueError("output_destinations must use contiguous output_index values from zero")
+        if self.kind in {"video", "omni"} and not self.inputs:
+            raise ValueError(f"caller_owned {self.kind} requests require an input")
+        return self
 
 
 class TaskMediaOutput(BaseModel):
-    media_id: MediaId
-    type: str
-    url: str | None = None
-    thumbnail_url: str | None = None
+    output_index: int
+    type: Literal["image", "video"]
+    mime_type: str
+    size_bytes: int
+    checksum_sha256: str
+    uploaded: Literal[True]
 
 
 class JobOutput(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
     task_id: str
-    status: Literal["queued", "running", "done", "failed", "canceled"]
+    status: Literal["done"]
     outputs: list[TaskMediaOutput] = Field(default_factory=list)
     error: ErrorObject | None = None
-
-
-class JobListResponse(BaseModel):
-    object: Literal["list"] = "list"
-    data: list[JobOutput]
-    has_more: bool = False
-    next_cursor: str | None = None

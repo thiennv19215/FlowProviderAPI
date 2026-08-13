@@ -1,55 +1,29 @@
-# Orchestrator contract
+# FlowCanvas gateway contract
 
-FlowProviderAPI exposes a small server-to-server generation boundary for application backends such as FlowCanvas.
-
-## Unified generation
-
-`POST /v1/generations`
-
-Send a stable `Idempotency-Key` header for each logical remote submission. Retrying the same logical submission with the same API client and key returns the same durable Provider task instead of creating duplicate generation work. Reusing the same key for a different normalized submission returns `409 IDEMPOTENCY_KEY_CONFLICT`.
-
-```http
-Idempotency-Key: flowcanvas:42:image:0
-```
+`POST /v2/gateway/generations` is a synchronous server-to-server execution boundary. Required headers are `Authorization: Bearer ...` and a stable `Idempotency-Key` of at most 255 characters.
 
 ```json
 {
   "kind": "image",
   "prompt": "A premium product shot",
-  "media_ids": ["123456789012345"],
-  "options": {
-    "model": "NANO_BANANA_2",
-    "aspect_ratio": "9:16",
-    "output_count": 1
-  }
+  "storage_mode": "caller_owned",
+  "inputs": [{
+    "asset_key": "references/product.png",
+    "checksum_sha256": "<64 hex characters>",
+    "mime_type": "image/png",
+    "size_bytes": 12345,
+    "download_url": "https://storage.flowcanvas.example/signed-input"
+  }],
+  "output_destinations": [{
+    "output_index": 0,
+    "upload_url": "https://storage.flowcanvas.example/signed-output"
+  }],
+  "options": {"aspect_ratio": "9:16"}
 }
 ```
 
-`kind` is `image`, `video`, or `omni`. `media_ids` are Provider-owned reference IDs returned by `POST /v1/media`. Provider-specific normalization, account selection, project handling, capacity and retry policy remain inside FlowProviderAPI.
+`kind` supports `image`, `video`, and `omni`. Image supports one to four destinations. Image-to-video requires exactly one input and one destination. Omni requires one to eight image inputs and exactly one destination.
 
-Response:
+Successful responses have `status: "done"` and include only `output_index`, type, MIME, size, SHA-256 and `uploaded`. FlowCanvas must verify the stored object and create its final Asset record.
 
-```json
-{
-  "task_id": "job_...",
-  "status": "queued",
-  "outputs": [],
-  "error": null
-}
-```
-
-Poll `GET /v1/status/{task_id}` while `status` is `queued` or `running`. Stop on `done`, `failed`, or `canceled`.
-
-List caller-owned generation statuses with `GET /v1/status`; request cooperative cancellation with `POST /v1/status/{task_id}/cancel`.
-
-If the caller cannot tell whether a prior `POST /v1/generations` completed, retry that POST with the same `Idempotency-Key`. Do not generate a new key for the same logical submission.
-
-## Reference media
-
-Upload application-owned reference bytes with `POST /v1/media`. A successfully stored media response uses `status: "done"`. `media_id` is a **15-digit JSON string**, not a number. Within one API client, repeated uploads of identical stored content and media type are content-deduplicated by SHA-256 and return the existing media object.
-
-Generated output bytes are copied into Provider-owned storage. Successful tasks return the authenticated Provider `/media/{media_id}` delivery URL.
-
-## Ownership boundary
-
-FlowProviderAPI owns provider-specific normalization, account scheduling, Google Flow projects/media mapping, leases, polling, provider errors, connector credentials, and durable remote-submission idempotency. The calling application owns its own jobs/workflows, user authorization, stable logical idempotency keys, and durable result storage.
+FlowCanvas owns the durable idempotency lock and must not issue concurrent calls for the same logical key. Reusing the key gives the same deterministic gateway task ID, but it does not suppress provider execution inside this stateless process. A lost response is therefore an uncertain execution that FlowCanvas must reconcile before retrying.

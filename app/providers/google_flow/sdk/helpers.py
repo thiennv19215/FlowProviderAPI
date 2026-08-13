@@ -1,7 +1,19 @@
 from __future__ import annotations
 from typing import Any
-from app.providers.base import ProviderError
 from app.providers.google_flow.sdk.constants import *
+
+
+class ProviderError(Exception):
+    """Structured Google Flow error retained only at the SDK boundary."""
+
+    def __init__(self, code: str, message: str, *, status_code: int | None = None,
+                 retryable: bool = False, details: list[dict] | None = None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+        self.retryable = retryable
+        self.details = details or []
 
 
 def resolve_image_model(key: str | None) -> str:

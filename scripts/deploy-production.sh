@@ -24,42 +24,33 @@ fi
 
 compose=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
 
-verify_admin_dashboard() {
+verify_gateway_surface() {
   "${compose[@]}" exec -T api python - <<'PY'
-import os
+import json
 import urllib.request
+import urllib.error
 
 base_url = "http://127.0.0.1:8000"
-admin_key = os.environ["FLOW_PROVIDER_ADMIN_API_KEY"]
-
-for path, marker in (
-    ("/admin", b"FlowProvider"),
-    ("/admin-assets/app.js", b"/v1/api-clients"),
-    ("/admin-assets/styles.css", b"--green"),
-):
-    with urllib.request.urlopen(base_url + path, timeout=5) as response:
-        body = response.read()
-        if response.status != 200 or marker not in body:
-            raise SystemExit(f"admin dashboard verification failed for {path}")
-
-request = urllib.request.Request(
-    base_url + "/v1/api-clients",
-    headers={"X-Admin-Key": admin_key},
-)
-with urllib.request.urlopen(request, timeout=5) as response:
-    if response.status != 200:
-        raise SystemExit("authenticated API-client verification failed")
-
-print("Admin dashboard and authenticated control plane are ready.")
+with urllib.request.urlopen(base_url + "/openapi.json", timeout=5) as response:
+    paths = json.load(response)["paths"]
+if set(paths) != {"/v2/gateway/generations"}:
+    raise SystemExit(f"unexpected public API surface: {sorted(paths)}")
+try:
+    urllib.request.urlopen(base_url + "/admin", timeout=5)
+except urllib.error.HTTPError as exc:
+    if exc.code != 404:
+        raise
+else:
+    raise SystemExit("legacy admin surface is enabled")
+print("Stateless gateway API surface is ready.")
 PY
 }
 
 # Validate interpolation and required variables before touching running services.
 "${compose[@]}" config >/dev/null
 
-# Refresh third-party images, rebuild the API from the checked-out revision,
-# and reconcile the stack. The API container runs Alembic migrations on start.
-"${compose[@]}" pull postgres cloudflared
+# Refresh third-party images, rebuild the API, and reconcile the stateless stack.
+"${compose[@]}" pull cloudflared
 "${compose[@]}" build --pull api
 "${compose[@]}" up -d --remove-orphans
 
@@ -76,9 +67,9 @@ for _ in $(seq 1 30); do
   status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "${container_id}")"
   if [[ "${status}" == "healthy" ]]; then
     echo "FlowProviderAPI is healthy."
-    if ! verify_admin_dashboard; then
+    if ! verify_gateway_surface; then
       "${compose[@]}" logs --tail=200 api >&2 || true
-      echo "FlowProviderAPI is healthy, but the admin dashboard verification failed." >&2
+      echo "FlowProviderAPI is healthy, but the gateway surface verification failed." >&2
       exit 1
     fi
     exit 0

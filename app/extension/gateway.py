@@ -93,6 +93,3 @@ async def _serve(websocket:WebSocket):
 
 @router.websocket("/api/extensions/ws")
 async def extension_ws(websocket:WebSocket):await _serve(websocket)
-
-@router.websocket("/v1/extensions/ws")
-async def extension_ws_v1(websocket:WebSocket):await _serve(websocket)

@@ -1,22 +1,6 @@
 name: flowprovider-production
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: flowprovider
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}
-      POSTGRES_DB: flowprovider
-    volumes:
-      - flowprovider_pg:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flowprovider -d flowprovider"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 10s
-
   api:
     build:
       context: .
@@ -24,15 +8,6 @@ services:
     init: true
     env_file:
       - .env.production
-    environment:
-      FLOW_PROVIDER_DATABASE_URL: postgresql+psycopg://flowprovider:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}@postgres:5432/flowprovider
-      # Required by the deployed /admin dashboard and its control-plane API.
-      FLOW_PROVIDER_ADMIN_API_KEY: ${FLOW_PROVIDER_ADMIN_API_KEY:?set FLOW_PROVIDER_ADMIN_API_KEY in .env.production}
-    volumes:
-      - flowprovider_assets:/app/.data/assets
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test:
         - CMD-SHELL
@@ -58,7 +33,3 @@ services:
     depends_on:
       api:
         condition: service_healthy
-
-volumes:
-  flowprovider_pg:
-  flowprovider_assets:

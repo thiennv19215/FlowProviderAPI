@@ -1,11 +1,7 @@
-# Media
+# Assets
 
-Provider outputs are represented by compact string IDs. Image and video bytes are copied into Provider-owned storage, and the API returns its authenticated `/media/{media_id}` delivery URL. Google Flow media IDs remain internal and are never part of the public contract.
+In production gateway-only mode, FlowProviderAPI owns no Asset rows or durable media objects. FlowCanvas supplies narrowly scoped signed HTTPS download/upload URLs on exact allowlisted hosts.
 
-For user-supplied reference media, call `POST /v1/media` with the file as multipart field `file`. The API validates and stores it before returning a media object with `status: "done"`. In production, user uploads are stored in R2.
+The gateway bounds downloads, validates an optional reference SHA-256, uploads references into the temporary Google project, validates Google output hosts and redirects, then PUTs output bytes directly to FlowCanvas storage. Signed URLs and Google URLs are never returned in the result.
 
-`media_id` is an opaque media reference. Generation accepts `reference_media_ids` and `start_media_id`.
-
-The Google Flow adapter transparently maps `(media_id, provider_project_id)` to the project-local Flow media ID. This lets a generated output be passed later in `reference_media_ids` without downloading and uploading it again when the same Flow project is reused.
-
-Direct Flow URLs are upstream-owned and may expire or be revoked. Consumers that need permanent media should download each successful output promptly and store it in their own durable storage.
+The legacy `/v1/media` API and compact Provider media IDs have been removed.
