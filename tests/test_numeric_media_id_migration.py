@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, select
+from sqlalchemy import MetaData, Table, create_engine, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -30,12 +32,39 @@ def test_numeric_media_id_migration_rewrites_foreign_keys_and_payloads(tmp_path,
             id="map_legacy", asset_id="media_legacy", provider="google_flow",
             provider_project_id="project_1", provider_media_id="provider_1",
         ))
-        db.add(GenerationJob(
-            id="job_legacy", client_id="client_1", kind="image", provider="google_flow",
-            workspace_key="workspace", request_payload={"reference_media_ids": ["media_legacy"]},
-            result_payload={"asset_ids": ["media_legacy"]},
-        ))
         db.commit()
+    metadata = MetaData()
+    jobs = Table("generation_jobs", metadata, autoload_with=engine)
+    now = datetime.now(timezone.utc)
+    with engine.begin() as connection:
+        connection.execute(jobs.insert().values(
+            id="job_legacy",
+            client_id="client_1",
+            kind="image",
+            provider="google_flow",
+            model=None,
+            workspace_key="workspace",
+            status="queued",
+            stage="queued",
+            priority=20,
+            request_payload={"reference_media_ids": ["media_legacy"]},
+            result_payload={"asset_ids": ["media_legacy"]},
+            idempotency_key=None,
+            provider_account_id=None,
+            provider_project_id=None,
+            provider_operation_id=None,
+            next_run_at=now,
+            lease_owner=None,
+            lease_expires_at=None,
+            attempt_count=0,
+            cancel_requested=False,
+            error_code=None,
+            error_message=None,
+            created_at=now,
+            started_at=None,
+            completed_at=None,
+            updated_at=now,
+        ))
     _upgrade(monkeypatch, database_url, "head")
     with Session(engine) as db:
         asset = db.scalar(select(MediaAsset))
