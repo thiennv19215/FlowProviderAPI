@@ -1,4 +1,7 @@
+import asyncio
+
 from conftest import upload_media
+from app.db.models import MediaAsset
 
 
 def test_local_media_is_streamed_by_api(client, auth):
@@ -86,3 +89,24 @@ def test_media_metadata_still_requires_api_key(client, auth):
     response = client.get(f"/v1/media/{media_id}")
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "INVALID_API_KEY"
+
+
+def test_r2_thumbnail_redirects_to_its_owned_presigned_url(client,app,auth,monkeypatch):
+    media_id=upload_media(client,auth,filename="video.mp4",data=b"video",content_type="video/mp4")
+    thumbnail_key=f"clients/test/{media_id}.thumbnail.jpg"
+    with app.state.runtime.session_factory() as db:
+        asset=db.get(MediaAsset,media_id)
+        asset.thumbnail_storage_key=thumbnail_key
+        db.commit()
+    asyncio.run(app.state.runtime.storage.put_bytes(thumbnail_key,b"thumbnail","image/jpeg"))
+    calls=[]
+
+    async def create_download_url(key,*,expires_seconds=None):
+        calls.append(key)
+        return "https://r2.example.test/thumbnail?signature=test"
+
+    monkeypatch.setattr(app.state.runtime.storage,"create_download_url",create_download_url)
+    response=client.get(f"/media/{media_id}/thumbnail",follow_redirects=False)
+    assert response.status_code==307
+    assert response.headers["location"]=="https://r2.example.test/thumbnail?signature=test"
+    assert calls==[thumbnail_key]

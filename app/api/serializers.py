@@ -15,7 +15,7 @@ def job_dict(runtime, db, job):
         asset=db.scalar(select(MediaAsset).where(MediaAsset.id==aid,MediaAsset.client_id==job.client_id))
         if asset:
             output={"media_id":asset.id,"type":asset.type,"url":runtime.assets.content_url(asset) if asset.status=="done" else None}
-            if asset.type=="video":output["thumbnail_url"]=asset.thumbnail_url
+            if asset.type=="video":output["thumbnail_url"]=runtime.assets.thumbnail_content_url(asset)
             outputs.append(output)
     error=None
     if job.error_code or job.error_message:

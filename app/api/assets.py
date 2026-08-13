@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import mimetypes
 import os
 import tempfile
 from pathlib import Path
@@ -162,3 +163,23 @@ async def get_media_file(
         media_type=asset.mime_type,
         headers={"Content-Disposition": f'inline; filename="{asset.filename or asset.id}"'},
     )
+
+
+@delivery_router.get("/media/{media_id}/thumbnail", include_in_schema=False)
+async def get_media_thumbnail(
+    media_id: MediaId,
+    request: Request,
+    db=Depends(get_db),
+):
+    asset=request.app.state.runtime.assets.get_public(db,media_id)
+    if not asset or asset.status!="done":
+        raise APIError(404,"MEDIA_NOT_FOUND","The requested media is not done.")
+    if asset.thumbnail_storage_key:
+        download_url=await request.app.state.runtime.assets.storage.create_download_url(asset.thumbnail_storage_key)
+        if download_url:return RedirectResponse(download_url,status_code=307)
+        data=await request.app.state.runtime.assets.storage.read_bytes(asset.thumbnail_storage_key)
+        content_type=mimetypes.guess_type(asset.thumbnail_storage_key)[0] or "image/jpeg"
+        return Response(content=data,media_type=content_type)
+    if asset.thumbnail_url:
+        return RedirectResponse(asset.thumbnail_url,status_code=307)
+    raise APIError(404,"MEDIA_THUMBNAIL_NOT_FOUND","The requested media has no thumbnail.")

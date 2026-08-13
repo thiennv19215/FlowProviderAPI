@@ -14,8 +14,9 @@ from tests.mock_extension import MockExtensionSocket
 
 class _MediaHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        payload = b"mock-video-bytes" if "video" in self.path or "omni" in self.path else b"mock-image-bytes"
-        content_type = "video/mp4" if payload.startswith(b"mock-video") else "image/png"
+        is_thumbnail="thumbnail" in self.path
+        payload = b"mock-thumbnail-bytes" if is_thumbnail else b"mock-video-bytes" if "video" in self.path or "omni" in self.path else b"mock-image-bytes"
+        content_type = "image/jpeg" if is_thumbnail else "video/mp4" if payload.startswith(b"mock-video") else "image/png"
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(payload)))
@@ -136,7 +137,10 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         done = client.get(f"/v1/status/{video_id}", headers=auth).json()
         assert done["status"] == "done"
         assert done["outputs"][0]["type"] == "video"
-        assert done["outputs"][0]["thumbnail_url"].endswith("-thumbnail")
+        assert done["outputs"][0]["thumbnail_url"].endswith("/thumbnail")
+        stored_thumbnail=client.get(done["outputs"][0]["thumbnail_url"])
+        assert stored_thumbnail.status_code==200
+        assert stored_thumbnail.content==b"mock-thumbnail-bytes"
         stored_video = client.get(done["outputs"][0]["url"], headers=auth)
         assert stored_video.status_code == 200
         assert stored_video.content == b"mock-video-bytes"
@@ -160,7 +164,7 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         omni_done = client.get(f"/v1/status/{omni_id}", headers=auth).json()
         assert omni_done["status"] == "done"
         assert omni_done["outputs"][0]["type"] == "video"
-        assert omni_done["outputs"][0]["thumbnail_url"].endswith("-thumbnail")
+        assert omni_done["outputs"][0]["thumbnail_url"].endswith("/thumbnail")
 
         assert mock.state.projects_created == 1
         assert mock.state.uploads == 1

@@ -20,6 +20,8 @@ def _mock_provider_download(monkeypatch, data: bytes, content_type: str = "image
 
     def handler(request: httpx.Request):
         requests.append(str(request.url))
+        if "thumb" in str(request.url):
+            return httpx.Response(200,content=b"thumbnail-bytes",headers={"Content-Type":"image/jpeg"})
         return httpx.Response(200, content=data, headers={"Content-Type": content_type})
 
     real_client = httpx.AsyncClient
@@ -322,6 +324,8 @@ def test_video_output_keeps_thumbnail_metadata(client, app, auth, monkeypatch):
                 provider_project_id="flow-project-1",
             )
         )
-        assert video.thumbnail_url == "https://lh3.googleusercontent.com/video-thumb.jpg"
+        assert video.thumbnail_url is None
+        assert video.thumbnail_storage_key
+        assert asyncio.run(app.state.runtime.storage.read_bytes(video.thumbnail_storage_key)) == b"thumbnail-bytes"
         assert video.storage_key
         assert video.external_url is None

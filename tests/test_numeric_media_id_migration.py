@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import MetaData, Table, create_engine, select
+from sqlalchemy import MetaData, Table, create_engine, select, text
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -24,10 +24,12 @@ def test_numeric_media_id_migration_rewrites_foreign_keys_and_payloads(tmp_path,
     engine = create_engine(database_url)
     with Session(engine) as db:
         db.add(ApiClient(id="client_1", name="Test", key_prefix="fpa", key_hash="a" * 64))
-        db.add(MediaAsset(
-            id="media_legacy", client_id="client_1", status="ready", type="image",
-            storage_key="clients/client_1/media_legacy.png", mime_type="image/png",
-        ))
+        # Insert against the historical schema without asking the current ORM
+        # model to emit columns introduced by later migrations.
+        db.execute(text("INSERT INTO media_assets (id,client_id,status,type,storage_key,mime_type,created_at) VALUES (:id,:client_id,:status,:type,:storage_key,:mime_type,:created_at)"),{
+            "id":"media_legacy","client_id":"client_1","status":"ready","type":"image",
+            "storage_key":"clients/client_1/media_legacy.png","mime_type":"image/png","created_at":datetime.now(timezone.utc),
+        })
         db.add(ProjectMediaMapping(
             id="map_legacy", asset_id="media_legacy", provider="google_flow",
             provider_project_id="project_1", provider_media_id="provider_1",

@@ -38,6 +38,11 @@ class AssetService:
         return f"clients/{client_id}/{asset_id}{suffix[:12]}"
 
     @staticmethod
+    def thumbnail_storage_key(client_id: str, asset_id: str, mime_type: str) -> str:
+        suffix=mimetypes.guess_extension(mime_type) or ".jpg"
+        return f"clients/{client_id}/{asset_id}.thumbnail{suffix[:12]}"
+
+    @staticmethod
     def _new_available_id(db) -> str:
         for _ in range(8):
             candidate = new_numeric_id()
@@ -240,7 +245,10 @@ class AssetService:
         size = None
         checksum_value = None
         stored = False
+        thumbnail_stored = False
         tmp_path: Path | None = None
+        thumbnail_tmp_path: Path | None = None
+        thumbnail_key: str | None = None
         limit = getattr(self.settings, "max_provider_output_bytes", 1024 * 1024 * 1024)
         try:
             if media.url:
@@ -268,6 +276,17 @@ class AssetService:
             else:
                 raise ValueError("provider_output_has_no_content")
 
+            if asset_type == "video" and media.thumbnail_url:
+                thumbnail_tmp_path, _thumbnail_size, _thumbnail_checksum, thumbnail_mime = await self._external_to_temp_file(
+                    media.thumbnail_url,
+                    limit,
+                )
+                if not thumbnail_mime or not thumbnail_mime.startswith("image/"):
+                    raise ValueError("provider_output_thumbnail_not_image")
+                thumbnail_key=self.thumbnail_storage_key(client_id,aid,thumbnail_mime)
+                await self.storage.put_file(thumbnail_key,thumbnail_tmp_path,thumbnail_mime)
+                thumbnail_stored=True
+
             asset = MediaAsset(
                 id=aid,
                 client_id=client_id,
@@ -275,7 +294,8 @@ class AssetService:
                 type=asset_type,
                 storage_key=key,
                 external_url=None,
-                thumbnail_url=media.thumbnail_url if asset_type == "video" else None,
+                thumbnail_url=None,
+                thumbnail_storage_key=thumbnail_key,
                 mime_type=mime,
                 size_bytes=size,
                 width=media.width,
@@ -306,11 +326,21 @@ class AssetService:
                     await self.storage.delete(key)
                 except Exception:
                     pass
+            if thumbnail_stored and thumbnail_key:
+                try:
+                    await self.storage.delete(thumbnail_key)
+                except Exception:
+                    pass
             raise
         finally:
             if tmp_path is not None:
                 try:
                     os.unlink(tmp_path)
+                except FileNotFoundError:
+                    pass
+            if thumbnail_tmp_path is not None:
+                try:
+                    os.unlink(thumbnail_tmp_path)
                 except FileNotFoundError:
                     pass
 
@@ -348,6 +378,11 @@ class AssetService:
         if asset.external_url:
             return asset.external_url
         raise FileNotFoundError("asset_has_no_content")
+
+    def thumbnail_content_url(self, asset: MediaAsset) -> str | None:
+        if asset.thumbnail_storage_key:
+            return f"{self.settings.public_base_url.rstrip('/')}/media/{asset.id}/thumbnail"
+        return asset.thumbnail_url
 
     @staticmethod
     def get_owned(db, asset_id: str, client_id: str) -> MediaAsset | None:
