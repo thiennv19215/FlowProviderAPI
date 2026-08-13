@@ -49,6 +49,18 @@ def test_api_client_management_requires_admin_key(client, auth):
     assert response.json()["error"]["code"] == "INVALID_ADMIN_KEY"
 
 
+def test_admin_can_rotate_api_key(client, admin_auth):
+    created = client.post("/v1/api-clients", headers=admin_auth, json={"name": "Rotate me"}).json()
+    old_auth = {"Authorization": f"Bearer {created['api_key']}"}
+
+    rotated = client.post(f"/v1/api-clients/{created['id']}/rotate", headers=admin_auth)
+    assert rotated.status_code == 200
+    new_key = rotated.json()["api_key"]
+    assert new_key != created["api_key"]
+    assert client.get("/v1/status", headers=old_auth).status_code == 401
+    assert client.get("/v1/status", headers={"Authorization": f"Bearer {new_key}"}).status_code == 200
+
+
 def test_api_client_create_validates_limits(client, admin_auth):
     response = client.post(
         "/v1/api-clients",

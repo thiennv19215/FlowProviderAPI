@@ -43,7 +43,7 @@
         <td class="limits">${item.max_concurrent_jobs} jobs đồng thời<br>${item.rate_limit_per_minute} req/phút · P${item.priority}</td>
         <td>${formatDate(item.created_at)}</td>
         <td><span class="badge ${item.enabled ? "active" : "revoked"}">${item.enabled ? "Hoạt động" : "Đã thu hồi"}</span></td>
-        <td>${item.enabled ? `<button class="revoke" data-revoke="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}">Thu hồi</button>` : ""}</td>
+        <td><div class="row-actions"><button class="rotate" data-rotate="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}">Cấp lại key</button>${item.enabled ? `<button class="revoke" data-revoke="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}">Thu hồi</button>` : ""}</div></td>
       </tr>`).join("");
   }
 
@@ -93,6 +93,7 @@
       event.currentTarget.reset();
       $("#issued-key").value = created.api_key;
       $("#copy-key").textContent = "Sao chép key";
+      $("#key-dialog-message").textContent = "Hãy sao chép và gửi qua kênh an toàn. Key này sẽ không hiển thị lại.";
       keyDialog.showModal();
       await loadClients();
     } catch (error) { toast(error.message, true); }
@@ -100,6 +101,20 @@
   });
 
   $("#client-list").addEventListener("click", async (event) => {
+    const rotateButton = event.target.closest("[data-rotate]");
+    if (rotateButton) {
+      if (!confirm(`Cấp key mới cho “${rotateButton.dataset.name}”? Key hiện tại sẽ ngừng hoạt động ngay.`)) return;
+      rotateButton.disabled = true;
+      try {
+        const rotated = await request(`/v1/api-clients/${encodeURIComponent(rotateButton.dataset.rotate)}/rotate`, {method:"POST"});
+        $("#issued-key").value = rotated.api_key;
+        $("#copy-key").textContent = "Sao chép key";
+        $("#key-dialog-message").textContent = "Key cũ đã ngừng hoạt động. Hãy sao chép key mới ngay vì nó sẽ không hiển thị lại.";
+        keyDialog.showModal();
+        await loadClients();
+      } catch (error) { toast(error.message, true); rotateButton.disabled = false; }
+      return;
+    }
     const button = event.target.closest("[data-revoke]");
     if (!button || !confirm(`Thu hồi API key của “${button.dataset.name}”?`)) return;
     button.disabled = true;

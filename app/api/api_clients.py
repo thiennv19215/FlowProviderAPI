@@ -58,3 +58,17 @@ def revoke_api_client(client_id: str, db=Depends(get_db)):
     client.enabled = False
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{client_id}/rotate", response_model=ApiClientCreated)
+def rotate_api_client_key(client_id: str, db=Depends(get_db)):
+    client = db.get(ApiClient, client_id)
+    if client is None:
+        raise APIError(404, "API_CLIENT_NOT_FOUND", "The requested API client does not exist.")
+    api_key = generate_api_key()
+    client.key_prefix = key_prefix(api_key)
+    client.key_hash = hash_api_key(api_key)
+    client.enabled = True
+    db.commit()
+    db.refresh(client)
+    return ApiClientCreated(**_output(client).model_dump(), api_key=api_key)
