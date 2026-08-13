@@ -22,7 +22,6 @@ from app.jobs.repository import (
 )
 
 router = APIRouter(tags=["Generations"])
-CLIENT_WORKSPACE_KEY = "__api_client__"
 
 _IMAGE_MODELS = {
     "NANO_BANANA_PRO": "banana_pro",
@@ -171,7 +170,6 @@ def _submit(
             kind=kind,
             provider=provider,
             model=model,
-            workspace_key=CLIENT_WORKSPACE_KEY,
             payload=data,
             request_id=request.state.request_id,
             idempotency_key=clean_key,
