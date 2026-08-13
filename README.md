@@ -1,27 +1,12 @@
 # FlowProviderAPI
 
-Stateless Google Flow execution gateway for FlowCanvas through a Chrome MV3 connector. FlowCanvas owns durable jobs, idempotency, authorization, media metadata and object storage; this service owns only live provider execution.
+Google Flow API facade backed by a signed-in Chrome MV3 connector. The service owns only live connection selection and request/response forwarding.
 
 ## Production contract
 
-FlowCanvas calls the endpoint matching the requested operation:
+Clients call fixed business endpoints for projects, image upload, image generation and video generation. The backend selects an available extension, lets the browser add Google authentication/captcha, and returns the upstream HTTP status and body unchanged.
 
-- `POST /v1/images/generations`
-- `POST /v1/videos/image-to-video`
-- `POST /v1/videos/omni-generations`
-
-Each endpoint uses:
-
-- `Authorization: Bearer <FLOW_PROVIDER_BOOTSTRAP_API_KEY>`
-- a stable `Idempotency-Key` for the logical FlowCanvas submission
-- `storage_mode: "caller_owned"`
-- signed HTTPS input and output URLs on explicitly allowlisted hosts
-
-Together these endpoints support image generation, image-to-video, and Omni video. Each creates a temporary Google Flow project, uploads caller references when needed, executes or polls the generation, uploads every output directly to FlowCanvas storage, and returns output index, MIME type, byte size and SHA-256 checksum. They never return Google URLs, signed caller URLs, or Provider media IDs.
-
-The gateway contains no PostgreSQL, Alembic migrations, worker, R2/local asset storage, media API or admin dashboard. The legacy V1 runtime has been removed.
-
-`Idempotency-Key` produces a deterministic gateway task identifier. FlowCanvas must own the durable idempotency lock, payload-conflict check and uncertain-execution recovery because this gateway intentionally stores no request state.
+The facade does not create jobs, poll automatically, download media, manage storage, or create a Provider response model. It contains no database, worker, asset service or admin dashboard.
 
 ## Configuration
 
@@ -31,10 +16,7 @@ Required production values:
 FLOW_PROVIDER_ENV=production
 FLOW_PROVIDER_PUBLIC_BASE_URL=https://provider.example.com
 FLOW_PROVIDER_BOOTSTRAP_API_KEY=fpa_prod_<secret>
-FLOW_PROVIDER_CALLER_OWNED_ALLOWED_HOSTS=storage.flowcanvas.example
 ```
-
-`FLOW_PROVIDER_CALLER_OWNED_ALLOWED_HOSTS` is a comma-separated list of exact hostnames. It is an SSRF boundary, not storage credentials. Do not include schemes, paths, wildcards, or general-purpose hosts.
 
 ## Run locally
 
@@ -55,7 +37,9 @@ cp .env.production.example .env.production
 bash scripts/deploy-production.sh
 ```
 
-See [deployment](docs/deployment.md) and [caller-owned storage](docs/caller-owned-storage.md).
+See [deployment](docs/deployment.md).
+
+Integration documentation: [Vietnamese API integration guide](docs/integration-guide.vi.md).
 
 ## Operational endpoints
 
@@ -72,4 +56,4 @@ The extension WebSocket is unauthenticated by design. Keep WAF/DDoS protection a
 python -m pytest -q
 ```
 
-The suite covers the stateless boot boundary and image/video/Omni gateway contracts. Production acceptance must also exercise real generations with signed FlowCanvas URLs and a signed-in Google Flow profile.
+The suite covers authentication, connection selection, fixed Flow operations and transparent upstream responses. Production acceptance must also exercise a real request through a signed-in Google Flow profile.

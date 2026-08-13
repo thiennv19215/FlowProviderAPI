@@ -220,7 +220,7 @@ class FlowBridge:
         except Exception as exc:
             self._pending.pop(req_id,None);conn.failed_count+=1;conn.last_error=str(exc)[:300];return {"error":str(exc)}
 
-    async def api_request(self,connection_id:str,*,url:str,method:str="POST",headers:dict|None=None,body:Any=None,captcha_action:str|None=None,timeout:float|None=None)->dict:
+    async def api_request(self,connection_id:str,*,url:str,method:str="POST",headers:dict|None=None,body:Any=None,captcha_action:str|None=None,timeout:float|None=None,response_type:str|None=None)->dict:
         conn=self.get(connection_id)
         if not conn:return {"error":"extension_disconnected"}
         bearer_resp=await self.send_rpc(connection_id,"GET_BEARER",{},timeout=self.BEARER_TIMEOUT);bearer=bearer_resp.get("data") if isinstance(bearer_resp,dict) else None
@@ -241,7 +241,7 @@ class FlowBridge:
         fetch_headers=dict(headers or {});fetch_headers["authorization"]=f"Bearer {bearer}";is_get=method.upper() in {"GET","HEAD"}
         if is_get:fetch_headers={k:v for k,v in fetch_headers.items() if k.lower()!="content-type"}
         else:fetch_headers.setdefault("content-type","text/plain;charset=UTF-8")
-        spec={"url":url,"method":method,"headers":fetch_headers,"timeoutMs":int((timeout or self.DEFAULT_TIMEOUT)*1000),"responseType":"json"}
+        spec={"url":url,"method":method,"headers":fetch_headers,"timeoutMs":int((timeout or self.DEFAULT_TIMEOUT)*1000),"responseType":response_type or "json"}
         if final_body is not None and not is_get:spec["body"]=json.dumps(final_body)
         return self._normalize_fetch(await self.send_rpc(connection_id,"SW_FETCH",{"spec":spec},timeout=(timeout or self.DEFAULT_TIMEOUT)+5),"API")
 
@@ -265,10 +265,11 @@ class FlowBridge:
         inner=response.get("data") or {}
         if not isinstance(inner,dict):return {"error":f"unexpected_{prefix.lower()}_response"}
         out={"status":inner.get("status")}
+        if isinstance(inner.get("headers"),dict):out["headers"]={str(k).lower():str(v) for k,v in inner["headers"].items()}
         if inner.get("data") is not None:out["data"]=inner["data"]
         elif isinstance(inner.get("text"),str):
             try:out["data"]=json.loads(inner["text"])
-            except Exception:out["text"]=inner["text"][:4096]
+            except Exception:out["text"]=inner["text"]
         elif final_url_as_data and inner.get("finalUrl"):out["data"]={"url":inner["finalUrl"]}
         if inner.get("ok") is False:out["error"]=inner.get("error") or f"{prefix}_{inner.get('status','?')}"
         return out

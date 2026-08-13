@@ -6,115 +6,96 @@ from app.config import Settings
 from app.main import create_app
 
 
-def gateway_app():
-    return create_app(Settings(env="test", bootstrap_api_key="fpa_gateway_test",
-        caller_owned_allowed_hosts="storage.example.test", public_base_url="https://provider.test",
-        video_poll_seconds=0))
+def app():
+    return create_app(Settings(env="test", bootstrap_api_key="fpa_test", public_base_url="https://provider.test"))
 
 
-def headers(key="job-1"):
-    return {"Authorization": "Bearer fpa_gateway_test", "Idempotency-Key": key}
+def headers():
+    return {"Authorization": "Bearer fpa_test"}
 
 
-def image_payload():
-    return {"prompt": "test", "storage_mode": "caller_owned",
-        "output_destinations": [{"output_index": 0, "upload_url": "https://storage.example.test/output.png"}]}
+def connect(application, monkeypatch):
+    connection = SimpleNamespace(id="account-1", max_slots=2, paygate_tier="PAYGATE_TIER_ONE")
+    monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [connection])
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
 
 
-def test_runtime_and_surface_are_stateless_gateway_only():
-    app = gateway_app()
-    assert set(app.openapi()["paths"]) == {"/v1/images/generations", "/v1/videos/image-to-video", "/v1/videos/omni-generations"}
-    assert set(vars(app.state.runtime)) == {"settings", "bridge", "extension_manager"}
-    with TestClient(app) as client:
-        ready = client.get("/health/ready")
-        assert ready.status_code == 200
-        assert ready.json() == {"status": "ready", "provider_accounts": 0, "video_lite_ready_accounts": 0}
-        assert client.post("/v1/generations", headers=headers(), json=image_payload()).status_code == 404
-        assert client.get("/v1/gateway/generations").status_code == 404
-        assert client.get("/admin").status_code == 404
+def test_public_surface_is_a_fixed_flow_facade():
+    application = app()
+    assert set(application.openapi()["paths"]) == {
+        "/v1/projects", "/v1/media", "/v1/images/generations",
+        "/v1/videos/generations", "/v1/videos/status",
+    }
+    with TestClient(application) as client:
+        assert client.post("/v1/proxy", headers=headers(), json={}).status_code == 404
 
 
-def test_gateway_requires_auth_idempotency_and_online_extension():
-    app = gateway_app()
-    with TestClient(app) as client:
-        assert client.post("/v1/images/generations", json=image_payload()).status_code == 401
-        missing_key = client.post("/v1/images/generations",
-            headers={"Authorization": "Bearer fpa_gateway_test"}, json=image_payload())
-        unavailable = client.post("/v1/images/generations", headers=headers(), json=image_payload())
-    assert missing_key.status_code == 400
-    assert missing_key.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
+def test_generation_requires_auth_and_connection():
+    request = {"project_id": "project-1", "prompt": "test"}
+    with TestClient(app()) as client:
+        assert client.post("/v1/images/generations", json=request).status_code == 401
+        unavailable = client.post("/v1/images/generations", headers=headers(), json=request)
     assert unavailable.status_code == 503
     assert unavailable.json()["error"]["code"] == "PROVIDER_ACCOUNT_UNAVAILABLE"
 
 
-def test_gateway_image_happy_path(monkeypatch):
-    import app.api.generations as gateway
-    uploaded = []
-    connection = SimpleNamespace(id="account-1", paygate_tier="PAYGATE_TIER_ONE",
-        success_count=0, max_slots=2)
+def test_image_generation_calls_fixed_extension_operation_and_returns_raw_response(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    captured = {}
 
-    class FakeSDK:
-        def __init__(self, _client): pass
-        async def create_project(self, _title): return {"project_id": "project-1"}
-        async def gen_image(self, **_kwargs): return {"media_entries": [{"bytes_data": b"image-bytes"}]}
+    async def fake_api(connection_id, **kwargs):
+        captured.update({"connection_id": connection_id, **kwargs})
+        return {"status": 201, "headers": {"x-flow-id": "123"}, "data": {"media": [{"name": "media/1"}]}}
 
-    async def fake_put(destination, data, mime_type, allowed):
-        uploaded.append((destination.output_index, data, mime_type, allowed))
-
-    monkeypatch.setattr(gateway, "FlowSDK", FakeSDK)
-    monkeypatch.setattr(gateway, "_put_output", fake_put)
-    app = gateway_app()
-    monkeypatch.setattr(app.state.runtime.bridge, "ready_connections", lambda **_kwargs: [connection])
-    with TestClient(app) as client:
-        first = client.post("/v1/images/generations", headers=headers("flowcanvas-job-42"), json=image_payload())
-        second = client.post("/v1/images/generations", headers=headers("flowcanvas-job-42"), json=image_payload())
-    assert first.status_code == 200
-    assert first.json()["task_id"] == second.json()["task_id"]
-    assert first.json()["outputs"][0]["uploaded"] is True
-    assert uploaded[0][1:] == (b"image-bytes", "image/png", {"storage.example.test"})
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    body = {"project_id": "project-1", "prompt": "test", "model": "NANO_BANANA_PRO", "aspect_ratio": "IMAGE_ASPECT_RATIO_SQUARE", "reference_media_ids": ["media/ref"], "variant_count": 1}
+    with TestClient(application) as client:
+        response = client.post("/v1/images/generations", headers=headers(), json=body)
+    assert response.status_code == 201
+    assert response.json() == {"media": [{"name": "media/1"}]}
+    assert response.headers["x-flow-id"] == "123"
+    assert captured["connection_id"] == "account-1"
+    assert captured["captcha_action"] == "IMAGE_GENERATION"
+    assert captured["url"].endswith("/v1/projects/project-1/flowMedia:batchGenerateImages")
+    assert "url" not in body
 
 
-def test_gateway_video_and_omni_happy_paths(monkeypatch):
-    import app.api.generations as gateway
-    calls = []
-    connection = SimpleNamespace(id="account-1", paygate_tier="PAYGATE_TIER_ONE",
-        success_count=0, max_slots=2)
+def test_create_project_and_check_operations_return_upstream_results(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
 
-    class FakeSDK:
-        def __init__(self, _client): pass
-        async def create_project(self, _title): return {"project_id": "project-1"}
-        async def upload_image(self, *_args): return {"media_id": "reference-1"}
-        async def gen_video(self, **_kwargs): calls.append("video"); return {"operation_names": ["op-1"]}
-        async def gen_video_omni(self, **_kwargs): calls.append("omni"); return {"operation_names": ["op-2"]}
-        async def check_async(self, **_kwargs):
-            return {"operations": [{"done": True, "media_entries": [{"bytes_data": b"video-bytes"}]}]}
+    async def fake_trpc(_connection_id, **kwargs):
+        assert kwargs["body"] == {"json": {"projectTitle": "My project", "toolName": "PINHOLE"}}
+        return {"status": 200, "data": {"result": {"projectId": "projects/1"}}}
 
-    async def fake_read(*_args): return b"reference"
-    async def fake_put(_destination, data, mime_type, _allowed):
-        assert data == b"video-bytes" and mime_type == "video/mp4"
+    async def fake_api(_connection_id, **kwargs):
+        assert kwargs["body"] == {"operations": [{"operation": {"name": "operations/1"}}]}
+        return {"status": 200, "data": {"operations": [{"operation": {"name": "operations/1", "done": False}}]}}
 
-    monkeypatch.setattr(gateway, "FlowSDK", FakeSDK)
-    monkeypatch.setattr(gateway, "_read_caller_input", fake_read)
-    monkeypatch.setattr(gateway, "_put_output", fake_put)
-    app = gateway_app()
-    monkeypatch.setattr(app.state.runtime.bridge, "ready_connections", lambda **_kwargs: [connection])
-    base = {"prompt": "test", "storage_mode": "caller_owned",
-        "inputs": [{"asset_key": "ref", "mime_type": "image/png", "size_bytes": 9,
-            "download_url": "https://storage.example.test/input.png"}],
-        "output_destinations": [{"output_index": 0, "upload_url": "https://storage.example.test/output.mp4"}]}
-    with TestClient(app) as client:
-        video = client.post("/v1/videos/image-to-video", headers=headers("video"), json=base)
-        omni = client.post("/v1/videos/omni-generations", headers=headers("omni"), json=base)
-    assert video.status_code == omni.status_code == 200
-    assert calls == ["video", "omni"]
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        project = client.post("/v1/projects", headers=headers(), json={"title": "My project"})
+        check = client.post("/v1/videos/status", headers=headers(), json={"operation_names": ["operations/1"]})
+    assert project.status_code == check.status_code == 200
+    assert project.json()["result"]["projectId"] == "projects/1"
+    assert check.json()["operations"][0]["operation"]["done"] is False
 
 
-def test_schema_rejects_legacy_provider_owned_shape():
-    app = gateway_app()
-    with TestClient(app) as client:
-        response = client.post("/v1/images/generations", headers=headers(), json={
-            "prompt": "x", "storage_mode": "provider_owned",
-            "media_ids": ["123456789012345"],
-            "output_destinations": [{"output_index": 0, "upload_url": "https://storage.example.test/out"}],
-        })
-    assert response.status_code == 422
+def test_video_generation_uses_the_type_to_select_the_fixed_flow_operation(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    urls = []
+
+    async def fake_api(_connection_id, **kwargs):
+        urls.append(kwargs["url"])
+        return {"status": 200, "data": {"operations": []}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        image_to_video = client.post("/v1/videos/generations", headers=headers(), json={"type": "image_to_video", "project_id": "project-1", "prompt": "move", "start_media_id": "media/1"})
+        omni = client.post("/v1/videos/generations", headers=headers(), json={"type": "omni", "project_id": "project-1", "prompt": "move", "reference_media_ids": ["media/1"]})
+    assert image_to_video.status_code == omni.status_code == 200
+    assert urls[0].endswith("video:batchAsyncGenerateVideoStartImage")
+    assert urls[1].endswith("video:batchAsyncGenerateVideoReferenceImages")

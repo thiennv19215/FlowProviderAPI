@@ -252,11 +252,11 @@ async function inject(tabId, operation, payload = {}) {
         try {
           const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: controller.signal });
           const type = spec.responseType || ((resp.headers.get("content-type") || "").includes("json") ? "json" : "text");
-          const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url };
+          const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url, headers: Object.fromEntries(resp.headers.entries()) };
           if (type === "json") {
             const text = await resp.text().catch(() => "");
             try { out.data = text ? JSON.parse(text) : null; }
-            catch (_) { out.text = text.slice(0, 4096); }
+            catch (_) { out.text = text; }
           }
           else if (type !== "none") out.text = await resp.text().catch(() => "");
           return { ok: true, data: out };
@@ -282,11 +282,11 @@ async function swFetch(spec, signal) {
   try {
     const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: controller.signal });
     const type = spec.responseType || ((resp.headers.get("content-type") || "").includes("json") ? "json" : "text");
-    const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url };
+    const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url, headers: Object.fromEntries(resp.headers.entries()) };
     if (type === "json") {
       const text = await resp.text().catch(() => "");
       try { out.data = text ? JSON.parse(text) : null; }
-      catch (_) { out.text = text.slice(0, 4096); }
+      catch (_) { out.text = text; }
     }
     else if (type === "base64") {
       const bytes = new Uint8Array(await resp.arrayBuffer());

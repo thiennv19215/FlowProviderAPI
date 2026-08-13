@@ -82,6 +82,7 @@ class FlowBridge(BaseFlowBridge):
         body: Any = None,
         captcha_action: str | None = None,
         timeout: float | None = None,
+        response_type: str | None = None,
     ) -> dict:
         conn = self.get(connection_id)
         if not conn:
@@ -123,7 +124,7 @@ class FlowBridge(BaseFlowBridge):
             "headers": fetch_headers,
             "authMode": "flow",
             "timeoutMs": int((timeout or self.DEFAULT_TIMEOUT) * 1000),
-            "responseType": "json",
+            "responseType": response_type or "json",
         }
         if final_body is not None and not is_get:
             spec["body"] = json.dumps(final_body)

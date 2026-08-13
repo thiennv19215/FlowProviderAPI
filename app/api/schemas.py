@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
-from typing import Any, Literal
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -39,88 +39,59 @@ def _safe_https_url(value: str) -> str:
     return value
 
 
-class CallerOwnedInput(BaseModel):
+class CreateProjectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    asset_key: str = Field(min_length=1, max_length=255)
-    checksum_sha256: str | None = Field(default=None, pattern=r"^[a-fA-F0-9]{64}$")
-    mime_type: str = Field(min_length=3, max_length=120)
-    size_bytes: int = Field(ge=1, le=2 * 1024 * 1024 * 1024)
-    download_url: str = Field(min_length=12, max_length=4096)
-
-    @field_validator("download_url")
-    @classmethod
-    def safe_download_url(cls, value: str) -> str:
-        return _safe_https_url(value)
+    title: str = Field(min_length=1, max_length=200)
 
 
-class CallerOwnedOutputDestination(BaseModel):
+class ImageUploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    output_index: int = Field(ge=0, le=7)
-    upload_url: str = Field(min_length=12, max_length=4096)
-    headers: dict[str, str] = Field(default_factory=dict)
-
-    @field_validator("upload_url")
-    @classmethod
-    def safe_upload_url(cls, value: str) -> str:
-        return _safe_https_url(value)
-
-    @field_validator("headers")
-    @classmethod
-    def safe_headers(cls, value: dict[str, str]) -> dict[str, str]:
-        normalized = {str(key).lower(): str(item) for key, item in value.items()}
-        if set(normalized) - {"content-type"}:
-            raise ValueError("only the content-type destination header is supported")
-        return normalized
+    project_id: str = Field(min_length=1, max_length=500)
+    file_name: str = Field(default="upload.png", min_length=1, max_length=255)
+    mime_type: str = Field(min_length=3, max_length=120, pattern=r"^image/")
+    image_base64: str = Field(min_length=1, max_length=64 * 1024 * 1024)
 
 
-class CallerOwnedGenerationRequest(BaseModel):
+class ImageGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    project_id: str = Field(min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
-    storage_mode: Literal["caller_owned"]
-    model: str | None = Field(default=None, min_length=1, max_length=120)
-    inputs: list[CallerOwnedInput] = Field(default_factory=list, max_length=8)
-    output_destinations: list[CallerOwnedOutputDestination] = Field(min_length=1, max_length=8)
-    options: dict[str, Any] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def validate_shape(self):
-        indexes = [item.output_index for item in self.output_destinations]
-        if sorted(indexes) != list(range(len(indexes))):
-            raise ValueError("output_destinations must use contiguous output_index values from zero")
-        return self
+    model: Literal["NANO_BANANA_PRO", "NANO_BANANA_2"] = "NANO_BANANA_PRO"
+    aspect_ratio: Literal["IMAGE_ASPECT_RATIO_SQUARE", "IMAGE_ASPECT_RATIO_LANDSCAPE", "IMAGE_ASPECT_RATIO_PORTRAIT"] = "IMAGE_ASPECT_RATIO_PORTRAIT"
+    reference_media_ids: list[str] = Field(default_factory=list, max_length=8)
+    variant_count: int = Field(default=1, ge=1, le=4)
 
 
-class ImageGenerationRequest(CallerOwnedGenerationRequest):
-    pass
+class ImageToVideoGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["image_to_video"]
+    project_id: str = Field(min_length=1, max_length=500)
+    prompt: str = Field(min_length=1, max_length=12000)
+    start_media_id: str = Field(min_length=1, max_length=500)
+    aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_LANDSCAPE"
+    quality: Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"] = "lite"
 
 
-class ImageToVideoRequest(CallerOwnedGenerationRequest):
-    @model_validator(mode="after")
-    def require_one_input(self):
-        if len(self.inputs) != 1:
-            raise ValueError("image-to-video requests require exactly one input")
-        return self
+class OmniVideoGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: Literal["omni"]
+    project_id: str = Field(min_length=1, max_length=500)
+    prompt: str = Field(min_length=1, max_length=12000)
+    reference_media_ids: list[str] = Field(min_length=1, max_length=8)
+    aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_PORTRAIT"
+    duration_seconds: Literal[2, 4, 8, 10] = 8
+
+    @property
+    def duration_model(self) -> str:
+        return {2: "abra_r2v_2s", 4: "abra_r2v_4s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}[self.duration_seconds]
 
 
-class OmniVideoGenerationRequest(CallerOwnedGenerationRequest):
-    @model_validator(mode="after")
-    def require_inputs(self):
-        if not self.inputs:
-            raise ValueError("omni video requests require at least one input")
-        return self
+VideoGenerationRequest = Annotated[
+    ImageToVideoGenerationRequest | OmniVideoGenerationRequest,
+    Field(discriminator="type"),
+]
 
 
-class TaskMediaOutput(BaseModel):
-    output_index: int
-    type: Literal["image", "video"]
-    mime_type: str
-    size_bytes: int
-    checksum_sha256: str
-    uploaded: Literal[True]
-
-
-class JobOutput(BaseModel):
-    task_id: str
-    status: Literal["done"]
-    outputs: list[TaskMediaOutput] = Field(default_factory=list)
-    error: ErrorObject | None = None
+class VideoStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    operation_names: list[str] = Field(min_length=1, max_length=20)
