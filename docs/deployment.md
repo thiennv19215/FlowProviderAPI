@@ -11,7 +11,7 @@ chmod 600 .env.production
 
 Set an HTTPS public URL, a strong `FLOW_PROVIDER_BOOTSTRAP_API_KEY`, the exact FlowCanvas storage hosts in `FLOW_PROVIDER_CALLER_OWNED_ALLOWED_HOSTS`, and the Cloudflare Tunnel token. Keep the environment file out of Git.
 
-The Cloudflare published application route should forward the Provider hostname to `http://api:8000`. Do not place an interactive challenge on `/v2/*` or `/api/extensions/ws`. Apply normal WAF/DDoS controls and an IP-based rate limit to extension WebSocket handshakes.
+The Cloudflare published application route should forward the Provider hostname to `http://api:8000`. Do not place an interactive challenge on `/v1/gateway/*` or `/api/extensions/ws`. Apply normal WAF/DDoS controls and an IP-based rate limit to extension WebSocket handshakes.
 
 ## Deploy
 
@@ -19,7 +19,7 @@ The Cloudflare published application route should forward the Provider hostname 
 bash scripts/deploy-production.sh
 ```
 
-The helper validates Compose interpolation, builds the API, starts API and tunnel, waits for health, then verifies that `/v2/gateway/generations` is present while legacy `/v1/*` and `/admin` surfaces are absent.
+The helper validates Compose interpolation, builds the API, starts API and tunnel, waits for health, then verifies that `/v1/gateway/generations` is the only public business endpoint and `/admin` is absent.
 
 ## Verify
 

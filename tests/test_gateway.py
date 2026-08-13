@@ -23,7 +23,7 @@ def image_payload():
 
 def test_runtime_and_surface_are_stateless_gateway_only():
     app = gateway_app()
-    assert set(app.openapi()["paths"]) == {"/v2/gateway/generations"}
+    assert set(app.openapi()["paths"]) == {"/v1/gateway/generations"}
     assert set(vars(app.state.runtime)) == {"settings", "bridge", "extension_manager"}
     with TestClient(app) as client:
         ready = client.get("/health/ready")
@@ -36,10 +36,10 @@ def test_runtime_and_surface_are_stateless_gateway_only():
 def test_gateway_requires_auth_idempotency_and_online_extension():
     app = gateway_app()
     with TestClient(app) as client:
-        assert client.post("/v2/gateway/generations", json=image_payload()).status_code == 401
-        missing_key = client.post("/v2/gateway/generations",
+        assert client.post("/v1/gateway/generations", json=image_payload()).status_code == 401
+        missing_key = client.post("/v1/gateway/generations",
             headers={"Authorization": "Bearer fpa_gateway_test"}, json=image_payload())
-        unavailable = client.post("/v2/gateway/generations", headers=headers(), json=image_payload())
+        unavailable = client.post("/v1/gateway/generations", headers=headers(), json=image_payload())
     assert missing_key.status_code == 400
     assert missing_key.json()["error"]["code"] == "IDEMPOTENCY_KEY_REQUIRED"
     assert unavailable.status_code == 503
@@ -65,8 +65,8 @@ def test_gateway_image_happy_path(monkeypatch):
     app = gateway_app()
     monkeypatch.setattr(app.state.runtime.bridge, "ready_connections", lambda **_kwargs: [connection])
     with TestClient(app) as client:
-        first = client.post("/v2/gateway/generations", headers=headers("flowcanvas-job-42"), json=image_payload())
-        second = client.post("/v2/gateway/generations", headers=headers("flowcanvas-job-42"), json=image_payload())
+        first = client.post("/v1/gateway/generations", headers=headers("flowcanvas-job-42"), json=image_payload())
+        second = client.post("/v1/gateway/generations", headers=headers("flowcanvas-job-42"), json=image_payload())
     assert first.status_code == 200
     assert first.json()["task_id"] == second.json()["task_id"]
     assert first.json()["outputs"][0]["uploaded"] is True
@@ -102,8 +102,8 @@ def test_gateway_video_and_omni_happy_paths(monkeypatch):
             "download_url": "https://storage.example.test/input.png"}],
         "output_destinations": [{"output_index": 0, "upload_url": "https://storage.example.test/output.mp4"}]}
     with TestClient(app) as client:
-        video = client.post("/v2/gateway/generations", headers=headers("video"), json={**base, "kind": "video"})
-        omni = client.post("/v2/gateway/generations", headers=headers("omni"), json={**base, "kind": "omni"})
+        video = client.post("/v1/gateway/generations", headers=headers("video"), json={**base, "kind": "video"})
+        omni = client.post("/v1/gateway/generations", headers=headers("omni"), json={**base, "kind": "omni"})
     assert video.status_code == omni.status_code == 200
     assert calls == ["video", "omni"]
 
@@ -111,7 +111,7 @@ def test_gateway_video_and_omni_happy_paths(monkeypatch):
 def test_schema_rejects_legacy_provider_owned_shape():
     app = gateway_app()
     with TestClient(app) as client:
-        response = client.post("/v2/gateway/generations", headers=headers(), json={
+        response = client.post("/v1/gateway/generations", headers=headers(), json={
             "kind": "image", "prompt": "x", "storage_mode": "provider_owned",
             "media_ids": ["123456789012345"],
             "output_destinations": [{"output_index": 0, "upload_url": "https://storage.example.test/out"}],

@@ -4,7 +4,7 @@ from app.config import Settings
 from app.main import create_app
 
 
-def test_extension_connects_only_on_v2_runtime_path():
+def test_extension_connects_on_gateway_runtime_path():
     app = create_app(Settings(env="test", bootstrap_api_key="test", video_poll_seconds=0))
     with TestClient(app) as client:
         with client.websocket_connect("/api/extensions/ws", subprotocols=["flow-provider-v7"]) as ws:

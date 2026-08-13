@@ -1,6 +1,6 @@
 # FlowCanvas gateway contract
 
-`POST /v2/gateway/generations` is a synchronous server-to-server execution boundary. Required headers are `Authorization: Bearer ...` and a stable `Idempotency-Key` of at most 255 characters.
+`POST /v1/gateway/generations` is a synchronous server-to-server execution boundary. Required headers are `Authorization: Bearer ...` and a stable `Idempotency-Key` of at most 255 characters.
 
 ```json
 {

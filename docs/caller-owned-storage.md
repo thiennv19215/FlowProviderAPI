@@ -1,8 +1,8 @@
-# Caller-owned storage V2
+# Caller-owned storage
 
 ## Gateway-only deployment
 
-FlowCanvas V2 is the only deployment mode. It does not contain a database
+The FlowCanvas gateway is the only deployment mode. It does not contain a database
 engine, worker, Provider asset storage, or R2 client.
 FlowCanvas persists request/idempotency state and owns every durable object.
 The Provider accepts scoped FlowCanvas URLs, uses its live Chrome extension to
