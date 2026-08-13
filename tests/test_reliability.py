@@ -121,7 +121,7 @@ def test_restart_recovery_resumes_partial_direct_output_registration(app):
         assert asyncio.run(app.state.runtime.worker.run_once()) is True
         with app.state.runtime.session_factory() as db:
             job=db.get(GenerationJob,"job_recover_outputs")
-            assert job.status=="succeeded"
+            assert job.status=="done"
             assert len(job.result_payload["asset_ids"])==2
             assert db.scalar(select(func.count()).select_from(MediaAsset).where(MediaAsset.source_job_id==job.id))==2
     finally:
@@ -163,7 +163,7 @@ def test_recoverable_output_registration_error_retries_without_generation(app):
 
     with app.state.runtime.session_factory() as db:
         job=db.get(GenerationJob,"job_retry_outputs")
-        assert job.status=="succeeded"
+        assert job.status=="done"
         assert len(job.result_payload["asset_ids"])==1
         assert db.scalar(select(func.count()).select_from(MediaAsset).where(MediaAsset.source_job_id==job.id))==1
 

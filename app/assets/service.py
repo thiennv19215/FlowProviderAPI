@@ -121,7 +121,7 @@ class AssetService:
             await self._reject_pending_object(asset, "uploaded_content_type_mismatch")
         if isinstance(size, int):
             asset.size_bytes = size
-        asset.status = "ready"
+        asset.status = "done"
         db.commit()
         db.refresh(asset)
         return asset
@@ -150,7 +150,7 @@ class AssetService:
         await self.storage.put_file(asset.storage_key, path, asset.mime_type)
         try:
             asset.size_bytes = size_bytes
-            asset.status = "ready"
+            asset.status = "done"
             db.commit()
             db.refresh(asset)
             return asset
@@ -271,7 +271,7 @@ class AssetService:
             asset = MediaAsset(
                 id=aid,
                 client_id=client_id,
-                status="ready",
+                status="done",
                 type=asset_type,
                 storage_key=key,
                 external_url=None,

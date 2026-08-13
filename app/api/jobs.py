@@ -59,7 +59,7 @@ def cancel_generation(
             "JOB_NOT_FOUND",
             "The requested generation job does not exist.",
         )
-    if job.status in {"succeeded", "failed", "canceled"}:
+    if job.status in {"done", "failed", "canceled"}:
         return job_dict(request.app.state.runtime, db, job)
 
     job.cancel_requested = True
@@ -86,7 +86,7 @@ def list_generation_statuses(
 ):
     q = select(GenerationJob).where(GenerationJob.client_id == client.id)
     if status:
-        q = q.where(GenerationJob.status == ("succeeded" if status == "done" else status))
+        q = q.where(GenerationJob.status == status)
     if type:
         q = q.where(GenerationJob.kind == type)
     if after:

@@ -29,7 +29,7 @@ class MediaSync:
             mapping=db.scalar(select(ProjectMediaMapping).where(ProjectMediaMapping.asset_id==asset_id,ProjectMediaMapping.provider_project_id==project_id))
             if mapping:
                 media_id=mapping.provider_media_id;db.commit();return media_id
-            asset=db.scalar(select(MediaAsset).where(MediaAsset.id==asset_id,MediaAsset.client_id==client_id,MediaAsset.status=="ready",MediaAsset.type=="image"))
+            asset=db.scalar(select(MediaAsset).where(MediaAsset.id==asset_id,MediaAsset.client_id==client_id,MediaAsset.status=="done",MediaAsset.type=="image"))
             if not asset:
                 db.rollback();raise ValueError(f"asset_not_ready:{asset_id}")
             if not asset.mime_type.lower().startswith("image/"):

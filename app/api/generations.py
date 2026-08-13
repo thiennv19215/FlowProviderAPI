@@ -73,11 +73,11 @@ def _validate_reference_assets(request: Request, db, client, data: dict, kind: s
     limit = request.app.state.runtime.settings.max_reference_bytes
     for asset_id in ids:
         asset = by_id.get(asset_id)
-        if not asset or asset.status != "ready":
+        if not asset or asset.status != "done":
             raise APIError(
                 422,
                 "INVALID_MEDIA_REFERENCE",
-                f"Reference media '{asset_id}' is missing or not ready.",
+                f"Reference media '{asset_id}' is missing or not done.",
                 field="reference_media_ids",
             )
         if asset.type != "image" or not asset.mime_type.lower().startswith("image/"):

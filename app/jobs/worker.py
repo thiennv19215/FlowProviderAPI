@@ -203,7 +203,7 @@ class JobWorker:
             asset_ids=[*asset_ids,asset.id]
             progress=dict(job.result_payload or {});progress["asset_ids"]=list(asset_ids);job.result_payload=progress;db.commit()
         if not asset_ids:raise RuntimeError("provider_returned_no_outputs")
-        job.status="succeeded";job.stage="completed";job.result_payload={"asset_ids":list(asset_ids)};job.completed_at=utcnow();job.error_code=None;job.error_message=None;job.lease_owner=None;job.lease_expires_at=None;db.commit()
+        job.status="done";job.stage="completed";job.result_payload={"asset_ids":list(asset_ids)};job.completed_at=utcnow();job.error_code=None;job.error_message=None;job.lease_owner=None;job.lease_expires_at=None;db.commit()
 
     async def _handle_error(self,db,job,exc):
         db.rollback();safe_to_retry=job.stage in {"preparing"} and job.attempt_count<self.runtime.settings.max_attempts_before_dispatch and (not isinstance(exc,ProviderError) or exc.retryable)

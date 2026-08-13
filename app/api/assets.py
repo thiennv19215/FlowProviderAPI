@@ -50,7 +50,7 @@ def _existing_content_asset(db, *, client_id: str, checksum: str, asset_type: st
             MediaAsset.client_id == client_id,
             MediaAsset.checksum_sha256 == checksum,
             MediaAsset.type == asset_type,
-            MediaAsset.status == "ready",
+            MediaAsset.status == "done",
         )
     )
 
@@ -142,8 +142,8 @@ async def get_media_file(
     client=Depends(get_client),
 ):
     asset = request.app.state.runtime.assets.get_owned(db, media_id, client.id)
-    if not asset or asset.status != "ready":
-        raise APIError(404, "MEDIA_NOT_FOUND", "The requested media is not ready.")
+    if not asset or asset.status != "done":
+        raise APIError(404, "MEDIA_NOT_FOUND", "The requested media is not done.")
     if asset.external_url:
         return RedirectResponse(asset.external_url, status_code=307)
     if not asset.storage_key:
