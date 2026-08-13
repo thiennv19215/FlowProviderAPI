@@ -13,6 +13,7 @@ dependencies = [
   "psycopg[binary]>=3.2",
   "httpx>=0.28",
   "python-multipart>=0.0.20",
+  "boto3>=1.35,<2",
 ]
 
 [project.optional-dependencies]
