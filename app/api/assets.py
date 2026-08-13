@@ -152,6 +152,11 @@ async def get_media_file(
             "MEDIA_CONTENT_NOT_FOUND",
             "The requested media has no available content.",
         )
+    download_url = await request.app.state.runtime.assets.storage.create_download_url(
+        asset.storage_key
+    )
+    if download_url:
+        return RedirectResponse(download_url, status_code=307)
     data = await request.app.state.runtime.assets.bytes_for_asset(asset)
     return Response(
         content=data,
