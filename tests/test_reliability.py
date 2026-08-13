@@ -32,7 +32,7 @@ class AmbiguousDispatchFailureProvider(PreparationFailureProvider):
 
 def test_preparation_failure_is_requeued(client, app, auth):
     app.state.runtime.providers.register(PreparationFailureProvider())
-    response=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":"prep_fail","workspace":{"key":"retry:prep"}})
+    response=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":"prep_fail"})
     job_id=response.json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
     body=client.get(f"/v1/status/{job_id}",headers=auth).json()
@@ -41,7 +41,7 @@ def test_preparation_failure_is_requeued(client, app, auth):
 
 def test_ambiguous_dispatch_failure_is_not_replayed(client, app, auth):
     app.state.runtime.providers.register(AmbiguousDispatchFailureProvider())
-    response=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":"dispatch_fail","workspace":{"key":"retry:dispatch"}})
+    response=client.post("/v1/images/generations",headers=auth,json={"prompt":"cat","provider":"dispatch_fail"})
     job_id=response.json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
     body=client.get(f"/v1/status/{job_id}",headers=auth).json()
@@ -55,7 +55,7 @@ def test_restart_recovery_resumes_poll_without_redispatch(app):
         now=utcnow()
         job=GenerationJob(
             id="job_recover_poll",client_id=client_row.id,kind="video",provider="fake",
-            workspace_key="recover:video",status="running",stage="provider_running",priority=20,
+            status="running",stage="provider_running",priority=20,
             request_payload={"prompt":"x"},provider_operation_id='{"operation_ids":["op_1"],"workflows":[]}',
             next_run_at=now+timedelta(minutes=5),lease_owner="dead-worker",
             lease_expires_at=now-timedelta(seconds=1),attempt_count=1,
@@ -81,7 +81,7 @@ def test_restart_recovery_resumes_partial_direct_output_registration(app):
         now=utcnow()
         job=GenerationJob(
             id="job_recover_outputs",client_id=client_row.id,kind="image",provider="fake",
-            workspace_key="recover:outputs",status="running",stage="storing_outputs",priority=20,
+            status="running",stage="storing_outputs",priority=20,
             request_payload={"prompt":"x"},result_payload={"_provider_outputs":direct_outputs,"asset_ids":[]},
             provider_project_id="flow-project-recover",next_run_at=now+timedelta(minutes=5),
             lease_owner="dead-worker",lease_expires_at=now-timedelta(seconds=1),attempt_count=1,
@@ -113,7 +113,7 @@ def test_recoverable_output_registration_error_retries_without_generation(app):
         client_row=ApiClient(id="cli_output_retry",name="Output Retry",key_prefix="fpa_retry",key_hash="2"*64,priority=20,max_concurrent_jobs=5,rate_limit_per_minute=100)
         job=GenerationJob(
             id="job_retry_outputs",client_id=client_row.id,kind="image",provider="fake",
-            workspace_key="retry:outputs",status="running",stage="storing_outputs",priority=20,
+            status="running",stage="storing_outputs",priority=20,
             request_payload={"prompt":"x"},result_payload={"_provider_outputs":[direct_output]},
             provider_project_id="flow-project-retry",next_run_at=utcnow(),attempt_count=1,
         )
@@ -149,7 +149,7 @@ def test_omni_generation_uses_same_durable_job_contract(client, app, auth):
     asset_id=upload_media(client,auth,filename="ref.png",data=b"ref",content_type="image/png")
     response=client.post("/v1/videos/omni-generations",headers=auth,json={
         "prompt":"dance","provider":"fake","duration":8,"aspect_ratio":"9:16",
-        "reference_media_ids":[asset_id],"workspace":{"key":"omni:e2e"},
+        "reference_media_ids":[asset_id],
     })
     job_id=response.json()["task_id"]
     assert asyncio.run(app.state.runtime.worker.run_once()) is True
