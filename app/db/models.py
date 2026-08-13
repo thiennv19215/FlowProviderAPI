@@ -47,7 +47,6 @@ class GenerationJob(Base):
     kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     provider: Mapped[str] = mapped_column(String(64), default="google_flow", nullable=False)
     model: Mapped[str | None] = mapped_column(String(120))
-    workspace_key: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False, index=True)
     stage: Mapped[str] = mapped_column(String(64), default="queued", nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=20, nullable=False)
@@ -94,10 +93,9 @@ class MediaAsset(Base):
 
 class WorkspaceProject(Base):
     __tablename__ = "workspace_projects"
-    __table_args__ = (UniqueConstraint("client_id", "workspace_key", "provider", "provider_account_id", name="uq_workspace_provider_account"),)
+    __table_args__ = (UniqueConstraint("client_id", "provider", "provider_account_id", name="uq_client_provider_account"),)
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     client_id: Mapped[str] = mapped_column(ForeignKey("api_clients.id", ondelete="CASCADE"), index=True)
-    workspace_key: Mapped[str] = mapped_column(String(255), nullable=False)
     provider: Mapped[str] = mapped_column(String(64), nullable=False)
     provider_account_id: Mapped[str] = mapped_column(String(120), nullable=False)
     provider_project_id: Mapped[str] = mapped_column(String(255), nullable=False)
