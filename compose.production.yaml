@@ -26,6 +26,8 @@ services:
       - .env.production
     environment:
       FLOW_PROVIDER_DATABASE_URL: postgresql+psycopg://flowprovider:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.production}@postgres:5432/flowprovider
+      # Required by the deployed /admin dashboard and its control-plane API.
+      FLOW_PROVIDER_ADMIN_API_KEY: ${FLOW_PROVIDER_ADMIN_API_KEY:?set FLOW_PROVIDER_ADMIN_API_KEY in .env.production}
     volumes:
       - flowprovider_assets:/app/.data/assets
     depends_on:

@@ -27,6 +27,8 @@ uvicorn app.main:app --reload
 
 Open `http://localhost:8000/docs` for Swagger. Load `extension/` as an unpacked Chrome extension. For a live Google Flow test, open Google Flow in the same Chrome profile.
 
+Open `http://localhost:8000/admin` for the API-client administration dashboard. It requires `FLOW_PROVIDER_ADMIN_API_KEY`; the entered key stays only in the current tab's memory.
+
 ## Production deployment
 
 The production VPS stack is defined in `compose.production.yaml`: PostgreSQL, FlowProviderAPI, and a remotely-managed Cloudflare Tunnel run together without publishing API or database ports on the VPS.

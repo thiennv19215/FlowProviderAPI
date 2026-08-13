@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import secrets
 
 from sqlalchemy import select
 
 from app.db.models import ApiClient
 from app.ids import new_id
+
+API_KEY_PREFIX = "fpa_live_"
 
 
 def hash_api_key(value: str) -> str:
@@ -15,6 +18,11 @@ def hash_api_key(value: str) -> str:
 
 def key_prefix(value: str) -> str:
     return value[:12]
+
+
+def generate_api_key() -> str:
+    """Generate a client credential whose plaintext is safe to show once."""
+    return API_KEY_PREFIX + secrets.token_urlsafe(32)
 
 
 def ensure_bootstrap_client(session, api_key: str | None) -> None:

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>FlowProvider · API Clients</title>
+  <link rel="stylesheet" href="/admin-assets/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="/admin" aria-label="FlowProvider admin">
+        <span class="brand-mark">F</span>
+        <span><strong>FlowProvider</strong><small>Control plane</small></span>
+      </a>
+      <nav aria-label="Điều hướng chính">
+        <a class="nav-item active" href="/admin"><span>⌁</span> API clients</a>
+        <a class="nav-item" href="/docs"><span>↗</span> API docs</a>
+      </nav>
+      <div class="security-note">
+        <span class="status-dot"></span>
+        <div><strong>Admin session</strong><p>Key chỉ được giữ trong bộ nhớ của tab này.</p></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Access management</p>
+          <h1>API clients</h1>
+          <p class="subtitle">Cấp, theo dõi và thu hồi quyền truy cập FlowProviderAPI.</p>
+        </div>
+        <button id="new-client-button" class="button primary" type="button">＋ Cấp API key</button>
+      </header>
+
+      <section id="auth-panel" class="auth-card">
+        <div>
+          <p class="eyebrow">Kết nối an toàn</p>
+          <h2>Nhập Admin Key</h2>
+          <p>Key được gửi qua <code>X-Admin-Key</code> và không được lưu vào trình duyệt.</p>
+        </div>
+        <form id="auth-form" class="auth-form">
+          <label for="admin-key">FLOW_PROVIDER_ADMIN_API_KEY</label>
+          <div class="secret-input">
+            <input id="admin-key" type="password" autocomplete="off" spellcheck="false" required placeholder="Nhập admin key…">
+            <button id="toggle-key" class="icon-button" type="button" aria-label="Hiện hoặc ẩn key">Hiện</button>
+          </div>
+          <button class="button dark" type="submit">Kết nối</button>
+        </form>
+      </section>
+
+      <section id="dashboard" hidden>
+        <div class="stats">
+          <article><span>Tổng client</span><strong id="total-count">0</strong></article>
+          <article><span>Đang hoạt động</span><strong id="active-count">0</strong></article>
+          <article><span>Đã thu hồi</span><strong id="revoked-count">0</strong></article>
+        </div>
+
+        <div class="table-card">
+          <div class="table-heading">
+            <div><h2>Danh sách client</h2><p>Key đầy đủ không thể xem lại sau khi đã cấp.</p></div>
+            <div class="table-actions">
+              <input id="search" type="search" placeholder="Tìm theo tên hoặc ID…" aria-label="Tìm client">
+              <button id="refresh-button" class="button ghost" type="button">Làm mới</button>
+              <button id="disconnect-button" class="button ghost" type="button">Ngắt kết nối</button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>Client</th><th>Key prefix</th><th>Giới hạn</th><th>Ngày cấp</th><th>Trạng thái</th><th></th></tr></thead>
+              <tbody id="client-list"></tbody>
+            </table>
+            <div id="empty-state" class="empty" hidden>Chưa có API client nào.</div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="create-dialog">
+    <form id="create-form" class="dialog-form">
+      <div class="dialog-heading"><div><p class="eyebrow">New credential</p><h2>Cấp API key</h2></div><button class="close-button" type="button" data-close aria-label="Đóng">×</button></div>
+      <label>Tên người dùng / ứng dụng<input name="name" required minlength="1" maxlength="160" placeholder="Ví dụ: Marketing team"></label>
+      <div class="field-grid">
+        <label>Job đồng thời<input name="max_concurrent_jobs" type="number" value="5" min="1" max="1000" required></label>
+        <label>Request / phút<input name="rate_limit_per_minute" type="number" value="120" min="1" max="100000" required></label>
+      </div>
+      <label>Độ ưu tiên<input name="priority" type="number" value="20" min="0" max="100" required><small>Giá trị cao hơn được xếp lịch trước.</small></label>
+      <div class="dialog-actions"><button class="button ghost" type="button" data-close>Hủy</button><button class="button primary" type="submit">Tạo API key</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="key-dialog">
+    <div class="dialog-form">
+      <div class="success-icon">✓</div><h2>API key đã được cấp</h2>
+      <p>Hãy sao chép và gửi qua kênh an toàn. Key này sẽ không hiển thị lại.</p>
+      <div class="issued-key"><code id="issued-key"></code><button id="copy-key" class="button dark" type="button">Sao chép</button></div>
+      <button id="key-done" class="button primary full" type="button">Tôi đã lưu key</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/admin-assets/app.js" defer></script>
+</body>
+</html>

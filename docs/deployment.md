@@ -58,8 +58,11 @@ Use them for, respectively:
 
 - `POSTGRES_PASSWORD`
 - `FLOW_PROVIDER_BOOTSTRAP_API_KEY` on the first deployment (client bootstrap only)
+- `FLOW_PROVIDER_ADMIN_API_KEY` for the deployed administration dashboard
 
-Do not reuse the same value for multiple credentials.
+Do not reuse the same value for multiple credentials. The production Compose
+configuration requires `FLOW_PROVIDER_ADMIN_API_KEY`; deployment stops during
+configuration validation when it is empty or missing.
 
 Set `FLOW_PROVIDER_PUBLIC_BASE_URL` to the final HTTPS hostname, for example:
 
@@ -72,6 +75,19 @@ Production startup intentionally fails unless PostgreSQL, HTTPS, and durable ref
 ### Bootstrap API key
 
 `FLOW_PROVIDER_BOOTSTRAP_API_KEY` creates a normal API client if that key does not already exist. Keep the generated key in a password manager. After the client has been persisted in PostgreSQL, the environment value may be cleared on later deployments; the database client remains. Provider administration is separate: configure `FLOW_PROVIDER_ADMIN_API_KEY` and send it in the `X-Admin-Key` header for control-plane endpoints.
+
+### Administration dashboard
+
+The dashboard is bundled into the API image and is deployed at:
+
+```text
+https://provider.example.com/admin
+```
+
+Enter the configured `FLOW_PROVIDER_ADMIN_API_KEY` when prompted. The browser
+keeps it only in the current tab's JavaScript memory; refreshing or closing the
+tab requires entering it again. The plaintext key is never sent to the API
+except in the `X-Admin-Key` header.
 
 ## 3. Configure reference-upload storage
 
@@ -117,6 +133,13 @@ Treat this hostname as an API/WebSocket origin:
 - if a valid API request is blocked with Cloudflare error `1010`, open its Ray ID in **Security events** and narrow or remove the matching custom rule for this API hostname. Do not use a browser-integrity or interactive-challenge rule on `/v1/*`;
 - the connector endpoint is intentionally unauthenticated, so add an IP-based rate-limit rule for WebSocket handshake requests to `/api/extensions/ws`; do not use an interactive challenge for that path.
 
+For defense in depth, create a Cloudflare Access self-hosted application for
+the admin UI paths `/admin` and `/admin-assets/*`, restricted to administrator
+identities. Do not apply an interactive Access policy to `/v1/*` or
+`/api/extensions/ws`: backend clients and the Chrome connector cannot complete
+an interactive login. The `X-Admin-Key` check remains mandatory even when the
+dashboard is behind Access.
+
 ## 5. Deploy
 
 Validate and deploy with:
@@ -132,6 +155,8 @@ The helper:
 3. rebuilds the API from the checked-out repository revision;
 4. starts PostgreSQL, API, and Tunnel in dependency order;
 5. waits for the API container healthcheck.
+6. verifies the deployed admin HTML, JavaScript, CSS, and an authenticated
+   `GET /v1/api-clients` call from inside the API container.
 
 The API image runs `alembic upgrade head` before starting Uvicorn, so schema migrations are applied on container startup.
 
@@ -157,6 +182,15 @@ Swagger remains available at:
 ```text
 https://provider.example.com/docs
 ```
+
+The administration dashboard is available at:
+
+```text
+https://provider.example.com/admin
+```
+
+Verify it without exposing the Admin Key on the command line by opening the
+page in a browser and entering the secret when prompted.
 
 If `/health/live` works inside Docker but not through the hostname, inspect the `cloudflared` logs and the Tunnel published application route before changing the API.
 

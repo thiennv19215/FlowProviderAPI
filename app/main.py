@@ -3,12 +3,16 @@ from __future__ import annotations
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.accounts import router as accounts_router
+from app.api.api_clients import router as api_clients_router
 from app.api.assets import delivery_router as media_delivery_router, router as assets_router
 from app.api.errors import APIError, PUBLIC_ERROR_RESPONSES, api_error_handler, http_error_handler, unexpected_error_handler, validation_error_handler
 from app.api.extensions import router as extensions_admin_router
@@ -22,6 +26,8 @@ from app.jobs.repository import recover_expired
 from app.runtime import build_runtime
 
 logging.basicConfig(level=logging.INFO,format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+ADMIN_UI_DIR = Path(__file__).parent / "admin_ui"
 
 
 def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->FastAPI:
@@ -38,6 +44,11 @@ def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->Fa
 
     app=FastAPI(title="Flow Provider API",version="1.0.0",description="Developer-facing asynchronous AI media generation API.",lifespan=lifespan,responses=PUBLIC_ERROR_RESPONSES)
     app.state.runtime=runtime
+    app.mount("/admin-assets", StaticFiles(directory=ADMIN_UI_DIR), name="admin-assets")
+
+    @app.get("/admin", include_in_schema=False)
+    def admin_ui():
+        return FileResponse(ADMIN_UI_DIR / "index.html")
 
     @app.middleware("http")
     async def request_id_middleware(request:Request,call_next):
@@ -75,7 +86,7 @@ def create_app(settings:Settings|None=None,*,extra_providers:list|None=None)->Fa
     app.add_exception_handler(RequestValidationError,validation_error_handler)
     app.add_exception_handler(StarletteHTTPException,http_error_handler)
     app.add_exception_handler(Exception,unexpected_error_handler)
-    for router in (health_router,generations_router,status_router,assets_router,media_delivery_router,accounts_router,extensions_admin_router,extension_router):app.include_router(router)
+    for router in (health_router,generations_router,status_router,assets_router,media_delivery_router,accounts_router,api_clients_router,extensions_admin_router,extension_router):app.include_router(router)
     return app
 
 app=create_app()

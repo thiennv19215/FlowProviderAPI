@@ -28,6 +28,30 @@ class ErrorResponse(BaseModel):
     error: ErrorObject
 
 
+class ApiClientCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    priority: int = Field(default=20, ge=0, le=100)
+    max_concurrent_jobs: int = Field(default=5, ge=1, le=1000)
+    rate_limit_per_minute: int = Field(default=120, ge=1, le=100000)
+
+
+class ApiClientOutput(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    name: str
+    key_prefix: str
+    enabled: bool
+    priority: int
+    max_concurrent_jobs: int
+    rate_limit_per_minute: int
+    created_at: datetime
+
+
+class ApiClientCreated(ApiClientOutput):
+    api_key: str
+
+
 class FlowGenerationRequest(BaseModel):
     provider: str = Field(default="google_flow", exclude=True)
 
