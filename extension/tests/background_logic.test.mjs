@@ -205,6 +205,31 @@ test('openFlowHome reuses an existing project tab instead of opening another tab
   assert.equal(createCalls, 0);
 });
 
+test('a successful backend connection opens one inactive Flow tab when none exists', async () => {
+  const h = buildHarness();
+  await flush();
+  let createCalls = 0;
+  h.context.chrome.tabs.query = async () => [];
+  h.context.chrome.tabs.create = async (options) => {
+    createCalls += 1;
+    assert.equal(options.url, 'https://labs.google/fx/vi/tools/flow');
+    assert.equal(options.active, false);
+    return { id: 88 };
+  };
+  h.context.chrome.tabs.get = async (tabId) => ({
+    id: tabId,
+    url: 'https://labs.google/fx/vi/tools/flow',
+    status: 'complete',
+  });
+
+  const ws = h.sockets[0];
+  ws.readyState = h.context.WebSocket.OPEN;
+  void ws.onopen();
+  await flush();
+
+  assert.equal(createCalls, 1);
+});
+
 test('concurrent openFlowHome calls create at most one Flow tab', async () => {
   const h = buildHarness();
   await flush();

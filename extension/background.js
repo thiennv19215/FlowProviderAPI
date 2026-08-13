@@ -350,6 +350,13 @@ async function connect() {
     ws.onopen = async () => {
       reconnectAttempt = 0;
       appendActivity("Backend connected", "done");
+      // Session capture and interactive RPCs need a Flow page. Reuse an
+      // existing tab so reconnects do not accumulate background tabs.
+      try {
+        await openFlowHome();
+      } catch (error) {
+        console.warn("Flow Provider could not prepare a Flow tab", error?.message || error);
+      }
       const meta = await getProfileMeta();
       if (ws !== socket || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ type: "extension_ready", installationId: await getInstallationId(), protocolVersion: PROTOCOL_VERSION, connectionId: id("conn"), ...meta }));

@@ -59,7 +59,7 @@ Native compatibility generation endpoints remain available:
 
 Additional operational/client endpoints include `GET /v1/accounts` and `GET /v1/health`.
 
-Backend services should use the [backend integration reference](docs/backend-integration.md) or the smaller [orchestrator contract](docs/orchestrator-contract.md). UI implementations should use the [frontend integration guide](docs/frontend-integration.md).
+Backend services should use the [backend integration reference](docs/backend-integration.md) or the smaller [orchestrator contract](docs/orchestrator-contract.md). Teams updating an existing integration should start with the [endpoint update and migration guide](docs/endpoint-update.md). UI implementations should use the [frontend integration guide](docs/frontend-integration.md).
 
 Operational probes `/health/live` and `/health/ready`, plus the extension-only `/api/health`, remain available but are intentionally hidden from the public OpenAPI document.
 
