@@ -61,7 +61,13 @@ class LocalStorage:
 
 
 class R2Storage:
-    """Cloudflare R2 object storage using the S3-compatible API."""
+    """Cloudflare R2 storage with read fallback for the old local volume.
+
+    All new writes go to R2. During rollout, rows created before the migration
+    may still point at objects that only exist in the mounted local volume, so
+    reads/stat/delete fall back there until those objects are naturally moved
+    or a dedicated migration copies them.
+    """
 
     provider = "r2"
 
@@ -71,6 +77,7 @@ class R2Storage:
 
         self.bucket = settings.r2_bucket
         self.download_url_expires_seconds = settings.r2_download_url_expires_seconds
+        self.legacy_local = LocalStorage(settings.local_storage_path)
         self._client = boto3.client(
             "s3",
             endpoint_url=settings.r2_endpoint_url,
@@ -79,6 +86,17 @@ class R2Storage:
             region_name=settings.r2_region,
             config=Config(signature_version="s3v4"),
         )
+
+    @staticmethod
+    def _is_not_found(exc: Exception) -> bool:
+        response = getattr(exc, "response", None)
+        if not isinstance(response, dict):
+            return False
+        error = response.get("Error") or {}
+        metadata = response.get("ResponseMetadata") or {}
+        return error.get("Code") in {"404", "NoSuchKey", "NotFound"} or metadata.get(
+            "HTTPStatusCode"
+        ) == 404
 
     async def healthcheck(self) -> bool:
         try:
@@ -107,14 +125,20 @@ class R2Storage:
 
     async def delete(self, key: str) -> None:
         await asyncio.to_thread(self._client.delete_object, Bucket=self.bucket, Key=key)
+        await self.legacy_local.delete(key)
 
     async def read_bytes(self, key: str) -> bytes:
-        response = await asyncio.to_thread(
-            self._client.get_object,
-            Bucket=self.bucket,
-            Key=key,
-        )
-        return await asyncio.to_thread(response["Body"].read)
+        try:
+            response = await asyncio.to_thread(
+                self._client.get_object,
+                Bucket=self.bucket,
+                Key=key,
+            )
+            return await asyncio.to_thread(response["Body"].read)
+        except Exception as exc:
+            if not self._is_not_found(exc):
+                raise
+        return await self.legacy_local.read_bytes(key)
 
     async def stat(self, key: str) -> dict[str, Any] | None:
         try:
@@ -124,17 +148,9 @@ class R2Storage:
                 Key=key,
             )
         except Exception as exc:
-            status_code = getattr(getattr(exc, "response", None), "get", lambda *_: {})
-            if callable(status_code):
-                metadata = status_code("ResponseMetadata", {})
-                if isinstance(metadata, dict) and metadata.get("HTTPStatusCode") == 404:
-                    return None
-            response = getattr(exc, "response", None)
-            if isinstance(response, dict):
-                error = response.get("Error") or {}
-                if error.get("Code") in {"404", "NoSuchKey", "NotFound"}:
-                    return None
-            raise
+            if not self._is_not_found(exc):
+                raise
+            return await self.legacy_local.stat(key)
         return {
             "size_bytes": int(response.get("ContentLength") or 0),
             "content_type": response.get("ContentType"),
