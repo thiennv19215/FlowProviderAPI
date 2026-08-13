@@ -79,19 +79,17 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         assert "INJECT_RECAPTCHA" in mock.state.rpc_types
         assert "SW_FETCH" in mock.state.rpc_types
 
-        direct_url = f"{media.base_url}/media/mock-image-1-1"
-        assert job["outputs"][0]["url"] == direct_url
-        content = client.get(
-            f"/media/{job['outputs'][0]['media_id']}",
-            headers=auth,
-            follow_redirects=False,
-        )
-        assert content.status_code == 307
-        assert content.headers["location"] == direct_url
+        output = job["outputs"][0]
+        assert output["url"] == f"http://testserver/media/{output['media_id']}"
+        content = client.get(output["url"], headers=auth, follow_redirects=False)
+        assert content.status_code == 200
+        assert content.content == b"mock-image-bytes"
+        assert content.headers["content-type"].startswith("image/png")
         with app.state.runtime.session_factory() as db:
-            asset = db.scalar(select(MediaAsset).where(MediaAsset.id == job["outputs"][0]["media_id"]))
-            assert asset.external_url == direct_url
-            assert asset.storage_key is None
+            asset = db.scalar(select(MediaAsset).where(MediaAsset.id == output["media_id"]))
+            assert asset.external_url is None
+            assert asset.storage_key
+            assert asset.checksum_sha256
 
         referenced = client.post(
             "/v1/images/generations",
@@ -99,7 +97,7 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
             json={
                 "prompt": "the same product in dramatic lighting",
                 "provider": "google_flow",
-                "reference_media_ids": [job["outputs"][0]["media_id"]],
+                "reference_media_ids": [output["media_id"]],
             },
         )
         assert referenced.status_code == 202
@@ -108,6 +106,8 @@ def test_real_google_flow_stack_image_through_mock_extension(client, app, auth):
         assert referenced_job["status"] == "succeeded"
         assert mock.state.projects_created == 1
         assert mock.state.image_generations == 2
+        # Generated media was already mapped to the same Flow project, so it is
+        # reused without uploading the Provider-owned copy again.
         assert mock.state.uploads == 0
 
 
@@ -137,6 +137,9 @@ def test_real_google_flow_stack_video_and_omni_through_mock_extension(client, ap
         assert done["status"] == "succeeded"
         assert done["outputs"][0]["type"] == "video"
         assert done["outputs"][0]["thumbnail_url"].endswith("-thumbnail")
+        stored_video = client.get(done["outputs"][0]["url"], headers=auth)
+        assert stored_video.status_code == 200
+        assert stored_video.content == b"mock-video-bytes"
 
         omni = client.post(
             "/v1/videos/omni-generations",

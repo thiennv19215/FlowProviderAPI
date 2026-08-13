@@ -92,14 +92,20 @@ def test_production_configuration_rejects_dev_shape():
         Settings(env="production",database_url="sqlite:///bad.db",public_base_url="http://localhost:8000",flow_api_key=None)
 
 
-def test_production_configuration_accepts_local_input_storage():
+def test_production_configuration_requires_provider_owned_r2():
     settings=Settings(
         env="production",
         database_url="postgresql+psycopg://flowprovider:secret@postgres/flowprovider",
         public_base_url="https://api.example.com",
         bootstrap_api_key=None,
+        storage_backend="r2",
+        r2_endpoint_url="https://account.r2.cloudflarestorage.com",
+        r2_access_key_id="access",
+        r2_secret_access_key="secret",
+        r2_bucket="flowprovider-media",
     )
-    assert settings.local_storage_path
+    assert settings.storage_backend=="r2"
+    assert settings.r2_bucket=="flowprovider-media"
 
 
 def test_extension_heartbeat_defaults_to_one_minute():
