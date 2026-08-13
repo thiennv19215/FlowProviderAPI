@@ -139,9 +139,8 @@ async def get_media_file(
     media_id: MediaId,
     request: Request,
     db=Depends(get_db),
-    client=Depends(get_client),
 ):
-    asset = request.app.state.runtime.assets.get_owned(db, media_id, client.id)
+    asset = request.app.state.runtime.assets.get_public(db, media_id)
     if not asset or asset.status != "done":
         raise APIError(404, "MEDIA_NOT_FOUND", "The requested media is not done.")
     if asset.external_url:

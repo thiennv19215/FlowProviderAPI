@@ -65,7 +65,7 @@ class GoogleFlowProvider:
         if result.get("error"):
             exc=result.get("exception") or RuntimeError(result["error"]);self.bridge.mark_provider_failure(account_id,result["error"],status_code=getattr(exc,"status_code",None));raise exc
         await self.bridge.refresh_account(account_id)
-        return [ProviderMedia(media_id=e.get("media_id"),url=e.get("url"),mime_type="image/png") for e in result.get("media_entries") or []]
+        return [ProviderMedia(media_id=e.get("media_id"),url=e.get("url"),bytes_data=e.get("bytes_data"),mime_type="image/png") for e in result.get("media_entries") or []]
 
     async def dispatch_video(self, *, job, db, context: ProviderContext):
         account_id=context.account_id

@@ -192,9 +192,15 @@ def test_generated_image_parser_never_promotes_thumbnail_to_output():
             }
         }
     )
-    assert parsed[0]["url"] is None
+    assert "url" not in parsed[0]
     assert parsed[0]["generated_url"] == "https://lh3.googleusercontent.com/full.png"
     assert parsed[0]["thumbnail_url"] == "https://lh3.googleusercontent.com/thumb.png"
+
+
+def test_generated_image_uses_nested_generation_id_not_outer_item_name():
+    parsed=media_entries({"data":{"media":[{"name":"outer-media-item","image":{"generatedImage":{"mediaGenerationId":"exact-generated-image","fifeUrl":"https://lh3.googleusercontent.com/exact.jpg"}}}]}})
+    assert parsed[0]["media_id"]=="exact-generated-image"
+    assert parsed[0]["generated_url"]=="https://lh3.googleusercontent.com/exact.jpg"
 
 
 def test_generated_image_parser_does_not_use_thumbnail_without_full_url():
@@ -211,11 +217,11 @@ def test_generated_image_parser_does_not_use_thumbnail_without_full_url():
             }
         }
     )
-    assert parsed[0]["url"] is None
+    assert "url" not in parsed[0]
     assert parsed[0]["generated_url"] is None
 
 
-def test_generated_image_resolves_original_before_generated_fallback():
+def test_generated_image_uses_url_from_exact_response_item_before_resolver():
     class Client:
         def __init__(self):
             self.resolved=[]
@@ -240,9 +246,60 @@ def test_generated_image_resolves_original_before_generated_fallback():
 
     client=Client()
     result=asyncio.run(FlowSDK(client).gen_image(prompt="cat",project_id="project",paygate_tier="PAYGATE_TIER_ONE",aspect_ratio="IMAGE_ASPECT_RATIO_SQUARE",image_model="NANO_BANANA_PRO"))
-    assert client.resolved==[("flow-image-1",False)]
-    assert result["media_entries"][0]["url"]=="https://lh3.googleusercontent.com/original.png"
+    assert client.resolved==[]
+    assert result["media_entries"][0]["url"]=="https://lh3.googleusercontent.com/rendered.png"
     assert "generated_url" not in result["media_entries"][0]
+
+
+def test_generated_image_resolves_by_id_only_without_item_output_url():
+    class Client:
+        def __init__(self):
+            self.resolved=[]
+
+        async def api_request(self,**kwargs):
+            return {"data":{"media":[{"name":"flow-image-1","thumbnailUrl":"https://lh3.googleusercontent.com/thumb.png"}]}}
+
+        async def resolve_media_url(self,media_id,*,thumbnail=False):
+            self.resolved.append((media_id,thumbnail))
+            return "https://lh3.googleusercontent.com/resolved.png"
+
+    client=Client()
+    result=asyncio.run(FlowSDK(client).gen_image(prompt="cat",project_id="project",paygate_tier="PAYGATE_TIER_ONE",aspect_ratio="IMAGE_ASPECT_RATIO_SQUARE",image_model="NANO_BANANA_PRO"))
+    assert client.resolved==[("flow-image-1",False)]
+    assert result["media_entries"][0]["url"]=="https://lh3.googleusercontent.com/resolved.png"
+
+
+def test_generated_image_decodes_inline_bytes_when_url_is_absent():
+    class Client:
+        def __init__(self):
+            self.resolved=[]
+
+        async def api_request(self,**kwargs):
+            return {"data":{"media":[{"name":"outer","image":{"generatedImage":{"mediaGenerationId":"generated","encodedImage":base64.b64encode(b"exact-image").decode("ascii")}}}]}}
+
+        async def resolve_media_url(self,media_id,*,thumbnail=False):
+            self.resolved.append(media_id)
+            return "https://lh3.googleusercontent.com/wrong-image.jpg"
+
+    client=Client()
+    result=asyncio.run(FlowSDK(client).gen_image(prompt="cat",project_id="project",paygate_tier="PAYGATE_TIER_ONE",aspect_ratio="IMAGE_ASPECT_RATIO_SQUARE",image_model="NANO_BANANA_PRO"))
+    entry=result["media_entries"][0]
+    assert entry["media_id"]=="generated"
+    assert entry["url"] is None
+    assert entry["bytes_data"]==b"exact-image"
+    assert client.resolved==[]
+
+
+def test_generated_image_prefers_nested_fife_url_over_outer_download_url():
+    class Client:
+        async def api_request(self,**kwargs):
+            return {"data":{"media":[{"name":"outer","downloadUrl":"https://lh3.googleusercontent.com/legacy.jpg","image":{"generatedImage":{"mediaGenerationId":"generated","fifeUrl":"https://lh3.googleusercontent.com/exact.jpg"}}}]}}
+
+        async def resolve_media_url(self,*args,**kwargs):
+            raise AssertionError("resolver must not run")
+
+    result=asyncio.run(FlowSDK(Client()).gen_image(prompt="cat",project_id="project",paygate_tier="PAYGATE_TIER_ONE",aspect_ratio="IMAGE_ASPECT_RATIO_SQUARE",image_model="NANO_BANANA_PRO"))
+    assert result["media_entries"][0]["url"]=="https://lh3.googleusercontent.com/exact.jpg"
 
 
 def test_video_output_keeps_thumbnail_metadata(client, app, auth, monkeypatch):

@@ -357,3 +357,13 @@ class AssetService:
                 MediaAsset.client_id == client_id,
             )
         )
+
+    @staticmethod
+    def get_public(db, asset_id: str) -> MediaAsset | None:
+        """Resolve an opaque media delivery ID without API authentication.
+
+        The media ID acts as the bearer capability for the content route. All
+        metadata and management APIs remain tenant-authenticated.
+        """
+
+        return db.get(MediaAsset, asset_id)

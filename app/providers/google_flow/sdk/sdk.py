@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import uuid
 from urllib.parse import quote
@@ -44,11 +45,18 @@ class FlowSDK:
         if (err:=flow_error(resp)): return {"error":err.message,"exception":err,"raw":resp}
         entries=media_entries(resp)
         for entry in entries:
-            if not entry.get("url") and entry.get("media_id"):
+            # The generated URL is attached to this exact response item. Prefer
+            # it over resolving by media ID, which may return stale/wrong media
+            # while Flow's media index is still converging after generation.
+            entry["url"]=entry.pop("generated_url",None)
+            encoded=entry.pop("encoded_image",None)
+            entry["bytes_data"]=base64.b64decode(encoded) if not entry.get("url") and isinstance(encoded,str) and encoded else None
+            if not entry.get("url") and entry.get("bytes_data") is None:
+                entry["url"]=entry.pop("download_url",None)
+            else:
+                entry.pop("download_url",None)
+            if not entry.get("url") and entry.get("bytes_data") is None and entry.get("media_id"):
                 entry["url"]=await self.client.resolve_media_url(entry["media_id"])
-            if not entry.get("url"):
-                entry["url"]=entry.get("generated_url")
-            entry.pop("generated_url",None)
         return {"media_entries":entries,"media_ids":[e["media_id"] for e in entries],"raw":resp}
 
     async def gen_video(self, *, prompt: str, project_id: str, start_media_id: str, aspect_ratio: str, paygate_tier: str, video_quality: str="lite") -> dict:

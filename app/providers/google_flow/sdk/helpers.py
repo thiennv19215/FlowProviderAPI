@@ -73,7 +73,8 @@ def media_entries(resp: Any) -> list[dict]:
         image=item.get("image") if isinstance(item.get("image"),dict) else {}
         generated=image.get("generatedImage") if isinstance(image.get("generatedImage"),dict) else {}
         generated_url=generated.get("fifeUrl") or generated.get("url")
-        out.append({"media_id":item["name"],"url":download_url,"generated_url":generated_url,"thumbnail_url":item.get("thumbnailUrl"),"mediaType":item.get("mediaFormat") or "image"})
+        media_id=generated.get("mediaGenerationId") or generated.get("mediaId") or item["name"]
+        out.append({"media_id":media_id,"generated_url":generated_url,"encoded_image":generated.get("encodedImage"),"download_url":download_url,"thumbnail_url":item.get("thumbnailUrl"),"mediaType":item.get("mediaFormat") or "image"})
     return out
 
 

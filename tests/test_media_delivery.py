@@ -10,7 +10,7 @@ def test_local_media_is_streamed_by_api(client, auth):
         content_type="image/png",
     )
 
-    response = client.get(f"/media/{media_id}", headers=auth)
+    response = client.get(f"/media/{media_id}")
 
     assert response.status_code == 200
     assert response.content == b"local-image"
@@ -38,7 +38,7 @@ def test_r2_media_redirects_to_presigned_url(client, app, auth, monkeypatch):
     )
 
     response = client.get(
-        f"/media/{media_id}", headers=auth, follow_redirects=False
+        f"/media/{media_id}", follow_redirects=False
     )
 
     assert response.status_code == 307
@@ -68,7 +68,21 @@ def test_missing_r2_object_falls_back_to_legacy_local(client, app, auth, monkeyp
         create_download_url,
     )
 
-    response = client.get(f"/media/{media_id}", headers=auth)
+    response = client.get(f"/media/{media_id}")
 
     assert response.status_code == 200
     assert response.content == b"legacy-image"
+
+
+def test_media_metadata_still_requires_api_key(client, auth):
+    media_id = upload_media(
+        client,
+        auth,
+        filename="private-metadata.png",
+        data=b"public-content-private-metadata",
+        content_type="image/png",
+    )
+
+    response = client.get(f"/v1/media/{media_id}")
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "INVALID_API_KEY"
