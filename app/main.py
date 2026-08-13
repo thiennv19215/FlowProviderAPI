@@ -15,7 +15,7 @@ from app.api.errors import (
     unexpected_error_handler,
     validation_error_handler,
 )
-from app.api.gateway_only import router as gateway_router
+from app.api.generations import router as generations_router
 from app.api.health import router as health_router
 from app.config import Settings, get_settings
 from app.extension.gateway import router as extension_router
@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     app = FastAPI(
-        title="Flow Provider Gateway",
+        title="Flow Provider API",
         version="2.0.0",
         description="Stateless Google Flow execution gateway for FlowCanvas.",
         responses=PUBLIC_ERROR_RESPONSES,
@@ -48,7 +48,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(StarletteHTTPException, http_error_handler)
     app.add_exception_handler(Exception, unexpected_error_handler)
-    for router in (health_router, gateway_router, extension_router):
+    for router in (health_router, generations_router, extension_router):
         app.include_router(router)
     return app
 

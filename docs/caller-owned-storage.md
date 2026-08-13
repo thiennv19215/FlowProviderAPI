@@ -1,6 +1,6 @@
 # Caller-owned storage
 
-## Gateway-only deployment
+## Stateless deployment
 
 The FlowCanvas gateway is the only deployment mode. It does not contain a database
 engine, worker, Provider asset storage, or R2 client.

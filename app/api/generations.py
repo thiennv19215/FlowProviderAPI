@@ -22,7 +22,7 @@ from app.api.schemas import JobOutput, TaskMediaOutput, UnifiedGenerationRequest
 from app.providers.google_flow.client import BoundFlowClient
 from app.providers.google_flow.sdk import FlowSDK
 
-router = APIRouter(tags=["Gateway"])
+router = APIRouter(tags=["Generations"])
 IMAGE_ASPECT = {"1:1": "IMAGE_ASPECT_RATIO_SQUARE", "16:9": "IMAGE_ASPECT_RATIO_LANDSCAPE", "9:16": "IMAGE_ASPECT_RATIO_PORTRAIT"}
 VIDEO_ASPECT = {"16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE", "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT"}
 PUBLIC_IMAGE_MODELS = {"banana_pro": "NANO_BANANA_PRO", "banana_2": "NANO_BANANA_2"}
@@ -33,7 +33,7 @@ def _authorize(settings, authorization: str | None) -> None:
     expected = settings.bootstrap_api_key
     supplied = authorization.removeprefix("Bearer ").strip() if authorization else ""
     if not expected:
-        raise APIError(503, "GATEWAY_AUTH_UNAVAILABLE", "Gateway API key is not configured.")
+        raise APIError(503, "API_AUTH_UNAVAILABLE", "Provider API key is not configured.")
     if not hmac.compare_digest(expected, supplied):
         raise APIError(401, "INVALID_API_KEY", "A valid Provider API key is required.")
 
@@ -218,7 +218,7 @@ async def _generate_entries(payload, sdk, project_id: str, references: list[str]
     return await _poll_video(sdk, dispatch, project_id, settings)
 
 
-@router.post("/v1/gateway/generations", response_model=JobOutput)
+@router.post("/v1/generations", response_model=JobOutput)
 async def generate(
     payload: UnifiedGenerationRequest,
     request: Request,
@@ -231,7 +231,7 @@ async def generate(
     if not idempotency_key or not 1 <= len(idempotency_key) <= 255:
         raise APIError(400, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key is required and must not exceed 255 characters.")
     if payload.storage_mode != "caller_owned":
-        raise APIError(422, "CALLER_OWNED_REQUIRED", "Gateway-only requests must use caller-owned storage.")
+        raise APIError(422, "CALLER_OWNED_REQUIRED", "Generation requests must use caller-owned storage.")
     _validate_request(payload)
     allowed = _caller_hosts(settings)
     if not allowed:

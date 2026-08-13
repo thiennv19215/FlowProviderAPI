@@ -4,7 +4,7 @@ Stateless Google Flow execution gateway for FlowCanvas through a Chrome MV3 conn
 
 ## Production contract
 
-FlowCanvas calls `POST /v1/gateway/generations` with:
+FlowCanvas calls `POST /v1/generations` with:
 
 - `Authorization: Bearer <FLOW_PROVIDER_BOOTSTRAP_API_KEY>`
 - a stable `Idempotency-Key` for the logical FlowCanvas submission
