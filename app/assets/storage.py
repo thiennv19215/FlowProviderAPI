@@ -59,6 +59,11 @@ class LocalStorage:
     async def exists(self, key: str) -> bool:
         return await self.stat(key) is not None
 
+    async def create_download_url(
+        self, key: str, *, expires_seconds: int | None = None
+    ) -> str | None:
+        return None
+
 
 class R2Storage:
     """Cloudflare R2 storage with read fallback for the old local volume.
@@ -134,7 +139,11 @@ class R2Storage:
                 Bucket=self.bucket,
                 Key=key,
             )
-            return await asyncio.to_thread(response["Body"].read)
+            body = response["Body"]
+            try:
+                return await asyncio.to_thread(body.read)
+            finally:
+                body.close()
         except Exception as exc:
             if not self._is_not_found(exc):
                 raise
@@ -161,7 +170,19 @@ class R2Storage:
     async def exists(self, key: str) -> bool:
         return await self.stat(key) is not None
 
-    def create_download_url(self, key: str, *, expires_seconds: int | None = None) -> str:
+    async def create_download_url(
+        self, key: str, *, expires_seconds: int | None = None
+    ) -> str | None:
+        try:
+            await asyncio.to_thread(
+                self._client.head_object,
+                Bucket=self.bucket,
+                Key=key,
+            )
+        except Exception as exc:
+            if self._is_not_found(exc):
+                return None
+            raise
         return self._client.generate_presigned_url(
             "get_object",
             Params={"Bucket": self.bucket, "Key": key},

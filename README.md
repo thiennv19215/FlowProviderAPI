@@ -67,7 +67,7 @@ Operational probes `/health/live` and `/health/ready`, plus the extension-only `
 
 The current V1 preserves provider account identity across extension reconnects, invalidates stale signed-out accounts, reserves estimated credits from active jobs, uses duration-aware Omni credit costs, distinguishes terminal provider failures from transient polling failures, and bounds consecutive polling failures so jobs cannot remain `running` forever on a persistent provider error.
 
-Provider output URLs are host-allowlisted before they enter the public result. User-supplied references are validated, SHA-256 content-deduplicated per API client and stored by `POST /v1/media`. Direct Flow URLs are controlled by the upstream provider and may expire or be revoked; callers that need durable results should copy them to their own storage promptly.
+Provider output URLs are host-allowlisted, downloaded and copied into Provider-owned storage before they enter the public result. User-supplied references are validated, SHA-256 content-deduplicated per API client and stored by `POST /v1/media`. Public media URLs keep the Provider API as the authorization boundary: R2-backed objects are delivered through short-lived presigned redirects, while legacy local objects are streamed by the API during migration.
 
 The public extension WebSocket accepts unauthenticated connector registrations by design. Keep Cloudflare WAF/DDoS protections enabled and apply an IP-based rate limit to WebSocket handshakes for `/api/extensions/ws` without an interactive challenge.
 
