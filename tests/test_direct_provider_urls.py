@@ -199,9 +199,10 @@ def test_generated_image_parser_never_promotes_thumbnail_to_output():
     assert parsed[0]["thumbnail_url"] == "https://lh3.googleusercontent.com/thumb.png"
 
 
-def test_generated_image_uses_nested_generation_id_not_outer_item_name():
+def test_generated_image_keeps_outer_item_name_for_future_flow_references():
     parsed=media_entries({"data":{"media":[{"name":"outer-media-item","image":{"generatedImage":{"mediaGenerationId":"exact-generated-image","fifeUrl":"https://lh3.googleusercontent.com/exact.jpg"}}}]}})
-    assert parsed[0]["media_id"]=="exact-generated-image"
+    assert parsed[0]["media_id"]=="outer-media-item"
+    assert parsed[0]["output_media_id"]=="exact-generated-image"
     assert parsed[0]["generated_url"]=="https://lh3.googleusercontent.com/exact.jpg"
 
 
@@ -286,7 +287,7 @@ def test_generated_image_decodes_inline_bytes_when_url_is_absent():
     client=Client()
     result=asyncio.run(FlowSDK(client).gen_image(prompt="cat",project_id="project",paygate_tier="PAYGATE_TIER_ONE",aspect_ratio="IMAGE_ASPECT_RATIO_SQUARE",image_model="NANO_BANANA_PRO"))
     entry=result["media_entries"][0]
-    assert entry["media_id"]=="generated"
+    assert entry["media_id"]=="outer"
     assert entry["url"] is None
     assert entry["bytes_data"]==b"exact-image"
     assert client.resolved==[]

@@ -73,8 +73,11 @@ def media_entries(resp: Any) -> list[dict]:
         image=item.get("image") if isinstance(item.get("image"),dict) else {}
         generated=image.get("generatedImage") if isinstance(image.get("generatedImage"),dict) else {}
         generated_url=generated.get("fifeUrl") or generated.get("url")
-        media_id=generated.get("mediaGenerationId") or generated.get("mediaId") or item["name"]
-        out.append({"media_id":media_id,"generated_url":generated_url,"encoded_image":generated.get("encodedImage"),"download_url":download_url,"thumbnail_url":item.get("thumbnailUrl"),"mediaType":item.get("mediaFormat") or "image"})
+        # Flow's outer media name is the asset identifier accepted by
+        # referenceImages/startImage in later image-to-video requests.  The
+        # nested generation ID identifies the rendered output, but is not a
+        # valid reference ID and causes Flow to return NOT_FOUND.
+        out.append({"media_id":item["name"],"output_media_id":generated.get("mediaGenerationId") or generated.get("mediaId"),"generated_url":generated_url,"encoded_image":generated.get("encodedImage"),"download_url":download_url,"thumbnail_url":item.get("thumbnailUrl"),"mediaType":item.get("mediaFormat") or "image"})
     return out
 
 
