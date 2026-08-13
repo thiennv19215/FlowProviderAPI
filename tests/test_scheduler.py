@@ -64,7 +64,7 @@ def test_scheduler_prefers_existing_client_project(app):
     with app.state.runtime.session_factory() as db:
         client_row=_scheduler_client(db,"cli_sticky")
         db.add(WorkspaceProject(
-            id="wsp_sticky",client_id=client_row.id,workspace_key="sticky:workspace",
+            id="wsp_sticky",client_id=client_row.id,
             provider="google_flow",provider_account_id=a.id,provider_project_id="project-a",
         ))
         db.commit()
@@ -82,12 +82,12 @@ def test_scheduler_spills_over_when_client_project_account_is_saturated(app):
     with app.state.runtime.session_factory() as db:
         client_row=_scheduler_client(db,"cli_spill")
         db.add(WorkspaceProject(
-            id="wsp_spill",client_id=client_row.id,workspace_key="spill:workspace",
+            id="wsp_spill",client_id=client_row.id,
             provider="google_flow",provider_account_id=a.id,provider_project_id="project-a",
         ))
         db.add(GenerationJob(
             id="job_saturate_a",client_id=client_row.id,kind="video",provider="google_flow",
-            workspace_key="other",status="running",stage="provider_running",priority=20,
+            status="running",stage="provider_running",priority=20,
             request_payload={"prompt":"x"},provider_account_id=a.id,next_run_at=utcnow(),attempt_count=1,
         ))
         db.commit()
@@ -132,9 +132,8 @@ class SlowProvider:
 async def test_worker_lanes_can_process_jobs_concurrently(client, app, auth):
     provider = SlowProvider()
     app.state.runtime.providers.register(provider)
-    payload = {"prompt": "cat", "provider": "slow", "workspace": {"key": "concurrency:test"}}
+    payload = {"prompt": "cat", "provider": "slow"}
     assert client.post("/v1/images/generations", headers=auth, json=payload).status_code == 202
-    payload["workspace"] = {"key": "concurrency:test:2"}
     assert client.post("/v1/images/generations", headers=auth, json=payload).status_code == 202
 
     worked = await asyncio.gather(
@@ -153,11 +152,11 @@ def test_saturated_high_priority_client_does_not_starve_other_client(app):
         high=ApiClient(id="cli_high",name="High",key_prefix="high",key_hash="1"*64,priority=100,max_concurrent_jobs=1,rate_limit_per_minute=100)
         low=ApiClient(id="cli_low",name="Low",key_prefix="low",key_hash="2"*64,priority=10,max_concurrent_jobs=1,rate_limit_per_minute=100)
         db.add_all([high,low]);db.commit()
-        running=GenerationJob(id="job_high_running",client_id=high.id,kind="image",provider="fake",workspace_key="fair:running",status="running",stage="dispatching",priority=100,request_payload={"prompt":"x"},next_run_at=utcnow(),attempt_count=1)
+        running=GenerationJob(id="job_high_running",client_id=high.id,kind="image",provider="fake",status="running",stage="dispatching",priority=100,request_payload={"prompt":"x"},next_run_at=utcnow(),attempt_count=1)
         db.add(running)
         for i in range(40):
-            db.add(GenerationJob(id=f"job_high_{i}",client_id=high.id,kind="image",provider="fake",workspace_key=f"fair:high:{i}",status="queued",stage="queued",priority=100,request_payload={"prompt":"x"},next_run_at=utcnow()))
-        db.add(GenerationJob(id="job_low_1",client_id=low.id,kind="image",provider="fake",workspace_key="fair:low",status="queued",stage="queued",priority=10,request_payload={"prompt":"x"},next_run_at=utcnow()))
+            db.add(GenerationJob(id=f"job_high_{i}",client_id=high.id,kind="image",provider="fake",status="queued",stage="queued",priority=100,request_payload={"prompt":"x"},next_run_at=utcnow()))
+        db.add(GenerationJob(id="job_low_1",client_id=low.id,kind="image",provider="fake",status="queued",stage="queued",priority=10,request_payload={"prompt":"x"},next_run_at=utcnow()))
         db.commit()
         claimed=claim_next(db,worker_id="fairness-test",lease_seconds=30)
         assert claimed is not None
