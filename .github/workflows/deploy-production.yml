@@ -18,6 +18,8 @@ jobs:
        github.event.workflow_run.head_branch == 'main')
     runs-on: [self-hosted, Linux, X64, flowprovider-production]
     timeout-minutes: 15
+    env:
+      FLOW_PROVIDER_BOOTSTRAP_API_KEY: ${{ secrets.FLOW_PROVIDER_BOOTSTRAP_API_KEY }}
     steps:
       - name: Deploy origin/main
         working-directory: /home/ubuntu/FlowProviderAPI
@@ -29,6 +31,11 @@ jobs:
           git fetch origin main
           git checkout main
           git pull --ff-only origin main
+          if grep -q '^FLOW_PROVIDER_BOOTSTRAP_API_KEY=' .env.production; then
+            sed -i "s|^FLOW_PROVIDER_BOOTSTRAP_API_KEY=.*$|FLOW_PROVIDER_BOOTSTRAP_API_KEY=$FLOW_PROVIDER_BOOTSTRAP_API_KEY|" .env.production
+          else
+            printf '\nFLOW_PROVIDER_BOOTSTRAP_API_KEY=%s\n' "$FLOW_PROVIDER_BOOTSTRAP_API_KEY" >> .env.production
+          fi
           bash scripts/deploy-production.sh
 
       - name: Verify public API
