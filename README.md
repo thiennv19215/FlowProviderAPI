@@ -1,12 +1,16 @@
 # FlowProviderAPI
 
-Google Flow API facade backed by a signed-in Chrome MV3 connector. The service owns only live connection selection and request/response forwarding.
+Google Flow API and orchestration service backed by signed-in Chrome MV3 connectors. The service selects an available account, remembers its managed Google Flow project, and forwards browser-authenticated generation requests.
 
 ## Production contract
 
 Clients call fixed business endpoints for projects, image upload, image generation and video generation. The backend selects an available extension, lets the browser add Google authentication/captcha, and returns the upstream HTTP status and body unchanged.
 
-The facade does not create jobs, poll automatically, download media, manage storage, or create a Provider response model. It contains no database, worker, asset service or admin dashboard.
+Image generation can run in either compatibility mode with an explicit `project_id`, or managed mode without one. In managed mode the Provider chooses a ready extension, recovers or creates that installation/account's `FlowProvider` project once, and caches project and uploaded-media IDs in SQLite. Repeated inline images are matched by SHA-256 within the same installation, Google account, and project and reuse their media ID directly. A rare stale-media `404` invalidates the cache and triggers one upload retry. Google credentials and image bytes remain browser-owned/request-scoped.
+
+Scheduling reserves up to three complete HTTP jobs on one ready extension before moving to the next. Accounts below 20 credits are excluded from video generation but remain eligible for image operations; a successful paid request blocks further paid routing until the balance refresh completes.
+
+Video operation routes are stored by account/project. Status requests without a routing scope are split by owning account and merged, so polling cannot move to a different Google account.
 
 ## Configuration
 

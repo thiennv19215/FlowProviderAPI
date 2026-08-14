@@ -4,10 +4,23 @@ router = APIRouter(tags=["Health"])
 
 
 def _status(request: Request) -> dict:
-    bridge = request.app.state.runtime.bridge
+    runtime = request.app.state.runtime
+    bridge = runtime.bridge
+    try:
+        store_ready = runtime.projects.check()
+    except Exception:
+        store_ready = False
+    provider_accounts = len(bridge.ready_connections())
+    if not store_ready:
+        status = "unavailable"
+    elif provider_accounts == 0:
+        status = "waiting_for_provider"
+    else:
+        status = "ready"
     return {
-        "status": "ready",
-        "provider_accounts": len(bridge.ready_connections()),
+        "status": status,
+        "project_store": "ready" if store_ready else "unavailable",
+        "provider_accounts": provider_accounts,
         "video_lite_ready_accounts": len(bridge.ready_connections(min_credits=20)),
     }
 

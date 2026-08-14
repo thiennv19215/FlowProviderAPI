@@ -21,6 +21,12 @@ class FlowBridge(BaseFlowBridge):
         if data.get("type") == "auth_available" and conn:
             conn.last_seen_at = __import__("time").time()
             conn.suspect_since = None
+            # A Chrome profile can switch Google accounts without reconnecting
+            # the websocket. Never expose the previous identity/balance during
+            # the auth_available -> user_info/credits synchronization window.
+            conn.account_email = None
+            conn.paygate_tier = None
+            conn.credits = None
             conn.flow_key = "browser_owned"
             await self._send_auth_ack(conn)
             __import__("asyncio").create_task(self.refresh_account(conn.id))
@@ -31,6 +37,7 @@ class FlowBridge(BaseFlowBridge):
         conn = self.get(connection_id)
         if not conn or not conn.flow_key:
             return
+        conn.credits = None
         api_key = conn.flow_api_key or self.flow_api_key
         if not api_key:
             conn.last_error = "flow_api_key_unavailable"

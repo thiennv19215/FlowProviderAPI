@@ -1,8 +1,10 @@
 # Provider routing scope
 
-FlowProviderAPI is a stateless third-party facade over one or more signed-in Chrome extension connections. It does not persist projects, media, jobs, account mappings, or application workflow state.
+FlowProviderAPI persists only managed project mappings and image-hash-to-media-ID mappings. It does not persist credentials, image bytes, jobs, or application workflow state.
 
 Google Flow projects and media are account-scoped. In a multi-account deployment, all requests that reuse one Flow `project_id`, `media_id`, or video operation must be routed back to the same Chrome installation/account that created them.
+
+Managed image-generation requests omit `project_id` and send optional Base64 references through `input_images`. For that flow, the Provider owns account selection and project reuse, so the caller does not need to store or return a routing scope. The scope contract below applies only to compatibility endpoints where callers explicitly reuse Google project or media IDs across requests.
 
 ## Contract
 
@@ -70,14 +72,14 @@ The extension `installationId` is stable across WebSocket reconnects, so reconne
 
 ## Responsibility boundary
 
-FlowProviderAPI owns only connection selection, sticky transport routing, browser authentication/captcha injection, and request/response forwarding.
+For managed image generation, FlowProviderAPI owns connection selection, project lookup, media-ID deduplication, browser authentication/captcha injection, and forwarding. The compatibility contract additionally supports caller-managed sticky routing.
 
 The integrating application owns durable state such as:
 
 - which workflow/board/run uses which routing scope;
 - the Google Flow `project_id` paired with that scope;
 - local asset identity and storage;
-- provider media bindings for each project/account context;
+- provider media bindings created outside the managed image-generation flow;
 - failover to another account/project when a routing scope becomes unavailable.
 
 This keeps FlowProviderAPI usable as a third-party endpoint while allowing callers to safely reuse Google Flow media in multi-account deployments.

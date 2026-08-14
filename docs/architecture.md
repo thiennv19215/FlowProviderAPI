@@ -5,9 +5,13 @@ HTTP client -> fixed FlowProviderAPI endpoints -> Chrome extension -> Google Flo
                     auth + routing       browser auth/captcha
 ```
 
-The process creates no SQL engine, worker, asset service or durable Provider record. Only live Chrome connections and in-flight HTTP/RPC state exist in memory.
+The process uses a small SQLite project store and no worker or asset service. Live Chrome connections, account load, cooldowns and in-flight HTTP/RPC state remain in memory.
 
-For a request without a routing scope, the API selects a ready Chrome connection with an available slot and forwards the requested HTTP operation. The extension injects browser-owned Google authentication and captcha. FlowProviderAPI returns the upstream status/body without a business-level response transformation.
+For a request without a routing scope, the API fills the oldest ready Chrome installation up to three concurrent HTTP jobs before moving to the next installation. A reservation is held across every extension RPC in the job. Cooldown, unhealthy, disconnected, and full installations are excluded. Video generation additionally excludes every account with fewer than 20 credits. After a paid operation is accepted, its cached balance is cleared and refreshed before another paid job can use that account. The extension injects browser-owned Google authentication and captcha.
+
+Managed image generation accepts no `project_id`. On the first request for an installation/account pair, the Provider lists projects once to recover an existing project titled `FlowProvider`, or creates it when absent, then stores the mapping in SQLite. Later requests reuse the stored project without listing again. Inline references are hashed and matched only within the selected installation/account/project, then reuse the cached media ID without a preflight network request. A stale-media `404` invalidates the cache and retries with a fresh upload. Explicit `project_id` and routing-scope requests remain available as a compatibility contract.
+
+When an explicit `project_id` matches a managed project in the store, the Provider automatically routes upload, image, and video generation to the owning installation. Repeated `/v1/media` uploads use the same account/project-scoped media cache. Unknown external projects still require the compatibility routing scope.
 
 ## Sticky routing for project-scoped Flow media
 
@@ -19,6 +23,8 @@ The routing scope is an HMAC-signed token derived from the extension installatio
 
 When a supplied scope cannot be served because its bound extension installation is offline, unhealthy, or has no free slot, the API returns `503 ROUTING_SCOPE_UNAVAILABLE`. It never falls back to another Google account for a scoped request because a different account may not own the referenced project, media, or operation.
 
-FlowProviderAPI does not decide when to create a new project, migrate media between projects/accounts, retry on another account, or persist media bindings. Those are responsibilities of the integrating application.
+For managed image generation, FlowProviderAPI decides when to create or recover the account's default project. In compatibility mode, explicit project/media bindings and cross-request recovery remain responsibilities of the integrating application.
 
-Legacy database, worker, media and V1 routes have been removed from the repository and dependency graph.
+The store persists project mappings plus SHA-256-to-Google-media-ID mappings scoped by installation ID, normalized Google account email, and project. Signing a different Google account into the same extension creates a separate namespace and cannot reuse the prior account's project/media IDs. The store never contains Google bearer tokens, cookies, captcha tokens, generated media bytes, or user asset bytes.
+
+Video generation stores every returned operation name with its account and project. A status request groups operation names by account, polls each owning extension, and merges the upstream list results. Unknown operations require the legacy routing scope rather than being sent to an arbitrary account.

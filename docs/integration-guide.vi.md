@@ -25,12 +25,15 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 
 ### Đặc điểm xử lý
 
-- API không lưu project, media, job hoặc kết quả vào database.
+- API lưu mapping project và hash ảnh → media ID theo đúng extension/account/project; đăng nhập Google account khác trên cùng extension không dùng lại mapping cũ.
 - Ảnh upload được chuyển trực tiếp vào Google Flow dưới dạng Base64.
 - Tạo ảnh trả kết quả đồng bộ sau khi Flow xử lý xong.
 - Tạo video trả operation; bên gọi chủ động kiểm tra bằng `/v1/videos/status`.
 - URL ảnh/video do Google Flow cấp có thể hết hạn hoặc bị thu hồi. Bên tích hợp nên tải và lưu kết quả ngay khi hoàn tất.
 - Các media dùng chung một luồng phải thuộc cùng `project_id`.
+- Provider ưu tiên tối đa 3 request đồng thời trên một extension rồi mới chuyển sang extension tiếp theo.
+- Account dưới 20 credits không được chọn để bắt đầu tạo video; account đó vẫn có thể xử lý ảnh.
+- Provider lưu account/project và loại poll (`operation` hoặc `media`) của video operation/workflow; `/v1/videos/status` tự chia request theo đúng account, giữ thứ tự đầu vào và gộp kết quả, không cần routing scope đối với operation được tạo qua Provider.
 
 ## 2. Danh sách endpoint
 
@@ -48,12 +51,13 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 ## 3. Luồng tích hợp chuẩn
 
 ```text
-Tạo project
-  -> upload ảnh (nếu cần)
-  -> lấy media.name
-  -> tạo ảnh tham chiếu hoặc video
-  -> với video: lấy operation name và gọi status
-  -> lấy URL kết quả và lưu về hệ thống của bên gọi
+Tạo ảnh tự động:
+  gửi prompt + input_images
+  -> Provider chọn account, project, upload và generate
+  -> nhận kết quả
+
+Chế độ tương thích/video:
+  tạo project -> upload -> generate -> kiểm tra status
 ```
 
 Một project có thể được dùng xuyên suốt nhiều lần tạo ảnh/video. Không cần tạo project mới cho từng request.
@@ -126,6 +130,8 @@ Giá trị này được gửi lại dưới field `project_id` ở các request
 ## 5. Upload ảnh
 
 Endpoint nhận JSON, không dùng `multipart/form-data`. Bên gọi đọc file, mã hóa Base64 rồi gửi `image_base64`.
+
+Provider băm nội dung ảnh bằng SHA-256. Nếu đúng ảnh đó đã có media ID trong cùng account và project, API trả lại media ID từ DB mà không upload lên Google lần nữa. Có thể kiểm tra header `X-Flow-Media-Cache-Hits`: `1` là cache hit, `0` là upload mới.
 
 ### Request
 
@@ -218,6 +224,30 @@ const mediaId = body.media.name;
 
 ## 6. Tạo ảnh
 
+### Chế độ tự động (khuyến nghị)
+
+Không gửi `project_id`. Provider tự chọn extension ít tải, tạo hoặc tái sử dụng project của account đó và upload các ảnh trong `input_images` trước khi generate:
+
+```json
+{
+  "prompt": "Preserve this product and create a luxury advertising scene",
+  "input_images": [
+    {
+      "image_base64": "<base64>",
+      "mime_type": "image/jpeg",
+      "file_name": "product.jpg"
+    }
+  ],
+  "model": "NANO_BANANA_PRO",
+  "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT",
+  "variant_count": 1
+}
+```
+
+Response có `X-Flow-Project-Id` để đối soát, nhưng backend tích hợp không cần lưu hoặc điều hướng project này.
+
+Nếu cùng nội dung ảnh đã được upload vào đúng account/project, Provider dùng thẳng media ID trong DB mà không thêm request kiểm tra. Nếu Google hiếm khi trả `404` vì media cũ, Provider xóa cache, upload lại và retry. Header `X-Flow-Media-Cache-Hits` cho biết số ảnh lấy từ cache trong request.
+
 ### Request không có ảnh tham chiếu
 
 ```http
@@ -254,11 +284,12 @@ POST /v1/images/generations
 
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
-| `project_id` | Có | Project ID của Google Flow. |
+| `project_id` | Không | Chỉ dùng cho chế độ tương thích; bỏ qua để Provider tự quản lý project. |
 | `prompt` | Có | 1–12.000 ký tự. |
 | `model` | Không | `NANO_BANANA_PRO` (mặc định), `NANO_BANANA_2`. |
 | `aspect_ratio` | Không | `IMAGE_ASPECT_RATIO_PORTRAIT` (mặc định), `IMAGE_ASPECT_RATIO_LANDSCAPE`, `IMAGE_ASPECT_RATIO_SQUARE`. |
 | `reference_media_ids` | Không | Tối đa 8 media ID trong cùng project. |
+| `input_images` | Không | Tối đa 8 ảnh Base64 để Provider tự upload; tổng cùng `reference_media_ids` không quá 8. |
 | `variant_count` | Không | Từ 1 đến 4, mặc định 1. |
 
 ### Response `200`
@@ -564,7 +595,7 @@ Ví dụ `/health/ready`:
 }
 ```
 
-Chỉ gửi request tạo nội dung khi `status` là `ready` và `provider_accounts` lớn hơn `0`.
+`status` là `waiting_for_provider` khi API/SQLite đã hoạt động nhưng chưa có extension sẵn sàng, và là `unavailable` khi SQLite không truy cập được. Chỉ gửi request tạo nội dung khi `status` là `ready` và `provider_accounts` lớn hơn `0`.
 
 ## 13. Checklist cho bên tích hợp
 

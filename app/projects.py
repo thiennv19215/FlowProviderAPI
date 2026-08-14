@@ -1,0 +1,429 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class ProviderProject:
+    installation_id: str
+    google_project_id: str
+    project_title: str
+
+
+@dataclass(frozen=True)
+class ProviderMedia:
+    installation_id: str
+    google_project_id: str
+    content_sha256: str
+    google_media_id: str
+    mime_type: str
+    file_name: str
+    response_data: dict | None
+
+
+@dataclass(frozen=True)
+class ProviderOperation:
+    operation_name: str
+    installation_id: str
+    google_project_id: str
+    route_kind: str
+    poll_name: str
+
+
+class ProjectStore:
+    """Small durable mapping between a Chrome installation and its Flow project."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self._lock = threading.RLock()
+        self._connection: sqlite3.Connection | None = None
+
+    def _db(self) -> sqlite3.Connection:
+        with self._lock:
+            if self._connection is None:
+                if self.path != ":memory:":
+                    Path(self.path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+                self._connection = sqlite3.connect(self.path, check_same_thread=False)
+                self._connection.row_factory = sqlite3.Row
+                self._connection.execute("PRAGMA journal_mode=WAL")
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS provider_projects (
+                        installation_id TEXT PRIMARY KEY,
+                        google_project_id TEXT NOT NULL,
+                        project_title TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS provider_media (
+                        installation_id TEXT NOT NULL,
+                        google_project_id TEXT NOT NULL,
+                        content_sha256 TEXT NOT NULL,
+                        google_media_id TEXT NOT NULL,
+                        mime_type TEXT NOT NULL,
+                        file_name TEXT NOT NULL,
+                        response_json TEXT,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (installation_id, google_project_id, content_sha256)
+                    )
+                    """
+                )
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS provider_project_routes (
+                        google_project_id TEXT PRIMARY KEY,
+                        installation_id TEXT NOT NULL,
+                        project_title TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                media_columns = {
+                    row["name"]
+                    for row in self._connection.execute("PRAGMA table_info(provider_media)")
+                }
+                if "response_json" not in media_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_media ADD COLUMN response_json TEXT"
+                    )
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS provider_operations (
+                        operation_name TEXT PRIMARY KEY,
+                        installation_id TEXT NOT NULL,
+                        google_project_id TEXT NOT NULL,
+                        route_kind TEXT NOT NULL DEFAULT 'operation',
+                        poll_name TEXT,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                operation_columns = {
+                    row["name"]
+                    for row in self._connection.execute("PRAGMA table_info(provider_operations)")
+                }
+                if "route_kind" not in operation_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_operations ADD COLUMN route_kind TEXT NOT NULL DEFAULT 'operation'"
+                    )
+                if "poll_name" not in operation_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_operations ADD COLUMN poll_name TEXT"
+                    )
+                self._connection.execute(
+                    "UPDATE provider_operations SET poll_name = operation_name WHERE poll_name IS NULL"
+                )
+                self._connection.commit()
+            return self._connection
+
+    def get(self, installation_id: str) -> ProviderProject | None:
+        with self._lock:
+            row = self._db().execute(
+                """
+                SELECT installation_id, google_project_id, project_title
+                FROM provider_projects
+                WHERE installation_id = ? AND status = 'active'
+                """,
+                (installation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ProviderProject(row["installation_id"], row["google_project_id"], row["project_title"])
+
+    def installation_for_project(self, google_project_id: str) -> str | None:
+        with self._lock:
+            row = self._db().execute(
+                """
+                SELECT installation_id FROM provider_project_routes
+                WHERE google_project_id = ? AND status = 'active'
+                """,
+                (google_project_id,),
+            ).fetchone()
+        return row["installation_id"] if row is not None else None
+
+    def remember_project(
+        self,
+        installation_id: str,
+        google_project_id: str,
+        project_title: str,
+    ) -> None:
+        with self._lock:
+            self._db().execute(
+                """
+                INSERT INTO provider_project_routes (
+                    google_project_id, installation_id, project_title
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(google_project_id) DO UPDATE SET
+                    installation_id = excluded.installation_id,
+                    project_title = excluded.project_title,
+                    status = 'active',
+                    updated_at = CURRENT_TIMESTAMP,
+                    last_seen_at = CURRENT_TIMESTAMP
+                """,
+                (google_project_id, installation_id, project_title),
+            )
+            self._db().commit()
+
+    def check(self) -> bool:
+        with self._lock:
+            return self._db().execute("SELECT 1").fetchone()[0] == 1
+
+    def put(self, installation_id: str, google_project_id: str, project_title: str) -> ProviderProject:
+        with self._lock:
+            self._db().execute(
+                """
+                INSERT INTO provider_projects (installation_id, google_project_id, project_title)
+                VALUES (?, ?, ?)
+                ON CONFLICT(installation_id) DO UPDATE SET
+                    google_project_id = excluded.google_project_id,
+                    project_title = excluded.project_title,
+                    status = 'active',
+                    updated_at = CURRENT_TIMESTAMP,
+                    last_used_at = CURRENT_TIMESTAMP
+                """,
+                (installation_id, google_project_id, project_title),
+            )
+            self._db().commit()
+        self.remember_project(installation_id, google_project_id, project_title)
+        return ProviderProject(installation_id, google_project_id, project_title)
+
+    def touch(self, installation_id: str) -> None:
+        with self._lock:
+            self._db().execute(
+                "UPDATE provider_projects SET last_used_at = CURRENT_TIMESTAMP WHERE installation_id = ?",
+                (installation_id,),
+            )
+            self._db().commit()
+
+    def invalidate(self, installation_id: str) -> None:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT google_project_id FROM provider_projects WHERE installation_id = ?",
+                (installation_id,),
+            ).fetchone()
+            self._db().execute(
+                """
+                UPDATE provider_projects
+                SET status = 'invalid', updated_at = CURRENT_TIMESTAMP
+                WHERE installation_id = ?
+                """,
+                (installation_id,),
+            )
+            if row is not None:
+                self._db().execute(
+                    """
+                    UPDATE provider_project_routes
+                    SET status = 'invalid', updated_at = CURRENT_TIMESTAMP
+                    WHERE installation_id = ? AND google_project_id = ?
+                    """,
+                    (installation_id, row["google_project_id"]),
+                )
+                self._db().execute(
+                    """
+                    UPDATE provider_media
+                    SET status = 'invalid', updated_at = CURRENT_TIMESTAMP
+                    WHERE installation_id = ? AND google_project_id = ?
+                    """,
+                    (installation_id, row["google_project_id"]),
+                )
+                self._db().execute(
+                    """
+                    UPDATE provider_operations
+                    SET status = 'invalid', updated_at = CURRENT_TIMESTAMP
+                    WHERE installation_id = ? AND google_project_id = ?
+                    """,
+                    (installation_id, row["google_project_id"]),
+                )
+            self._db().commit()
+
+    def get_media(
+        self,
+        installation_id: str,
+        google_project_id: str,
+        content_sha256: str,
+    ) -> ProviderMedia | None:
+        with self._lock:
+            row = self._db().execute(
+                """
+                SELECT installation_id, google_project_id, content_sha256,
+                       google_media_id, mime_type, file_name, response_json
+                FROM provider_media
+                WHERE installation_id = ? AND google_project_id = ?
+                  AND content_sha256 = ? AND status = 'active'
+                """,
+                (installation_id, google_project_id, content_sha256),
+            ).fetchone()
+            if row is not None:
+                self._db().execute(
+                    """
+                    UPDATE provider_media SET last_used_at = CURRENT_TIMESTAMP
+                    WHERE installation_id = ? AND google_project_id = ? AND content_sha256 = ?
+                    """,
+                    (installation_id, google_project_id, content_sha256),
+                )
+                self._db().commit()
+        if row is None:
+            return None
+        return ProviderMedia(
+            row["installation_id"], row["google_project_id"], row["content_sha256"],
+            row["google_media_id"], row["mime_type"], row["file_name"],
+            json.loads(row["response_json"]) if row["response_json"] else None,
+        )
+
+    def put_media(
+        self,
+        installation_id: str,
+        google_project_id: str,
+        content_sha256: str,
+        google_media_id: str,
+        mime_type: str,
+        file_name: str,
+        response_data: dict | None = None,
+    ) -> ProviderMedia:
+        with self._lock:
+            self._db().execute(
+                """
+                INSERT INTO provider_media (
+                    installation_id, google_project_id, content_sha256,
+                    google_media_id, mime_type, file_name, response_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(installation_id, google_project_id, content_sha256) DO UPDATE SET
+                    google_media_id = excluded.google_media_id,
+                    mime_type = excluded.mime_type,
+                    file_name = excluded.file_name,
+                    response_json = COALESCE(excluded.response_json, provider_media.response_json),
+                    status = 'active',
+                    updated_at = CURRENT_TIMESTAMP,
+                    last_used_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    installation_id, google_project_id, content_sha256,
+                    google_media_id, mime_type, file_name,
+                    json.dumps(response_data, separators=(",", ":")) if response_data is not None else None,
+                ),
+            )
+            self._db().commit()
+        return ProviderMedia(
+            installation_id, google_project_id, content_sha256,
+            google_media_id, mime_type, file_name, response_data,
+        )
+
+    def invalidate_media(
+        self,
+        installation_id: str,
+        google_project_id: str,
+        content_sha256: str,
+    ) -> None:
+        with self._lock:
+            self._db().execute(
+                """
+                UPDATE provider_media
+                SET status = 'invalid', updated_at = CURRENT_TIMESTAMP
+                WHERE installation_id = ? AND google_project_id = ? AND content_sha256 = ?
+                """,
+                (installation_id, google_project_id, content_sha256),
+            )
+            self._db().commit()
+
+    def put_operation(
+        self,
+        operation_name: str,
+        installation_id: str,
+        google_project_id: str,
+        route_kind: str = "operation",
+        poll_name: str | None = None,
+    ) -> ProviderOperation:
+        poll_name = poll_name or operation_name
+        if route_kind not in {"operation", "media"}:
+            raise ValueError("invalid operation route kind")
+        with self._lock:
+            self._db().execute(
+                """
+                INSERT INTO provider_operations (
+                    operation_name, installation_id, google_project_id, route_kind, poll_name
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(operation_name) DO UPDATE SET
+                    installation_id = excluded.installation_id,
+                    google_project_id = excluded.google_project_id,
+                    route_kind = excluded.route_kind,
+                    poll_name = excluded.poll_name,
+                    status = 'active',
+                    updated_at = CURRENT_TIMESTAMP,
+                    last_used_at = CURRENT_TIMESTAMP
+                """,
+                (operation_name, installation_id, google_project_id, route_kind, poll_name),
+            )
+            self._db().commit()
+        return ProviderOperation(operation_name, installation_id, google_project_id, route_kind, poll_name)
+
+    def get_operation(self, operation_name: str) -> ProviderOperation | None:
+        with self._lock:
+            row = self._db().execute(
+                """
+                SELECT operation_name, installation_id, google_project_id, route_kind, poll_name
+                FROM provider_operations
+                WHERE operation_name = ? AND status = 'active'
+                """,
+                (operation_name,),
+            ).fetchone()
+            if row is not None:
+                self._db().execute(
+                    """
+                    UPDATE provider_operations SET last_used_at = CURRENT_TIMESTAMP
+                    WHERE operation_name = ?
+                    """,
+                    (operation_name,),
+                )
+                self._db().commit()
+        if row is None:
+            return None
+        return ProviderOperation(
+            row["operation_name"], row["installation_id"], row["google_project_id"],
+            row["route_kind"], row["poll_name"],
+        )
+
+    def prune(self, *, operation_days: int = 30, media_days: int = 90) -> None:
+        """Bound durable cache growth without touching active project ownership."""
+        with self._lock:
+            self._db().execute(
+                """
+                DELETE FROM provider_operations
+                WHERE status != 'active'
+                   OR last_used_at < datetime('now', ?)
+                """,
+                (f"-{operation_days} days",),
+            )
+            self._db().execute(
+                """
+                DELETE FROM provider_media
+                WHERE status != 'active'
+                   OR last_used_at < datetime('now', ?)
+                """,
+                (f"-{media_days} days",),
+            )
+            self._db().commit()
+
+    def close(self) -> None:
+        with self._lock:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None

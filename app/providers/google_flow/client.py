@@ -39,7 +39,7 @@ class ExtensionConnection:
     paygate_tier: str|None=None
     sku: str|None=None
     credits: int|None=None
-    max_slots: int=2
+    max_slots: int=3
     cooldown_until: float|None=None
     cooldown_reason: str|None=None
     request_count: int=0
@@ -61,7 +61,7 @@ class ExtensionConnection:
 class FlowBridge:
     DEFAULT_TIMEOUT=180.0;BEARER_TIMEOUT=30.0;TAB_TIMEOUT=30.0;CAPTCHA_TIMEOUT=45.0
 
-    def __init__(self,*,flow_api_key:str|None,slot_capacity:int=2,cooldown_seconds:int=180):
+    def __init__(self,*,flow_api_key:str|None,slot_capacity:int=3,cooldown_seconds:int=180):
         self.flow_api_key=flow_api_key;self.slot_capacity=slot_capacity;self.cooldown_seconds=cooldown_seconds
         self._connections:dict[str,ExtensionConnection]={}
         self._installation_to_id:dict[str,str]={}

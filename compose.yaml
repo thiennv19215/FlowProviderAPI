@@ -2,5 +2,13 @@ services:
   api:
     build: .
     env_file: .env
+    environment:
+      FLOW_PROVIDER_ACCOUNT_SLOT_CAPACITY: 3
+      FLOW_PROVIDER_PROJECT_STORE_PATH: /data/projects.db
     ports:
       - "8000:8000"
+    volumes:
+      - provider_data:/data
+
+volumes:
+  provider_data:

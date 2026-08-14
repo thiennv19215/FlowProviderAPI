@@ -8,6 +8,11 @@ services:
     init: true
     env_file:
       - .env.production
+    environment:
+      FLOW_PROVIDER_ACCOUNT_SLOT_CAPACITY: 3
+      FLOW_PROVIDER_PROJECT_STORE_PATH: /data/projects.db
+    volumes:
+      - provider_data:/data
     healthcheck:
       test:
         - CMD-SHELL
@@ -33,3 +38,6 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+volumes:
+  provider_data:

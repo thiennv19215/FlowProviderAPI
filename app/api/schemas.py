@@ -52,14 +52,30 @@ class ImageUploadRequest(BaseModel):
     image_base64: str = Field(min_length=1, max_length=64 * 1024 * 1024)
 
 
+class InlineImageInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    image_base64: str = Field(min_length=1, max_length=64 * 1024 * 1024)
+    mime_type: str = Field(default="image/png", min_length=3, max_length=120, pattern=r"^image/")
+    file_name: str = Field(default="reference.png", min_length=1, max_length=255)
+
+
 class ImageGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    project_id: str = Field(min_length=1, max_length=500)
+    project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     model: Literal["NANO_BANANA_PRO", "NANO_BANANA_2"] = "NANO_BANANA_PRO"
     aspect_ratio: Literal["IMAGE_ASPECT_RATIO_SQUARE", "IMAGE_ASPECT_RATIO_LANDSCAPE", "IMAGE_ASPECT_RATIO_PORTRAIT"] = "IMAGE_ASPECT_RATIO_PORTRAIT"
     reference_media_ids: list[str] = Field(default_factory=list, max_length=8)
+    input_images: list[InlineImageInput] = Field(default_factory=list, max_length=8)
     variant_count: int = Field(default=1, ge=1, le=4)
+
+    @model_validator(mode="after")
+    def validate_references(self):
+        if len(self.reference_media_ids) + len(self.input_images) > 8:
+            raise ValueError("reference_media_ids and input_images may contain at most 8 images in total")
+        if self.reference_media_ids and not self.project_id:
+            raise ValueError("project_id is required when reference_media_ids are supplied")
+        return self
 
 
 class ImageToVideoGenerationRequest(BaseModel):

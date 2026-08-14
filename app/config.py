@@ -15,7 +15,8 @@ class Settings(BaseSettings):
     public_base_url: str = "http://localhost:8000"
     bootstrap_api_key: str | None = "fpa_dev_local"
     flow_api_key: str | None = None
-    account_slot_capacity: int = Field(default=2, ge=1, le=8)
+    project_store_path: str = ".data/projects.db"
+    account_slot_capacity: int = Field(default=3, ge=1, le=3)
     account_rate_limit_cooldown_seconds: int = Field(default=180, ge=10)
     extension_heartbeat_seconds: int = Field(default=60, ge=5, le=120)
     extension_heartbeat_grace_seconds: int = Field(default=15, ge=5, le=120)

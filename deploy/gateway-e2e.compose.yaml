@@ -1,7 +1,7 @@
 name: flowprovider-gateway-v1-e2e
 
-# Isolated staging gateway: deliberately no PostgreSQL service, volume, or
-# Provider storage configuration. FlowCanvas owns both durable state and R2.
+# Isolated staging gateway with the same SQLite mapping volume as production.
+# FlowCanvas still owns generated assets and application workflow state.
 services:
   api:
     image: flowprovider-api:gateway-v1-e2e-20260813
@@ -9,10 +9,14 @@ services:
       FLOW_PROVIDER_ENV: production
       FLOW_PROVIDER_BOOTSTRAP_API_KEY: ${FLOW_PROVIDER_BOOTSTRAP_API_KEY:?set gateway API key}
       FLOW_PROVIDER_PUBLIC_BASE_URL: ${FLOW_PROVIDER_PUBLIC_BASE_URL:-https://provider.staging.invalid}
+      FLOW_PROVIDER_ACCOUNT_SLOT_CAPACITY: 3
+      FLOW_PROVIDER_PROJECT_STORE_PATH: /data/projects.db
       # This is an SSRF boundary, not R2 configuration or credentials.
       FLOW_PROVIDER_CALLER_OWNED_ALLOWED_HOSTS: ${FLOW_PROVIDER_CALLER_OWNED_ALLOWED_HOSTS:?set FlowCanvas storage hostname}
     ports:
       - "127.0.0.1:18001:8000"
+    volumes:
+      - provider_e2e_data:/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -21,3 +25,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
+
+volumes:
+  provider_e2e_data:

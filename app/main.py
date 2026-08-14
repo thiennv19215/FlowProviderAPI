@@ -29,7 +29,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(
         title="Flow Provider API",
         version="2.0.0",
-        description="Google Flow API facade backed by a live browser extension.",
+        description="Google Flow API and orchestration service backed by live browser extensions.",
         responses=PUBLIC_ERROR_RESPONSES,
     )
     app.state.runtime = build_runtime(settings)
@@ -38,11 +38,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def request_id_middleware(request: Request, call_next):
         request.state.request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex}"
         try:
-            response = await call_next(request)
-        except APIError as exc:
-            response = await api_error_handler(request, exc)
-        response.headers["X-Request-Id"] = request.state.request_id
-        return response
+            try:
+                response = await call_next(request)
+            except APIError as exc:
+                response = await api_error_handler(request, exc)
+            response.headers["X-Request-Id"] = request.state.request_id
+            return response
+        finally:
+            runtime = request.app.state.runtime
+            for connection_id in getattr(request.state, "provider_reservations", []):
+                runtime.release_connection(connection_id)
 
     app.add_exception_handler(APIError, api_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)

@@ -1,6 +1,6 @@
-# Stateless production deployment
+# Production deployment
 
-Production runs only FlowProviderAPI and `cloudflared`. PostgreSQL, asset volumes, workers, Alembic startup migrations and the admin dashboard are intentionally absent.
+Production runs FlowProviderAPI and `cloudflared`. It uses a named Docker volume for the SQLite project/media/operation mapping store. PostgreSQL, asset storage, workers, Alembic and the admin dashboard remain unnecessary.
 
 ## Configure
 
@@ -30,4 +30,4 @@ curl -fsS https://provider.example.com/health/ready
 
 Install `extension/` in a Chrome profile signed in to Google Flow and configure it to connect to the Provider HTTPS hostname. Final acceptance must send a real request through a fixed Flow endpoint and verify that its upstream HTTP status and body reach the client unchanged.
 
-The facade has no database backup procedure because it owns no durable state.
+Back up the `provider_data` Docker volume before destructive host migration. The SQLite database contains only account/project routes, image hashes, media IDs and video operation routes; it contains no Google credentials or image bytes.
