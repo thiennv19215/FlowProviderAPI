@@ -288,6 +288,80 @@ def _remember_operations(runtime, connection, project_id: str, result: dict) -> 
             runtime.projects.put_operation(name, account_key, project_id, "media", name)
 
 
+def _video_generation_succeeded(media: dict) -> bool:
+    metadata = media.get("mediaMetadata")
+    if not isinstance(metadata, dict):
+        return False
+    media_status = metadata.get("mediaStatus")
+    if not isinstance(media_status, dict):
+        return False
+    status = media_status.get("mediaGenerationStatus")
+    if not isinstance(status, str):
+        return False
+    normalized = status.upper()
+    terminal = normalized.rsplit("_", 1)[-1]
+    return terminal in {"SUCCESS", "SUCCESSFUL", "SUCCEEDED", "COMPLETE", "COMPLETED", "DONE"}
+
+
+def _completed_video_media(node: object, completed: bool = False) -> list[dict]:
+    found: list[dict] = []
+    if isinstance(node, list):
+        for item in node:
+            found.extend(_completed_video_media(item, completed))
+        return found
+    if not isinstance(node, dict):
+        return found
+    node_completed = completed or _video_generation_succeeded(node)
+    if node.get("done") is True and not node.get("error"):
+        node_completed = True
+    video = node.get("video")
+    generated = video.get("generatedVideo") if isinstance(video, dict) else None
+    if node_completed and isinstance(node.get("name"), str) and isinstance(generated, dict):
+        found.append(node)
+    for value in node.values():
+        if isinstance(value, (dict, list)):
+            found.extend(_completed_video_media(value, node_completed))
+    return found
+
+
+async def _attach_video_urls(client: BoundFlowClient, result: dict) -> int:
+    """Resolve browser-session redirects only for completed video media."""
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return 0
+    candidates: dict[str, list[tuple[dict, dict]]] = {}
+    available = 0
+    for media in _completed_video_media(data):
+        video = media.get("video")
+        generated = video.get("generatedVideo") if isinstance(video, dict) else None
+        if not isinstance(generated, dict):
+            continue
+        existing = generated.get("fifeUrl") or media.get("downloadUrl")
+        if isinstance(existing, str) and existing.startswith("https://"):
+            generated["fifeUrl"] = existing
+            media["downloadUrl"] = existing
+            available += 1
+            continue
+        media_id = media.get("name")
+        if isinstance(media_id, str) and media_id:
+            candidates.setdefault(media_id, []).append((media, generated))
+    if not candidates:
+        return available
+    media_ids = list(candidates)
+    resolved = await asyncio.gather(
+        *(client.resolve_media_url(media_id) for media_id in media_ids),
+        return_exceptions=True,
+    )
+    for media_id, value in zip(media_ids, resolved, strict=True):
+        if not isinstance(value, str) or not value.startswith("https://"):
+            continue
+        for media, generated in candidates[media_id]:
+            media["downloadUrl"] = value
+            generated["fifeUrl"] = value
+            available += 1
+    return available
+
+
 def _refresh_paid_account(runtime, connection) -> None:
     # A timeout/error can still follow an accepted paid operation, so every
     # attempted paid request invalidates the captured balance until refreshed.
@@ -734,7 +808,7 @@ async def check_video_operations(
             }
         grouped.setdefault(account_key, []).append(item)
 
-    group_results: list[tuple[object, dict]] = []
+    group_results: list[tuple[object, dict, int]] = []
     poll_jobs: list[tuple[object, BoundFlowClient, dict]] = []
     order: dict[str, int] = {}
     for index, (operation_name, route) in enumerate(route_rows):
@@ -781,18 +855,27 @@ async def check_video_operations(
         _api(client, url=VIDEO_POLL_URL, body=body)
         for _connection, client, body in poll_jobs
     ))
-    for (connection, _client, _body), result in zip(poll_jobs, results, strict=True):
+    for result in results:
         status = result.get("status")
         if not isinstance(status, int) or status >= 400:
             return _response(result)
-        group_results.append((connection, result))
+    url_counts = await asyncio.gather(*(
+        _attach_video_urls(client, result)
+        for (_connection, client, _body), result in zip(poll_jobs, results, strict=True)
+    ))
+    for (connection, _client, _body), result, url_count in zip(
+        poll_jobs, results, url_counts, strict=True,
+    ):
+        group_results.append((connection, result, url_count))
 
     if len(group_results) == 1:
-        connection, result = group_results[0]
-        return _scoped_response(result, runtime.settings, connection)
+        connection, result, url_count = group_results[0]
+        response = _scoped_response(result, runtime.settings, connection)
+        response.headers["X-Flow-Video-Urls"] = str(url_count)
+        return response
 
     merged: dict = {}
-    for _connection_item, result in group_results:
+    for _connection_item, result, _url_count in group_results:
         data = result.get("data")
         if not isinstance(data, dict):
             continue
@@ -812,4 +895,5 @@ async def check_video_operations(
             value.sort(key=lambda item: order.get(result_name(item) or "", len(order)))
     response = _response({"status": 200, "data": merged})
     response.headers["X-Flow-Operation-Groups"] = str(len(grouped))
+    response.headers["X-Flow-Video-Urls"] = str(sum(item[2] for item in group_results))
     return response

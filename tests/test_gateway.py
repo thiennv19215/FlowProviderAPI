@@ -794,6 +794,160 @@ def test_video_status_polls_workflow_route_as_project_media(monkeypatch):
     }
 
 
+def test_video_status_attaches_download_url_for_successful_media(monkeypatch):
+    application = app()
+    connection = SimpleNamespace(
+        id="account-1", installation_id="installation-1", account_email="one@example.com",
+        max_slots=3, paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=1,
+    )
+    application.state.runtime.projects.put_operation(
+        "workflow-1", "installation-1\none@example.com", "project-1",
+        "media", "media/video-1",
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [connection])
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+
+    async def fake_api(_connection_id, **_kwargs):
+        return {
+            "status": 200,
+            "data": {"media": [{
+                "name": "media/video-1",
+                "mediaMetadata": {"mediaStatus": {
+                    "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SUCCESSFUL",
+                }},
+                "video": {"generatedVideo": {"model": "abra_r2v_4s"}},
+            }]},
+        }
+
+    resolved = []
+
+    async def fake_resolve(connection_id, media_id, **_kwargs):
+        resolved.append((connection_id, media_id))
+        return "https://flow-content.google/video/signed"
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(application.state.runtime.bridge, "resolve_media_url", fake_resolve)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/status", headers=headers(),
+            json={"operation_names": ["workflow-1"]},
+        )
+
+    media = response.json()["media"][0]
+    assert response.status_code == 200
+    assert response.headers["x-flow-video-urls"] == "1"
+    assert media["downloadUrl"] == "https://flow-content.google/video/signed"
+    assert media["video"]["generatedVideo"]["fifeUrl"] == media["downloadUrl"]
+    assert resolved == [("account-1", "media/video-1")]
+
+
+def test_video_status_does_not_resolve_url_before_success(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    application.state.runtime.projects.put_operation(
+        "workflow-1", "installation-1", "project-1", "media", "media/video-1",
+    )
+
+    async def fake_api(_connection_id, **_kwargs):
+        return {
+            "status": 200,
+            "data": {"media": [{
+                "name": "media/video-1",
+                "mediaMetadata": {"mediaStatus": {
+                    "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SCHEDULED",
+                }},
+                "video": {"generatedVideo": {}},
+            }]},
+        }
+
+    async def unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("pending video must not resolve a download URL")
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(application.state.runtime.bridge, "resolve_media_url", unexpected_resolve)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/status", headers=headers(),
+            json={"operation_names": ["workflow-1"]},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-video-urls"] == "0"
+    assert "downloadUrl" not in response.json()["media"][0]
+
+
+def test_video_status_does_not_treat_unsuccessful_as_success(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    application.state.runtime.projects.put_operation(
+        "workflow-1", "installation-1", "project-1", "media", "media/video-1",
+    )
+
+    async def fake_api(_connection_id, **_kwargs):
+        return {
+            "status": 200,
+            "data": {"media": [{
+                "name": "media/video-1",
+                "mediaMetadata": {"mediaStatus": {
+                    "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_UNSUCCESSFUL",
+                }},
+                "video": {"generatedVideo": {}},
+            }]},
+        }
+
+    async def unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("unsuccessful video must not resolve a download URL")
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(application.state.runtime.bridge, "resolve_media_url", unexpected_resolve)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/status", headers=headers(),
+            json={"operation_names": ["workflow-1"]},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-video-urls"] == "0"
+
+
+def test_video_status_attaches_url_to_media_nested_in_completed_operation(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    application.state.runtime.projects.put_operation(
+        "operations/one", "installation-1", "project-1",
+    )
+
+    async def fake_api(_connection_id, **_kwargs):
+        return {
+            "status": 200,
+            "data": {"operations": [{"operation": {
+                "name": "operations/one",
+                "done": True,
+                "response": {"media": [{
+                    "name": "media/video-1",
+                    "video": {"generatedVideo": {}},
+                }]},
+            }}]},
+        }
+
+    async def fake_resolve(_connection_id, media_id, **_kwargs):
+        assert media_id == "media/video-1"
+        return "https://flow-content.google/video/nested"
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(application.state.runtime.bridge, "resolve_media_url", fake_resolve)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/status", headers=headers(),
+            json={"operation_names": ["operations/one"]},
+        )
+
+    nested = response.json()["operations"][0]["operation"]["response"]["media"][0]
+    assert response.headers["x-flow-video-urls"] == "1"
+    assert nested["downloadUrl"] == "https://flow-content.google/video/nested"
+    assert nested["video"]["generatedVideo"]["fifeUrl"] == nested["downloadUrl"]
+
+
 def test_video_status_rejects_unknown_operation_without_scope(monkeypatch):
     application = app()
     connect(application, monkeypatch)

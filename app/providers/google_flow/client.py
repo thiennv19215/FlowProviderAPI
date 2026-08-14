@@ -7,6 +7,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlencode
 
 logger=logging.getLogger(__name__)
 RECAPTCHA_FALLBACK_KEY="6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
@@ -307,8 +308,9 @@ class FlowBridge:
         return out
 
     async def resolve_media_url(self,connection_id:str,media_id:str,*,thumbnail:bool=False)->str|None:
-        suffix="&mediaUrlType=MEDIA_URL_TYPE_THUMBNAIL" if thumbnail else ""
-        url=f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?name={media_id}{suffix}";response=await self.send_rpc(connection_id,"SW_FETCH",{"spec":{"url":url,"method":"GET","headers":{},"responseType":"none","timeoutMs":30000}},timeout=35);inner=response.get("data") if isinstance(response,dict) else None
+        query={"name":media_id}
+        if thumbnail:query["mediaUrlType"]="MEDIA_URL_TYPE_THUMBNAIL"
+        url=f"https://labs.google/fx/api/trpc/media.getMediaUrlRedirect?{urlencode(query)}";response=await self.send_rpc(connection_id,"SW_FETCH",{"spec":{"url":url,"method":"GET","headers":{},"responseType":"none","timeoutMs":30000}},timeout=35);inner=response.get("data") if isinstance(response,dict) else None
         if not isinstance(inner,dict) or inner.get("ok") is False:return None
         status=inner.get("status")
         if isinstance(status,int) and status>=400:return None

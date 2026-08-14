@@ -459,7 +459,7 @@ POST /v1/videos/status
 
 ### Response hoàn tất
 
-Cấu trúc media chi tiết do Flow quyết định và có thể bổ sung field theo thời gian. Khi `done` là `true`, đọc các media/video URL trong object kết quả tương ứng:
+Cấu trúc media chi tiết do Flow quyết định và có thể bổ sung field theo thời gian. Khi video hoàn tất, Provider dùng đúng extension/account đã route để đổi media ID thành signed URL. Response có cả `media[i].downloadUrl` và `media[i].video.generatedVideo.fifeUrl`; header `X-Flow-Video-Urls` cho biết số URL đã lấy được. Signed URL có thời hạn nên backend cần tải/lưu video ngay nếu muốn lưu trữ lâu dài. Nếu Flow chưa cấp URL kịp, poll lại cùng operation thay vì tạo lại video:
 
 ```json
 {

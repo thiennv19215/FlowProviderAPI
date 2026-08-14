@@ -36,6 +36,34 @@ async def test_auth_available_clears_previous_google_account_state(monkeypatch):
     await bridge.close_background_tasks()
 
 
+async def test_media_redirect_uses_browser_cookies_and_url_encodes_id(monkeypatch):
+    bridge = FlowBridge(flow_api_key="test-key")
+    captured = {}
+
+    async def fake_rpc(connection_id, rpc_type, params, **kwargs):
+        captured.update({
+            "connection_id": connection_id,
+            "rpc_type": rpc_type,
+            "params": params,
+            "kwargs": kwargs,
+        })
+        return {
+            "data": {
+                "ok": True,
+                "status": 200,
+                "finalUrl": "https://flow-content.google/video/signed",
+            },
+        }
+
+    monkeypatch.setattr(bridge, "send_rpc", fake_rpc)
+    url = await bridge.resolve_media_url("account-1", "media/id with spaces")
+
+    assert url == "https://flow-content.google/video/signed"
+    assert captured["rpc_type"] == "SW_FETCH"
+    assert "name=media%2Fid+with+spaces" in captured["params"]["spec"]["url"]
+    assert captured["params"]["spec"]["responseType"] == "none"
+
+
 def test_extension_connects_on_gateway_runtime_path():
     app = create_app(Settings(env="test", bootstrap_api_key="test", project_store_path=":memory:"))
     with TestClient(app) as client:
