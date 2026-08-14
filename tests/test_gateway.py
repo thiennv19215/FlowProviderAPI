@@ -10,14 +10,23 @@ def app():
     return create_app(Settings(env="test", bootstrap_api_key="fpa_test", public_base_url="https://provider.test"))
 
 
-def headers():
-    return {"Authorization": "Bearer fpa_test"}
+def headers(scope: str | None = None):
+    value = {"Authorization": "Bearer fpa_test"}
+    if scope:
+        value["X-Provider-Routing-Scope"] = scope
+    return value
 
 
 def connect(application, monkeypatch):
-    connection = SimpleNamespace(id="account-1", max_slots=2, paygate_tier="PAYGATE_TIER_ONE")
+    connection = SimpleNamespace(
+        id="account-1",
+        installation_id="installation-1",
+        max_slots=2,
+        paygate_tier="PAYGATE_TIER_ONE",
+    )
     monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [connection])
     monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    return connection
 
 
 def test_public_surface_is_a_fixed_flow_facade():
@@ -55,6 +64,7 @@ def test_image_generation_calls_fixed_extension_operation_and_returns_raw_respon
     assert response.status_code == 201
     assert response.json() == {"media": [{"name": "media/1"}]}
     assert response.headers["x-flow-id"] == "123"
+    assert response.headers["x-provider-routing-scope"]
     assert captured["connection_id"] == "account-1"
     assert captured["captcha_action"] == "IMAGE_GENERATION"
     assert captured["url"].endswith("/v1/projects/project-1/flowMedia:batchGenerateImages")
@@ -77,10 +87,99 @@ def test_create_project_and_check_operations_return_upstream_results(monkeypatch
     monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
     with TestClient(application) as client:
         project = client.post("/v1/projects", headers=headers(), json={"title": "My project"})
-        check = client.post("/v1/videos/status", headers=headers(), json={"operation_names": ["operations/1"]})
+        scope = project.headers["x-provider-routing-scope"]
+        check = client.post(
+            "/v1/videos/status",
+            headers=headers(scope),
+            json={"operation_names": ["operations/1"]},
+        )
     assert project.status_code == check.status_code == 200
     assert project.json()["result"]["projectId"] == "projects/1"
     assert check.json()["operations"][0]["operation"]["done"] is False
+    assert check.headers["x-provider-routing-scope"] == scope
+
+
+def test_routing_scope_pins_follow_up_calls_to_the_same_installation(monkeypatch):
+    application = app()
+    first = SimpleNamespace(
+        id="account-1",
+        installation_id="installation-1",
+        max_slots=2,
+        paygate_tier="PAYGATE_TIER_ONE",
+    )
+    second = SimpleNamespace(
+        id="account-2",
+        installation_id="installation-2",
+        max_slots=2,
+        paygate_tier="PAYGATE_TIER_ONE",
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [first, second])
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "pending_count",
+        lambda connection_id: 0 if connection_id == "account-1" else 1,
+    )
+    calls = []
+
+    async def fake_trpc(connection_id, **_kwargs):
+        calls.append(connection_id)
+        return {"status": 200, "data": {"result": {"projectId": "projects/1"}}}
+
+    async def fake_api(connection_id, **_kwargs):
+        calls.append(connection_id)
+        return {"status": 200, "data": {"media": []}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        project = client.post("/v1/projects", headers=headers(), json={"title": "Pinned"})
+        scope = project.headers["x-provider-routing-scope"]
+        generated = client.post(
+            "/v1/images/generations",
+            headers=headers(scope),
+            json={"project_id": "projects/1", "prompt": "test"},
+        )
+    assert project.status_code == generated.status_code == 200
+    assert calls == ["account-1", "account-1"]
+
+
+def test_routing_scope_never_falls_back_to_another_installation(monkeypatch):
+    application = app()
+    first = SimpleNamespace(
+        id="account-1",
+        installation_id="installation-1",
+        max_slots=2,
+        paygate_tier="PAYGATE_TIER_ONE",
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [first])
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+
+    async def fake_trpc(_connection_id, **_kwargs):
+        return {"status": 200, "data": {"result": {"projectId": "projects/1"}}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    with TestClient(application) as client:
+        project = client.post("/v1/projects", headers=headers(), json={"title": "Pinned"})
+        scope = project.headers["x-provider-routing-scope"]
+        monkeypatch.setattr(
+            application.state.runtime.bridge,
+            "ready_connections",
+            lambda **_kwargs: [
+                SimpleNamespace(
+                    id="account-2",
+                    installation_id="installation-2",
+                    max_slots=2,
+                    paygate_tier="PAYGATE_TIER_ONE",
+                )
+            ],
+        )
+        unavailable = client.post(
+            "/v1/images/generations",
+            headers=headers(scope),
+            json={"project_id": "projects/1", "prompt": "test"},
+        )
+    assert unavailable.status_code == 503
+    assert unavailable.json()["error"]["code"] == "ROUTING_SCOPE_UNAVAILABLE"
 
 
 def test_video_generation_uses_the_type_to_select_the_fixed_flow_operation(monkeypatch):
