@@ -310,6 +310,8 @@ def test_scheduler_fills_three_slots_before_using_next_connection(monkeypatch):
     monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda connection_id: pending[connection_id])
     application.state.runtime.projects.put("installation-1", "projects/one", "FlowProvider")
     application.state.runtime.projects.put("installation-2", "projects/two", "FlowProvider")
+    application.state.runtime.mark_project_synced(first, "installation-1")
+    application.state.runtime.mark_project_synced(second, "installation-2")
     calls = []
 
     async def fake_api(connection_id, **_kwargs):
@@ -439,11 +441,59 @@ def test_managed_project_search_follows_cursor_before_creating_duplicate(monkeyp
     assert len(trpc_calls) == 2
 
 
+def test_managed_project_refreshes_stale_db_mapping_and_selects_newest(monkeypatch):
+    application = app()
+    connection = connect(application, monkeypatch)
+    application.state.runtime.projects.put(
+        "installation-1", "projects/old", "FlowProvider",
+    )
+    trpc_calls = []
+    api_urls = []
+
+    async def fake_trpc(_connection_id, **kwargs):
+        trpc_calls.append(kwargs)
+        newest_id = "projects/newest" if len(trpc_calls) == 1 else "projects/after-reconnect"
+        return {
+            "status": 200,
+            "data": {"result": {"data": {"json": {"result": {"projects": [
+                {"projectId": newest_id, "projectInfo": {"projectTitle": "FlowProvider"}},
+                {"projectId": "projects/old", "projectInfo": {"projectTitle": "FlowProvider"}},
+            ]}}}}},
+        }
+
+    async def fake_api(_connection_id, **kwargs):
+        api_urls.append(kwargs["url"])
+        return {"status": 200, "data": {"media": []}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        first = client.post("/v1/images/generations", headers=headers(), json={"prompt": "one"})
+        second = client.post("/v1/images/generations", headers=headers(), json={"prompt": "two"})
+        connection.connected_at = 2
+        after_reconnect = client.post(
+            "/v1/images/generations", headers=headers(), json={"prompt": "three"},
+        )
+        stored_project = application.state.runtime.projects.get("installation-1")
+
+    assert first.headers["x-flow-project-id"] == "projects/newest"
+    assert second.headers["x-flow-project-id"] == "projects/newest"
+    assert after_reconnect.headers["x-flow-project-id"] == "projects/after-reconnect"
+    assert len(trpc_calls) == 2
+    assert "/v1/projects/projects/newest/" in api_urls[0]
+    assert "/v1/projects/projects/newest/" in api_urls[1]
+    assert "/v1/projects/projects/after-reconnect/" in api_urls[2]
+    assert stored_project.google_project_id == "projects/after-reconnect"
+    assert application.state.runtime.project_is_synced(connection, "installation-1")
+
+
 def test_stale_cached_media_is_uploaded_again(monkeypatch):
     application = app()
     connect(application, monkeypatch)
     digest = hashlib.sha256(b"hello").hexdigest()
     application.state.runtime.projects.put("installation-1", "projects/managed", "FlowProvider")
+    connection = application.state.runtime.bridge.ready_connections()[0]
+    application.state.runtime.mark_project_synced(connection, "installation-1")
     application.state.runtime.projects.put_media(
         "installation-1", "projects/managed", digest, "media/stale", "image/png", "reference.png"
     )

@@ -25,6 +25,8 @@ When a supplied scope cannot be served because its bound extension installation 
 
 For managed image generation, FlowProviderAPI decides when to create or recover the account's default project. In compatibility mode, explicit project/media bindings and cross-request recovery remain responsibilities of the integrating application.
 
+On the first managed request for each extension connection and Google account identity, the Provider refreshes Google's newest-first project list and selects the first project named `FlowProvider`. The durable mapping is then reused for the rest of that connection session. Reconnecting or changing the signed-in account forces another refresh, so an older database mapping cannot permanently shadow a newer project.
+
 The store persists project mappings plus SHA-256-to-Google-media-ID mappings scoped by installation ID, normalized Google account email, and project. Signing a different Google account into the same extension creates a separate namespace and cannot reuse the prior account's project/media IDs. The store never contains Google bearer tokens, cookies, captcha tokens, generated media bytes, or user asset bytes.
 
 Completed video polls resolve Flow's cookie-protected media redirect through the owning extension and attach the expiring URL as both `downloadUrl` and `video.generatedVideo.fifeUrl`. Signed URLs are not persisted.

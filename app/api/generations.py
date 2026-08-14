@@ -378,12 +378,12 @@ def _remember_project_on_success(runtime, connection, project_id: str, result: d
 async def _managed_project(runtime, connection, client) -> str:
     account_key = _account_key(connection)
     stored = runtime.projects.get(account_key)
-    if stored:
+    if stored and runtime.project_is_synced(connection, account_key):
         runtime.projects.touch(account_key)
         return stored.google_project_id
     async with runtime.project_lock(account_key):
         stored = runtime.projects.get(account_key)
-        if stored:
+        if stored and runtime.project_is_synced(connection, account_key):
             runtime.projects.touch(account_key)
             return stored.google_project_id
         title = "FlowProvider"
@@ -420,6 +420,7 @@ async def _managed_project(runtime, connection, client) -> str:
             )
             if existing:
                 runtime.projects.put(account_key, existing["projectId"], title)
+                runtime.mark_project_synced(connection, account_key)
                 return existing["projectId"]
             next_cursor = _project_cursor(search_result)
             if not next_cursor or next_cursor in seen_cursors:
@@ -436,6 +437,7 @@ async def _managed_project(runtime, connection, client) -> str:
         if not project_id:
             raise _flow_failure(result, "PROJECT_CREATE_FAILED", "Google Flow project creation failed.")
         runtime.projects.put(account_key, project_id, title)
+        runtime.mark_project_synced(connection, account_key)
         return project_id
 
 
@@ -470,13 +472,27 @@ async def list_projects(
         method="GET",
         headers=TRPC_HEADERS,
     )
-    for item in _project_items(result):
+    project_items = _project_items(result)
+    for item in project_items:
         info = item.get("projectInfo") if isinstance(item.get("projectInfo"), dict) else {}
         runtime.projects.remember_project(
             _account_key(connection),
             item["projectId"],
             str(info.get("projectTitle") or "Untitled"),
         )
+    if cursor is None:
+        newest_managed = next(
+            (
+                item for item in project_items
+                if isinstance(item.get("projectInfo"), dict)
+                and item["projectInfo"].get("projectTitle") == "FlowProvider"
+            ),
+            None,
+        )
+        if newest_managed:
+            account_key = _account_key(connection)
+            runtime.projects.put(account_key, newest_managed["projectId"], "FlowProvider")
+            runtime.mark_project_synced(connection, account_key)
     return _scoped_response(result, runtime.settings, connection)
 
 
@@ -496,7 +512,11 @@ async def create_project(
     )
     project_id = extract_project_id(result)
     if project_id:
-        runtime.projects.remember_project(_account_key(connection), project_id, payload.title)
+        account_key = _account_key(connection)
+        runtime.projects.remember_project(account_key, project_id, payload.title)
+        if payload.title == "FlowProvider":
+            runtime.projects.put(account_key, project_id, payload.title)
+            runtime.mark_project_synced(connection, account_key)
     return _scoped_response(result, runtime.settings, connection)
 
 

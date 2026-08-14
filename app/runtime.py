@@ -17,6 +17,7 @@ class Runtime:
     extension_manager: ExtensionManager
     projects: ProjectStore
     project_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
+    project_sync_sessions: dict[str, tuple[float, str]] = field(default_factory=dict)
     media_locks: weakref.WeakValueDictionary = field(default_factory=weakref.WeakValueDictionary)
     active_jobs: dict[str, int] = field(default_factory=dict)
     reserved_credits: dict[str, int] = field(default_factory=dict)
@@ -75,6 +76,15 @@ class Runtime:
 
     def project_lock(self, installation_id: str) -> asyncio.Lock:
         return self.project_locks.setdefault(installation_id, asyncio.Lock())
+
+    def project_is_synced(self, connection, account_key: str) -> bool:
+        session = (float(getattr(connection, "connected_at", 0)), account_key)
+        return self.project_sync_sessions.get(connection.id) == session
+
+    def mark_project_synced(self, connection, account_key: str) -> None:
+        self.project_sync_sessions[connection.id] = (
+            float(getattr(connection, "connected_at", 0)), account_key,
+        )
 
     def media_lock(self, account_key: str, project_id: str, digest: str) -> asyncio.Lock:
         key = (account_key, project_id, digest)
