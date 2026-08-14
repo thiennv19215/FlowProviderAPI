@@ -11,8 +11,6 @@ services:
       FLOW_PROVIDER_PUBLIC_BASE_URL: ${FLOW_PROVIDER_PUBLIC_BASE_URL:-https://provider.staging.invalid}
       FLOW_PROVIDER_ACCOUNT_SLOT_CAPACITY: 3
       FLOW_PROVIDER_PROJECT_STORE_PATH: /data/projects.db
-      # This is an SSRF boundary, not R2 configuration or credentials.
-      FLOW_PROVIDER_CALLER_OWNED_ALLOWED_HOSTS: ${FLOW_PROVIDER_CALLER_OWNED_ALLOWED_HOSTS:?set FlowCanvas storage hostname}
     ports:
       - "127.0.0.1:18001:8000"
     volumes:

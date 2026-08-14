@@ -33,8 +33,16 @@ def client_context(project_id: str, tier: str) -> dict:
 
 
 def extract_project_id(resp: Any) -> str | None:
-    try: return resp["data"]["result"]["data"]["json"]["result"]["projectId"]
-    except Exception: return None
+    if not isinstance(resp,dict):return None
+    data=resp.get("data")
+    if not isinstance(data,dict):return None
+    candidates=[data,data.get("result")]
+    try:candidates.append(data["result"]["data"]["json"]["result"])
+    except (KeyError,TypeError):pass
+    for candidate in candidates:
+        if isinstance(candidate,dict) and isinstance(candidate.get("projectId"),str):
+            return candidate["projectId"]
+    return None
 
 
 def extract_upload_media_id(resp: Any) -> str | None:

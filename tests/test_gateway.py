@@ -31,9 +31,13 @@ def connect(application, monkeypatch):
         installation_id="installation-1",
         max_slots=2,
         paygate_tier="PAYGATE_TIER_ONE",
+        credits=100,
     )
     monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [connection])
     monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    application.state.runtime.projects.remember_project(
+        "installation-1", "project-1", "Test project"
+    )
     return connection
 
 
@@ -45,6 +49,34 @@ def test_public_surface_is_a_fixed_flow_facade():
     }
     with TestClient(application) as client:
         assert client.post("/v1/proxy", headers=headers(), json={}).status_code == 404
+
+
+def test_readiness_fails_when_project_store_is_unavailable(monkeypatch):
+    application = app()
+
+    def unavailable():
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(application.state.runtime.projects, "check", unavailable)
+    with TestClient(application) as client:
+        response = client.get("/health/ready")
+        extension_health = client.get("/api/health")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "unavailable"
+    assert extension_health.json()["ok"] is False
+
+
+def test_content_length_limit_rejects_request_before_parsing_body():
+    application = app()
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/images/generations",
+            headers={**headers(), "Content-Length": str(71 * 1024 * 1024)},
+            content=b"{}",
+        )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
 
 
 def test_generation_requires_auth_and_connection():
@@ -160,7 +192,8 @@ def test_upload_routes_by_known_project_and_reuses_cached_media(monkeypatch):
     async def fake_api(connection_id, **_kwargs):
         calls.append(connection_id)
         return {
-            "status": 200,
+            "status": 201,
+            "headers": {"x-upload-id": "upload-1"},
             "data": {"media": {"name": "media/cached", "projectId": "projects/owned"}},
         }
 
@@ -179,7 +212,8 @@ def test_upload_routes_by_known_project_and_reuses_cached_media(monkeypatch):
         first_upload = client.post("/v1/media", headers=headers(), json=body)
         cached_upload = client.post("/v1/media", headers=headers(), json=body)
 
-    assert first_upload.status_code == cached_upload.status_code == 200
+    assert first_upload.status_code == cached_upload.status_code == 201
+    assert first_upload.headers["x-upload-id"] == cached_upload.headers["x-upload-id"] == "upload-1"
     assert calls == ["account-2"]
     assert first_upload.headers["x-flow-media-cache-hits"] == "0"
     assert cached_upload.headers["x-flow-media-cache-hits"] == "1"
@@ -191,6 +225,9 @@ def test_upload_routes_by_known_project_and_reuses_cached_media(monkeypatch):
 def test_concurrent_identical_media_requests_upload_only_once(monkeypatch):
     application = app()
     connect(application, monkeypatch)
+    application.state.runtime.projects.remember_project(
+        "installation-1", "projects/one", "Test project"
+    )
     calls = []
 
     async def fake_api(_connection_id, **_kwargs):
@@ -246,6 +283,18 @@ def test_google_account_change_cannot_reuse_previous_account_project(monkeypatch
     assert response.json()["error"]["code"] == "PROJECT_ACCOUNT_UNAVAILABLE"
 
 
+def test_unknown_explicit_project_is_never_guessed_even_with_one_account(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/images/generations", headers=headers(),
+            json={"project_id": "projects/not-synced", "prompt": "test"},
+        )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "PROJECT_ROUTE_UNKNOWN"
+
+
 def test_scheduler_fills_three_slots_before_using_next_connection(monkeypatch):
     application = app()
     first = SimpleNamespace(
@@ -259,6 +308,8 @@ def test_scheduler_fills_three_slots_before_using_next_connection(monkeypatch):
     monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [first, second])
     pending = {"account-1": 0, "account-2": 0}
     monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda connection_id: pending[connection_id])
+    application.state.runtime.projects.put("installation-1", "projects/one", "FlowProvider")
+    application.state.runtime.projects.put("installation-2", "projects/two", "FlowProvider")
     calls = []
 
     async def fake_api(connection_id, **_kwargs):
@@ -269,19 +320,19 @@ def test_scheduler_fills_three_slots_before_using_next_connection(monkeypatch):
     with TestClient(application) as client:
         response = client.post(
             "/v1/images/generations", headers=headers(),
-            json={"project_id": "projects/existing", "prompt": "test"},
+                json={"prompt": "test"},
         )
         assert response.status_code == 200
         pending["account-1"] = 2
         response = client.post(
             "/v1/images/generations", headers=headers(),
-            json={"project_id": "projects/existing", "prompt": "test"},
+                json={"prompt": "test"},
         )
         assert response.status_code == 200
         pending["account-1"] = 3
         response = client.post(
             "/v1/images/generations", headers=headers(),
-            json={"project_id": "projects/existing", "prompt": "test"},
+                json={"prompt": "test"},
         )
         assert response.status_code == 200
 
@@ -301,6 +352,18 @@ def test_job_reservation_enforces_capacity_between_extension_rpcs(monkeypatch):
 
     application.state.runtime.release_connection("account-1")
     assert application.state.runtime.reserve_connection(connection)
+
+
+def test_paid_credit_is_reserved_before_video_request_completes(monkeypatch):
+    application = app()
+    connection = SimpleNamespace(id="account-1", max_slots=3, credits=20)
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+
+    assert application.state.runtime.reserve_connection(connection, 20)
+    assert application.state.runtime.available_credits(connection) == 0
+    assert not application.state.runtime.reserve_connection(connection, 20)
+    application.state.runtime.release_connection("account-1", 20)
+    assert application.state.runtime.reserve_connection(connection, 20)
 
 
 def test_automatic_image_generation_creates_project_when_account_has_no_managed_project(monkeypatch):
@@ -402,16 +465,15 @@ def test_stale_cached_media_is_uploaded_again(monkeypatch):
             headers=headers(),
             json={"prompt": "test", "input_images": [{"image_base64": "aGVsbG8="}]},
         )
-
-    assert response.status_code == 200
-    assert len(calls) == 3
-    assert calls[1]["url"].endswith("/v1/flow/uploadImage")
-    assert calls[2]["body"]["requests"][0]["imageInputs"][0]["name"] == "media/refreshed"
-    refreshed = application.state.runtime.projects.get_media(
-        "installation-1", "projects/managed", digest
-    )
-    assert refreshed is not None
-    assert refreshed.google_media_id == "media/refreshed"
+        assert response.status_code == 200
+        assert len(calls) == 3
+        assert calls[1]["url"].endswith("/v1/flow/uploadImage")
+        assert calls[2]["body"]["requests"][0]["imageInputs"][0]["name"] == "media/refreshed"
+        refreshed = application.state.runtime.projects.get_media(
+            "installation-1", "projects/managed", digest
+        )
+        assert refreshed is not None
+        assert refreshed.google_media_id == "media/refreshed"
 
 
 def test_create_project_and_check_operations_return_upstream_results(monkeypatch):
@@ -553,6 +615,36 @@ def test_routing_scope_never_falls_back_to_another_installation(monkeypatch):
     assert unavailable.json()["error"]["code"] == "ROUTING_SCOPE_UNAVAILABLE"
 
 
+def test_routing_scope_is_invalid_for_new_google_account_on_same_installation(monkeypatch):
+    application = app()
+    old_account = SimpleNamespace(
+        id="old", installation_id="shared-installation", account_email="old@example.com",
+        max_slots=3, paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=1,
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [old_account])
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+
+    async def fake_trpc(_connection_id, **_kwargs):
+        return {"status": 200, "data": {"result": {"projectId": "projects/old"}}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    with TestClient(application) as client:
+        created = client.post("/v1/projects", headers=headers(), json={"title": "Old"})
+        scope = created.headers["x-provider-routing-scope"]
+        new_account = SimpleNamespace(
+            id="new", installation_id="shared-installation", account_email="new@example.com",
+            max_slots=3, paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=2,
+        )
+        monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [new_account])
+        response = client.post(
+            "/v1/images/generations", headers=headers(scope),
+            json={"project_id": "projects/old", "prompt": "test"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "ROUTING_SCOPE_UNAVAILABLE"
+
+
 def test_video_generation_uses_the_type_to_select_the_fixed_flow_operation(monkeypatch):
     application = app()
     connect(application, monkeypatch)
@@ -568,12 +660,14 @@ def test_video_generation_uses_the_type_to_select_the_fixed_flow_operation(monke
     monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
     with TestClient(application) as client:
         image_to_video = client.post("/v1/videos/generations", headers=headers(), json={"type": "image_to_video", "project_id": "project-1", "prompt": "move", "start_media_id": "media/1"})
+        connection = application.state.runtime.bridge.ready_connections()[0]
+        connection.credits = 100
         omni = client.post("/v1/videos/generations", headers=headers(), json={"type": "omni", "project_id": "project-1", "prompt": "move", "reference_media_ids": ["media/1"]})
+        assert application.state.runtime.projects.get_operation("operations/1") is not None
+        assert application.state.runtime.projects.get_operation("operations/2") is not None
     assert image_to_video.status_code == omni.status_code == 200
     assert urls[0].endswith("video:batchAsyncGenerateVideoStartImage")
     assert urls[1].endswith("video:batchAsyncGenerateVideoReferenceImages")
-    assert application.state.runtime.projects.get_operation("operations/1") is not None
-    assert application.state.runtime.projects.get_operation("operations/2") is not None
 
 
 def test_video_status_routes_and_merges_operations_across_accounts(monkeypatch):
@@ -595,10 +689,17 @@ def test_video_status_routes_and_merges_operations_across_accounts(monkeypatch):
     monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [first, second])
     monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
     calls = []
+    active = 0
+    max_active = 0
 
     async def fake_api(connection_id, **kwargs):
+        nonlocal active, max_active
         names = [item["operation"]["name"] for item in kwargs["body"]["operations"]]
         calls.append((connection_id, names))
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.02)
+        active -= 1
         return {
             "status": 200,
             "data": {"operations": [{"operation": {"name": name, "done": False}} for name in names]},
@@ -621,6 +722,7 @@ def test_video_status_routes_and_merges_operations_across_accounts(monkeypatch):
         "operations/one", "operations/two",
     ]
     assert response.headers["x-flow-operation-groups"] == "2"
+    assert max_active == 2
 
 
 def test_video_status_preserves_requested_order_when_accounts_are_interleaved(monkeypatch):
@@ -715,7 +817,13 @@ def test_video_generation_excludes_accounts_below_twenty_credits(monkeypatch):
         id="eligible", installation_id="eligible-installation", max_slots=3,
         paygate_tier="PAYGATE_TIER_ONE", credits=20, connected_at=2,
     )
-    accounts = [low, eligible]
+    accounts = [eligible]
+    application.state.runtime.projects.remember_project(
+        "eligible-installation", "project-1", "Eligible project"
+    )
+    application.state.runtime.projects.remember_project(
+        "low-installation", "project-2", "Low-credit project"
+    )
     monkeypatch.setattr(
         application.state.runtime.bridge,
         "ready_connections",
@@ -736,10 +844,65 @@ def test_video_generation_excludes_accounts_below_twenty_credits(monkeypatch):
     with TestClient(application) as client:
         accepted = client.post("/v1/videos/generations", headers=headers(), json=body)
         accounts[:] = [low]
-        rejected = client.post("/v1/videos/generations", headers=headers(), json=body)
+        rejected = client.post(
+            "/v1/videos/generations", headers=headers(),
+            json={**body, "project_id": "project-2"},
+        )
 
     assert accepted.status_code == 200
     assert calls == ["eligible"]
     assert eligible.credits is None
     assert rejected.status_code == 503
     assert rejected.json()["error"]["code"] == "VIDEO_ACCOUNT_UNAVAILABLE"
+
+
+def test_failed_paid_attempt_still_invalidates_and_refreshes_credit(monkeypatch):
+    application = app()
+    connection = connect(application, monkeypatch)
+    refreshes = []
+
+    async def fake_api(_connection_id, **_kwargs):
+        return {"status": 500, "data": {"error": {"message": "uncertain outcome"}}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "schedule_account_refresh",
+        lambda connection_id, **kwargs: refreshes.append((connection_id, kwargs)),
+    )
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations", headers=headers(),
+            json={
+                "type": "image_to_video", "project_id": "project-1",
+                "prompt": "move", "start_media_id": "media/1",
+            },
+        )
+        assert connection.credits is None
+
+    assert response.status_code == 500
+    assert refreshes == [("account-1", {"initial_delay": 2})]
+
+
+def test_omni_reserves_its_higher_known_credit_cost(monkeypatch):
+    application = app()
+    connection = SimpleNamespace(
+        id="account-1", installation_id="installation-1", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=24, connected_at=1,
+    )
+    application.state.runtime.projects.remember_project(
+        "installation-1", "project-1", "Project"
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [connection])
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations", headers=headers(),
+            json={
+                "type": "omni", "project_id": "project-1", "prompt": "move",
+                "reference_media_ids": ["media/1"], "duration_seconds": 8,
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "VIDEO_ACCOUNT_UNAVAILABLE"

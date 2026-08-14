@@ -29,7 +29,7 @@ class FlowBridge(BaseFlowBridge):
             conn.credits = None
             conn.flow_key = "browser_owned"
             await self._send_auth_ack(conn)
-            __import__("asyncio").create_task(self.refresh_account(conn.id))
+            self.schedule_account_refresh(conn.id)
             return
         await super().handle_message(data, ws)
 
@@ -56,7 +56,7 @@ class FlowBridge(BaseFlowBridge):
         }
         response = await self.send_rpc(connection_id, "SW_FETCH", {"spec": spec}, timeout=35)
         if response.get("error"):
-            self._invalidate_auth(conn, str(response["error"]))
+            conn.last_error = str(response["error"])[:300]
             await self._send_auth_ack(conn)
             return
         inner = response.get("data") if isinstance(response, dict) else None

@@ -23,6 +23,23 @@ def test_operation_route_schema_migrates_existing_database():
             """
         )
         connection.execute(
+            """
+            CREATE TABLE provider_media (
+                installation_id TEXT NOT NULL,
+                google_project_id TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL,
+                google_media_id TEXT NOT NULL,
+                mime_type TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_used_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (installation_id, google_project_id, content_sha256)
+            )
+            """
+        )
+        connection.execute(
             "INSERT INTO provider_operations (operation_name, installation_id, google_project_id) VALUES (?, ?, ?)",
             ("operations/legacy", "installation-1", "projects/one"),
         )
@@ -34,6 +51,14 @@ def test_operation_route_schema_migrates_existing_database():
         assert route is not None
         assert route.route_kind == "operation"
         assert route.poll_name == "operations/legacy"
+        store.put_media(
+            "installation-1", "projects/one", "sha", "media/one", "image/png", "one.png",
+            {"media": {"name": "media/one"}}, 201, {"x-upload-id": "one"},
+        )
+        media = store.get_media("installation-1", "projects/one", "sha")
+        assert media is not None
+        assert media.response_status == 201
+        assert media.response_headers == {"x-upload-id": "one"}
         store.close()
     finally:
         for suffix in ("", "-wal", "-shm"):

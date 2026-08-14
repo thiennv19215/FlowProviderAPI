@@ -56,7 +56,7 @@ If the token is malformed or has an invalid signature, the API returns:
 400 ROUTING_SCOPE_INVALID
 ```
 
-If the bound Chrome installation is offline, unhealthy, or currently has no free slot, the API returns:
+If the bound Chrome installation/Google-account pair is offline, changed, unhealthy, or currently has no free slot, the API returns:
 
 ```text
 503 ROUTING_SCOPE_UNAVAILABLE
@@ -66,9 +66,9 @@ A scoped request never falls back to another available Google account. The calle
 
 ## Security and lifecycle
 
-The routing scope is opaque to callers and contains no Google credential. It is HMAC-signed using the Provider bootstrap API key and encodes the extension installation identity only. No database is required.
+The v2 routing scope is opaque to callers and contains no Google credential. It is HMAC-signed using the Provider bootstrap API key and encodes the extension installation identity plus normalized Google account email. No database is required.
 
-The extension `installationId` is stable across WebSocket reconnects, so reconnecting the same installation can continue serving existing routing scopes. Rotating `FLOW_PROVIDER_BOOTSTRAP_API_KEY` invalidates previously issued scopes.
+The extension `installationId` is stable across WebSocket reconnects, so reconnecting the same installation with the same Google account can continue serving existing routing scopes. Changing the signed-in Google account makes the old scope unavailable. Rotating `FLOW_PROVIDER_BOOTSTRAP_API_KEY` invalidates previously issued scopes. Installation-only v1 scopes are intentionally rejected.
 
 ## Responsibility boundary
 

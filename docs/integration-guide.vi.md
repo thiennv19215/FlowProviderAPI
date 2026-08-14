@@ -32,7 +32,7 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 - URL ảnh/video do Google Flow cấp có thể hết hạn hoặc bị thu hồi. Bên tích hợp nên tải và lưu kết quả ngay khi hoàn tất.
 - Các media dùng chung một luồng phải thuộc cùng `project_id`.
 - Provider ưu tiên tối đa 3 request đồng thời trên một extension rồi mới chuyển sang extension tiếp theo.
-- Account dưới 20 credits không được chọn để bắt đầu tạo video; account đó vẫn có thể xử lý ảnh.
+- Mỗi video job reserve trước tối thiểu 20 credits, hoặc mức Omni cao hơn đã biết; các request đồng thời không thể dùng lặp cùng số dư. Sau mọi lần gọi video, kể cả timeout chưa rõ kết quả, Provider khóa paid routing cho account đó đến khi refresh credit thành công. Account vẫn có thể xử lý ảnh.
 - Provider lưu account/project và loại poll (`operation` hoặc `media`) của video operation/workflow; `/v1/videos/status` tự chia request theo đúng account, giữ thứ tự đầu vào và gộp kết quả, không cần routing scope đối với operation được tạo qua Provider.
 
 ## 2. Danh sách endpoint
@@ -133,6 +133,8 @@ Endpoint nhận JSON, không dùng `multipart/form-data`. Bên gọi đọc file
 
 Provider băm nội dung ảnh bằng SHA-256. Nếu đúng ảnh đó đã có media ID trong cùng account và project, API trả lại media ID từ DB mà không upload lên Google lần nữa. Có thể kiểm tra header `X-Flow-Media-Cache-Hits`: `1` là cache hit, `0` là upload mới.
 
+Cache hit giữ nguyên HTTP status, body và các upstream header an toàn của lần upload đầu.
+
 ### Request
 
 ```http
@@ -153,7 +155,7 @@ POST /v1/media
 | `project_id` | Có | Project ID của Google Flow. |
 | `file_name` | Không | Mặc định `upload.png`, tối đa 255 ký tự. |
 | `mime_type` | Có | Bắt đầu bằng `image/`, ví dụ `image/jpeg`, `image/png`. |
-| `image_base64` | Có | Chuỗi Base64 thuần, không thêm prefix `data:image/...;base64,`. Tối đa 64 MiB ký tự. |
+| `image_base64` | Có | Chuỗi Base64 thuần, không thêm prefix `data:image/...;base64,`. Tổng Base64 trong một request tối đa 64 MiB ký tự. |
 
 ### Response `200`
 
@@ -530,7 +532,8 @@ Lỗi do Flow trả về như `403` hoặc `429` vẫn được chuyển tiếp 
 | `401` | `INVALID_API_KEY` | Thiếu/sai API key. |
 | `403` | Upstream Flow | Tài khoản/quyền/captcha bị từ chối; trả lỗi cho người dùng. |
 | `404` | `NOT_FOUND` hoặc upstream | Sai endpoint/resource/media/operation. |
-| `409` | `CONFLICT` | Trạng thái tài nguyên xung đột. |
+| `409` | `PROJECT_ROUTE_UNKNOWN` | Project tường minh chưa có mapping account; gọi `/v1/projects`, dùng scope v2 đúng account, hoặc dùng managed image flow. |
+| `409` | `CONFLICT` | Trạng thái tài nguyên xung đột khác. |
 | `413` | `PAYLOAD_TOO_LARGE` | Ảnh Base64 hoặc request quá lớn. |
 | `422` | `VALIDATION_ERROR` | Field thiếu hoặc giá trị không thuộc enum/range. |
 | `429` | Upstream Flow hoặc rate limit API | Hết quota/bị giới hạn; backoff trước khi thử lại. |
@@ -595,7 +598,7 @@ Ví dụ `/health/ready`:
 }
 ```
 
-`status` là `waiting_for_provider` khi API/SQLite đã hoạt động nhưng chưa có extension sẵn sàng, và là `unavailable` khi SQLite không truy cập được. Chỉ gửi request tạo nội dung khi `status` là `ready` và `provider_accounts` lớn hơn `0`.
+`status` là `waiting_for_provider` khi API/SQLite đã hoạt động nhưng chưa có extension sẵn sàng. Trạng thái này vẫn trả HTTP 200 để extension có thể kết nối. Khi SQLite không truy cập được, endpoint trả HTTP 503 với `status: unavailable`. Chỉ gửi request tạo nội dung khi `status` là `ready` và `provider_accounts` lớn hơn `0`.
 
 ## 13. Checklist cho bên tích hợp
 

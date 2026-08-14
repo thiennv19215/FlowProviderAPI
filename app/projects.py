@@ -23,6 +23,8 @@ class ProviderMedia:
     mime_type: str
     file_name: str
     response_data: dict | None
+    response_status: int | None
+    response_headers: dict | None
 
 
 @dataclass(frozen=True)
@@ -49,6 +51,7 @@ class ProjectStore:
                     Path(self.path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
                 self._connection = sqlite3.connect(self.path, check_same_thread=False)
                 self._connection.row_factory = sqlite3.Row
+                self._connection.execute("PRAGMA busy_timeout=5000")
                 self._connection.execute("PRAGMA journal_mode=WAL")
                 self._connection.execute(
                     """
@@ -73,6 +76,8 @@ class ProjectStore:
                         mime_type TEXT NOT NULL,
                         file_name TEXT NOT NULL,
                         response_json TEXT,
+                        response_status INTEGER,
+                        response_headers_json TEXT,
                         status TEXT NOT NULL DEFAULT 'active',
                         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -101,6 +106,14 @@ class ProjectStore:
                 if "response_json" not in media_columns:
                     self._connection.execute(
                         "ALTER TABLE provider_media ADD COLUMN response_json TEXT"
+                    )
+                if "response_status" not in media_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_media ADD COLUMN response_status INTEGER"
+                    )
+                if "response_headers_json" not in media_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_media ADD COLUMN response_headers_json TEXT"
                     )
                 self._connection.execute(
                     """
@@ -131,6 +144,21 @@ class ProjectStore:
                     )
                 self._connection.execute(
                     "UPDATE provider_operations SET poll_name = operation_name WHERE poll_name IS NULL"
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_project_routes_account ON provider_project_routes (installation_id, status)"
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_media_account_project ON provider_media (installation_id, google_project_id, status)"
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_media_last_used ON provider_media (last_used_at)"
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_operations_account_project ON provider_operations (installation_id, google_project_id, status)"
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_operations_last_used ON provider_operations (last_used_at)"
                 )
                 self._connection.commit()
             return self._connection
@@ -265,7 +293,8 @@ class ProjectStore:
             row = self._db().execute(
                 """
                 SELECT installation_id, google_project_id, content_sha256,
-                       google_media_id, mime_type, file_name, response_json
+                       google_media_id, mime_type, file_name, response_json,
+                       response_status, response_headers_json
                 FROM provider_media
                 WHERE installation_id = ? AND google_project_id = ?
                   AND content_sha256 = ? AND status = 'active'
@@ -287,6 +316,8 @@ class ProjectStore:
             row["installation_id"], row["google_project_id"], row["content_sha256"],
             row["google_media_id"], row["mime_type"], row["file_name"],
             json.loads(row["response_json"]) if row["response_json"] else None,
+            row["response_status"],
+            json.loads(row["response_headers_json"]) if row["response_headers_json"] else None,
         )
 
     def put_media(
@@ -298,19 +329,26 @@ class ProjectStore:
         mime_type: str,
         file_name: str,
         response_data: dict | None = None,
+        response_status: int | None = None,
+        response_headers: dict | None = None,
     ) -> ProviderMedia:
         with self._lock:
             self._db().execute(
                 """
                 INSERT INTO provider_media (
                     installation_id, google_project_id, content_sha256,
-                    google_media_id, mime_type, file_name, response_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    google_media_id, mime_type, file_name, response_json,
+                    response_status, response_headers_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(installation_id, google_project_id, content_sha256) DO UPDATE SET
                     google_media_id = excluded.google_media_id,
                     mime_type = excluded.mime_type,
                     file_name = excluded.file_name,
                     response_json = COALESCE(excluded.response_json, provider_media.response_json),
+                    response_status = COALESCE(excluded.response_status, provider_media.response_status),
+                    response_headers_json = COALESCE(
+                        excluded.response_headers_json, provider_media.response_headers_json
+                    ),
                     status = 'active',
                     updated_at = CURRENT_TIMESTAMP,
                     last_used_at = CURRENT_TIMESTAMP
@@ -319,12 +357,15 @@ class ProjectStore:
                     installation_id, google_project_id, content_sha256,
                     google_media_id, mime_type, file_name,
                     json.dumps(response_data, separators=(",", ":")) if response_data is not None else None,
+                    response_status,
+                    json.dumps(response_headers, separators=(",", ":")) if response_headers is not None else None,
                 ),
             )
             self._db().commit()
         return ProviderMedia(
             installation_id, google_project_id, content_sha256,
             google_media_id, mime_type, file_name, response_data,
+            response_status, response_headers,
         )
 
     def invalidate_media(

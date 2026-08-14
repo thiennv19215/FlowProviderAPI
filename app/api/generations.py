@@ -20,6 +20,7 @@ from app.api.schemas import (
 from app.providers.google_flow.client import BoundFlowClient
 from app.providers.google_flow.sdk.constants import (
     API_HEADERS, CAPTCHA_IMAGE, CAPTCHA_VIDEO, FLOW_API_BASE, TRPC_CREATE_PROJECT,
+    OMNI_FLASH_CREDIT_COST,
     TRPC_HEADERS, TRPC_SEARCH_PROJECTS, UPLOAD_IMAGE_URL, VIDEO_I2V_URL, VIDEO_OMNI_URL,
     VIDEO_POLL_URL,
 )
@@ -30,7 +31,7 @@ from app.providers.google_flow.sdk.helpers import (
 
 router = APIRouter(tags=["Google Flow"])
 ROUTING_SCOPE_HEADER = "X-Provider-Routing-Scope"
-ROUTING_SCOPE_VERSION = "v1"
+ROUTING_SCOPE_VERSION = "v2"
 
 
 def _account_key(connection) -> str:
@@ -54,8 +55,8 @@ def _scope_secret(settings) -> bytes:
     return settings.bootstrap_api_key.encode("utf-8")
 
 
-def _encode_routing_scope(settings, installation_id: str) -> str:
-    payload = base64.urlsafe_b64encode(installation_id.encode("utf-8")).decode("ascii").rstrip("=")
+def _encode_routing_scope(settings, account_key: str) -> str:
+    payload = base64.urlsafe_b64encode(account_key.encode("utf-8")).decode("ascii").rstrip("=")
     signature = hmac.new(_scope_secret(settings), payload.encode("ascii"), hashlib.sha256).hexdigest()
     return f"{ROUTING_SCOPE_VERSION}.{payload}.{signature}"
 
@@ -72,23 +73,23 @@ def _decode_routing_scope(settings, scope: str) -> str:
         raise APIError(400, "ROUTING_SCOPE_INVALID", "Provider routing scope is invalid.")
     try:
         padded = payload + "=" * (-len(payload) % 4)
-        installation_id = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+        account_key = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
     except (ValueError, UnicodeDecodeError) as exc:
         raise APIError(400, "ROUTING_SCOPE_INVALID", "Provider routing scope is invalid.") from exc
-    if not installation_id:
+    if not account_key:
         raise APIError(400, "ROUTING_SCOPE_INVALID", "Provider routing scope is invalid.")
-    return installation_id
+    return account_key
 
 
-def _reserve(request: Request, connection) -> bool:
+def _reserve(request: Request, connection, credit_cost: int = 0) -> bool:
     runtime = request.app.state.runtime
-    if not runtime.reserve_connection(connection):
+    if not runtime.reserve_connection(connection, credit_cost):
         return False
     reservations = getattr(request.state, "provider_reservations", None)
     if reservations is None:
         reservations = []
         request.state.provider_reservations = reservations
-    reservations.append(connection.id)
+    reservations.append((connection.id, credit_cost))
     return True
 
 
@@ -102,15 +103,15 @@ def _connection(
 ):
     runtime = request.app.state.runtime
     _authorize(runtime.settings, authorization)
-    available = runtime.bridge.ready_connections(min_credits=min_credits)
+    available = runtime.bridge.ready_connections()
 
     if routing_scope:
-        installation_id = _decode_routing_scope(runtime.settings, routing_scope)
+        scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope)
         connection = next(
             (
                 item for item in available
-                if getattr(item, "installation_id", None) == installation_id
-                and runtime.connection_load(item) < item.max_slots
+                if _account_key(item) == scoped_account_key
+                and runtime.can_reserve(item, min_credits)
             ),
             None,
         )
@@ -129,7 +130,7 @@ def _connection(
                     "PROJECT_ACCOUNT_MISMATCH",
                     "The selected Google account does not own this project.",
                 )
-        if not _reserve(request, connection):
+        if not _reserve(request, connection, min_credits):
             raise APIError(503, "ROUTING_SCOPE_UNAVAILABLE", "The routed account is at capacity.", retryable=True)
         return connection, BoundFlowClient(runtime.bridge, connection.id)
     if project_id:
@@ -139,21 +140,38 @@ def _connection(
                 (
                     item for item in available
                     if _account_key(item) == account_key
-                    and runtime.connection_load(item) < item.max_slots
+                    and runtime.can_reserve(item, min_credits)
                 ),
                 None,
             )
             if connection is None:
                 raise APIError(
                     503,
-                    "PROJECT_ACCOUNT_UNAVAILABLE",
-                    "The Google Flow account that owns this project is not currently available.",
+                    "VIDEO_ACCOUNT_UNAVAILABLE" if min_credits else "PROJECT_ACCOUNT_UNAVAILABLE",
+                    (
+                        f"The project account has fewer than {min_credits} available credits or is unavailable."
+                        if min_credits else
+                        "The Google Flow account that owns this project is not currently available."
+                    ),
                     retryable=True,
                 )
-            if not _reserve(request, connection):
+            if not _reserve(request, connection, min_credits):
                 raise APIError(503, "PROJECT_ACCOUNT_UNAVAILABLE", "The project account is at capacity.", retryable=True)
             return connection, BoundFlowClient(runtime.bridge, connection.id)
-    available = [item for item in available if runtime.connection_load(item) < item.max_slots]
+        if not available:
+            raise APIError(
+                503,
+                "VIDEO_ACCOUNT_UNAVAILABLE" if min_credits else "PROVIDER_ACCOUNT_UNAVAILABLE",
+                "No Google Flow extension is currently available.",
+                retryable=True,
+            )
+        raise APIError(
+            409,
+            "PROJECT_ROUTE_UNKNOWN",
+            "No provider account route is stored for this Google Flow project.",
+            field="project_id",
+        )
+    available = [item for item in available if runtime.can_reserve(item, min_credits)]
     if not available:
         if min_credits:
             raise APIError(
@@ -169,7 +187,7 @@ def _connection(
             retryable=True,
         )
     connection = runtime.select_connection(available)
-    if not _reserve(request, connection):
+    if not _reserve(request, connection, min_credits):
         raise APIError(503, "PROVIDER_ACCOUNT_UNAVAILABLE", "No provider account slot is available.", retryable=True)
     return connection, BoundFlowClient(runtime.bridge, connection.id)
 
@@ -190,9 +208,9 @@ def _response(result: dict) -> Response:
 
 def _scoped_response(result: dict, settings, connection) -> Response:
     response = _response(result)
-    installation_id = getattr(connection, "installation_id", None)
-    if installation_id:
-        response.headers[ROUTING_SCOPE_HEADER] = _encode_routing_scope(settings, installation_id)
+    account_key = _account_key(connection)
+    if account_key:
+        response.headers[ROUTING_SCOPE_HEADER] = _encode_routing_scope(settings, account_key)
     return response
 
 
@@ -270,14 +288,17 @@ def _remember_operations(runtime, connection, project_id: str, result: dict) -> 
             runtime.projects.put_operation(name, account_key, project_id, "media", name)
 
 
-def _refresh_paid_account(runtime, connection, result: dict) -> None:
-    status = result.get("status")
-    if not isinstance(status, int) or status >= 400:
-        return
-    # Do not schedule another paid job against a balance captured before this
-    # operation. Images remain eligible while the fresh balance is requested.
+def _refresh_paid_account(runtime, connection) -> None:
+    # A timeout/error can still follow an accepted paid operation, so every
+    # attempted paid request invalidates the captured balance until refreshed.
     connection.credits = None
-    asyncio.create_task(runtime.bridge.refresh_account(connection.id))
+    runtime.bridge.schedule_account_refresh(connection.id, initial_delay=2)
+
+
+def _remember_project_on_success(runtime, connection, project_id: str, result: dict) -> None:
+    status = result.get("status")
+    if isinstance(status, int) and status < 400:
+        runtime.projects.remember_project(_account_key(connection), project_id, "External")
 
 
 async def _managed_project(runtime, connection, client) -> str:
@@ -428,7 +449,11 @@ async def upload_image(
                 }
             }
             response = _scoped_response(
-                {"status": 200, "data": cached_data},
+                {
+                    "status": cached.response_status or 200,
+                    "headers": cached.response_headers or {},
+                    "data": cached_data,
+                },
                 runtime.settings,
                 connection,
             )
@@ -444,6 +469,7 @@ async def upload_image(
             "mimeType": payload.mime_type,
         }
         result = await _api(client, url=UPLOAD_IMAGE_URL, body=body)
+        _remember_project_on_success(runtime, connection, payload.project_id, result)
         media_id = extract_upload_media_id(result)
         if media_id:
             runtime.projects.put_media(
@@ -454,6 +480,8 @@ async def upload_image(
                 payload.mime_type,
                 payload.file_name,
                 result.get("data") if isinstance(result.get("data"), dict) else None,
+                result.get("status") if isinstance(result.get("status"), int) else None,
+                result.get("headers") if isinstance(result.get("headers"), dict) else None,
             )
     response = _scoped_response(result, runtime.settings, connection)
     response.headers["X-Flow-Project-Id"] = payload.project_id
@@ -530,6 +558,8 @@ async def generate_image(
                     image.mime_type,
                     image.file_name,
                     upload_result.get("data") if isinstance(upload_result.get("data"), dict) else None,
+                    upload_result.get("status") if isinstance(upload_result.get("status"), int) else None,
+                    upload_result.get("headers") if isinstance(upload_result.get("headers"), dict) else None,
                 )
             reference_media_ids.append(media_id)
         if stale_project:
@@ -571,6 +601,7 @@ async def generate_image(
             project_recovered = True
             force_upload.clear()
             continue
+        _remember_project_on_success(runtime, connection, project_id, result)
         response = _scoped_response(result, runtime.settings, connection)
         response.headers["X-Flow-Project-Id"] = project_id
         response.headers["X-Flow-Media-Cache-Hits"] = str(cache_hits)
@@ -586,11 +617,15 @@ async def generate_video(
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
+    credit_cost = (
+        max(20, OMNI_FLASH_CREDIT_COST[payload.duration_seconds])
+        if isinstance(payload, OmniVideoGenerationRequest) else 20
+    )
     connection, client = _connection(
         request,
         authorization,
         routing_scope,
-        min_credits=20,
+        min_credits=credit_cost,
         project_id=payload.project_id,
     )
     tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
@@ -612,8 +647,9 @@ async def generate_video(
             "useV2ModelConfig": True,
         }
         result = await _api(client, url=VIDEO_I2V_URL, body=body, captcha_action=CAPTCHA_VIDEO)
+        _refresh_paid_account(runtime, connection)
+        _remember_project_on_success(runtime, connection, payload.project_id, result)
         _remember_operations(runtime, connection, payload.project_id, result)
-        _refresh_paid_account(runtime, connection, result)
         return _scoped_response(result, runtime.settings, connection)
     body = {
         "mediaGenerationContext": {
@@ -634,8 +670,9 @@ async def generate_video(
         "useV2ModelConfig": True,
     }
     result = await _api(client, url=VIDEO_OMNI_URL, body=body, captcha_action=CAPTCHA_VIDEO)
+    _refresh_paid_account(runtime, connection)
+    _remember_project_on_success(runtime, connection, payload.project_id, result)
     _remember_operations(runtime, connection, payload.project_id, result)
-    _refresh_paid_account(runtime, connection, result)
     return _scoped_response(result, runtime.settings, connection)
 
 
@@ -648,7 +685,7 @@ async def check_video_operations(
 ) -> Response:
     runtime = request.app.state.runtime
     _authorize(runtime.settings, authorization)
-    scoped_installation = (
+    scoped_account_key = (
         _decode_routing_scope(runtime.settings, routing_scope)
         if routing_scope else None
     )
@@ -657,7 +694,7 @@ async def check_video_operations(
         for operation_name in payload.operation_names
     ]
     unknown = [name for name, route in route_rows if route is None]
-    if unknown and not scoped_installation:
+    if unknown and not scoped_account_key:
         raise APIError(
             409,
             "OPERATION_ROUTE_UNKNOWN",
@@ -667,12 +704,12 @@ async def check_video_operations(
 
     available = runtime.bridge.ready_connections()
     scoped_connection = None
-    if scoped_installation:
+    if scoped_account_key:
         scoped_connection = next(
             (
                 item for item in available
-                if item.installation_id == scoped_installation
-                and runtime.connection_load(item) < item.max_slots
+                if _account_key(item) == scoped_account_key
+                and runtime.can_reserve(item)
             ),
             None,
         )
@@ -698,6 +735,7 @@ async def check_video_operations(
         grouped.setdefault(account_key, []).append(item)
 
     group_results: list[tuple[object, dict]] = []
+    poll_jobs: list[tuple[object, BoundFlowClient, dict]] = []
     order: dict[str, int] = {}
     for index, (operation_name, route) in enumerate(route_rows):
         order.setdefault(operation_name, index)
@@ -737,11 +775,17 @@ async def check_video_operations(
                 ]
             })
         for body in bodies:
-            result = await _api(client, url=VIDEO_POLL_URL, body=body)
-            status = result.get("status")
-            if not isinstance(status, int) or status >= 400:
-                return _response(result)
-            group_results.append((connection, result))
+            poll_jobs.append((connection, client, body))
+
+    results = await asyncio.gather(*(
+        _api(client, url=VIDEO_POLL_URL, body=body)
+        for _connection, client, body in poll_jobs
+    ))
+    for (connection, _client, _body), result in zip(poll_jobs, results, strict=True):
+        status = result.get("status")
+        if not isinstance(status, int) or status >= 400:
+            return _response(result)
+        group_results.append((connection, result))
 
     if len(group_results) == 1:
         connection, result = group_results[0]

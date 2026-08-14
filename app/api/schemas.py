@@ -6,6 +6,8 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+MAX_BASE64_TOTAL_CHARS = 64 * 1024 * 1024
+
 
 class ErrorDetail(BaseModel):
     field: str | None = None
@@ -49,12 +51,12 @@ class ImageUploadRequest(BaseModel):
     project_id: str = Field(min_length=1, max_length=500)
     file_name: str = Field(default="upload.png", min_length=1, max_length=255)
     mime_type: str = Field(min_length=3, max_length=120, pattern=r"^image/")
-    image_base64: str = Field(min_length=1, max_length=64 * 1024 * 1024)
+    image_base64: str = Field(min_length=1, max_length=MAX_BASE64_TOTAL_CHARS)
 
 
 class InlineImageInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    image_base64: str = Field(min_length=1, max_length=64 * 1024 * 1024)
+    image_base64: str = Field(min_length=1, max_length=MAX_BASE64_TOTAL_CHARS)
     mime_type: str = Field(default="image/png", min_length=3, max_length=120, pattern=r"^image/")
     file_name: str = Field(default="reference.png", min_length=1, max_length=255)
 
@@ -73,6 +75,8 @@ class ImageGenerationRequest(BaseModel):
     def validate_references(self):
         if len(self.reference_media_ids) + len(self.input_images) > 8:
             raise ValueError("reference_media_ids and input_images may contain at most 8 images in total")
+        if sum(len(image.image_base64) for image in self.input_images) > MAX_BASE64_TOTAL_CHARS:
+            raise ValueError("input_images may contain at most 64 MiB of Base64 data in total")
         if self.reference_media_ids and not self.project_id:
             raise ValueError("project_id is required when reference_media_ids are supplied")
         return self

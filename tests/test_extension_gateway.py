@@ -33,6 +33,7 @@ async def test_auth_available_clears_previous_google_account_state(monkeypatch):
     assert connection.paygate_tier is None
     assert connection.credits is None
     assert not connection.ready
+    await bridge.close_background_tasks()
 
 
 def test_extension_connects_on_gateway_runtime_path():

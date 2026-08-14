@@ -19,6 +19,7 @@ class Runtime:
     project_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     media_locks: weakref.WeakValueDictionary = field(default_factory=weakref.WeakValueDictionary)
     active_jobs: dict[str, int] = field(default_factory=dict)
+    reserved_credits: dict[str, int] = field(default_factory=dict)
 
     def connection_load(self, connection) -> int:
         return max(
@@ -26,18 +27,42 @@ class Runtime:
             self.bridge.pending_count(connection.id),
         )
 
-    def reserve_connection(self, connection) -> bool:
+    def available_credits(self, connection) -> int | None:
+        if not isinstance(getattr(connection, "credits", None), int):
+            return None
+        return connection.credits - self.reserved_credits.get(connection.id, 0)
+
+    def can_reserve(self, connection, credit_cost: int = 0) -> bool:
         if self.connection_load(connection) >= connection.max_slots:
             return False
-        self.active_jobs[connection.id] = self.active_jobs.get(connection.id, 0) + 1
+        if credit_cost:
+            available = self.available_credits(connection)
+            if available is None or available < credit_cost:
+                return False
         return True
 
-    def release_connection(self, connection_id: str) -> None:
+    def reserve_connection(self, connection, credit_cost: int = 0) -> bool:
+        if not self.can_reserve(connection, credit_cost):
+            return False
+        self.active_jobs[connection.id] = self.active_jobs.get(connection.id, 0) + 1
+        if credit_cost:
+            self.reserved_credits[connection.id] = (
+                self.reserved_credits.get(connection.id, 0) + credit_cost
+            )
+        return True
+
+    def release_connection(self, connection_id: str, credit_cost: int = 0) -> None:
         remaining = self.active_jobs.get(connection_id, 0) - 1
         if remaining > 0:
             self.active_jobs[connection_id] = remaining
         else:
             self.active_jobs.pop(connection_id, None)
+        if credit_cost:
+            credits_remaining = self.reserved_credits.get(connection_id, 0) - credit_cost
+            if credits_remaining > 0:
+                self.reserved_credits[connection_id] = credits_remaining
+            else:
+                self.reserved_credits.pop(connection_id, None)
 
     def select_connection(self, available):
         return min(

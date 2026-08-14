@@ -67,6 +67,38 @@ class FlowBridge:
         self._installation_to_id:dict[str,str]={}
         self._ws_to_id:dict[int,str]={}
         self._pending:dict[str,tuple[asyncio.Future,str]]={}
+        self._refresh_tasks:dict[str,asyncio.Task]={}
+
+    def schedule_account_refresh(self,connection_id:str,*,initial_delay:float=0)->None:
+        current=self._refresh_tasks.get(connection_id)
+        if current and not current.done():return
+
+        async def runner():
+            try:
+                delays=(initial_delay,1,5,15)
+                attempt=0
+                while True:
+                    delay=delays[attempt] if attempt<len(delays) else 60
+                    if delay:await asyncio.sleep(delay)
+                    conn=self.get(connection_id)
+                    if not conn or not conn.flow_key:return
+                    await self.refresh_account(connection_id)
+                    conn=self.get(connection_id)
+                    if not conn or not conn.flow_key or isinstance(conn.credits,int):return
+                    attempt+=1
+            finally:
+                if self._refresh_tasks.get(connection_id) is asyncio.current_task():
+                    self._refresh_tasks.pop(connection_id,None)
+
+        self._refresh_tasks[connection_id]=asyncio.create_task(
+            runner(),name=f"flow-credit-refresh-{connection_id}"
+        )
+
+    async def close_background_tasks(self)->None:
+        tasks=list(self._refresh_tasks.values())
+        self._refresh_tasks.clear()
+        for task in tasks:task.cancel()
+        if tasks:await asyncio.gather(*tasks,return_exceptions=True)
 
     @property
     def connected(self)->bool:return bool(self._connections)
@@ -144,14 +176,14 @@ class FlowBridge:
         if conn:conn.last_seen_at=time.time();conn.suspect_since=None
         if msg_type=="token_captured" and conn:
             token=data.get("flowKey")
-            if isinstance(token,str) and token:conn.flow_key=token;asyncio.create_task(self.refresh_account(conn.id))
+            if isinstance(token,str) and token:conn.flow_key=token;self.schedule_account_refresh(conn.id)
             return
         if msg_type=="flow_api_key" and conn:
             api_key=data.get("apiKey")
             if isinstance(api_key,str) and 20<=len(api_key)<=100 and all(ch.isalnum() or ch in "-_" for ch in api_key):
                 changed=api_key!=conn.flow_api_key
                 conn.flow_api_key=api_key
-                if conn.flow_key and changed:asyncio.create_task(self.refresh_account(conn.id))
+                if conn.flow_key and changed:self.schedule_account_refresh(conn.id)
             return
         if msg_type=="user_info" and conn:
             info=data.get("userInfo")

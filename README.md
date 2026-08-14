@@ -8,7 +8,7 @@ Clients call fixed business endpoints for projects, image upload, image generati
 
 Image generation can run in either compatibility mode with an explicit `project_id`, or managed mode without one. In managed mode the Provider chooses a ready extension, recovers or creates that installation/account's `FlowProvider` project once, and caches project and uploaded-media IDs in SQLite. Repeated inline images are matched by SHA-256 within the same installation, Google account, and project and reuse their media ID directly. A rare stale-media `404` invalidates the cache and triggers one upload retry. Google credentials and image bytes remain browser-owned/request-scoped.
 
-Scheduling reserves up to three complete HTTP jobs on one ready extension before moving to the next. Accounts below 20 credits are excluded from video generation but remain eligible for image operations; a successful paid request blocks further paid routing until the balance refresh completes.
+Scheduling reserves up to three complete HTTP jobs on one ready extension before moving to the next. Each video job also reserves at least 20 credits, or its higher known Omni cost, before it starts, so concurrent requests cannot reuse the same visible balance. After every paid attempt, including an uncertain timeout, paid routing remains blocked until the managed credit refresh succeeds. Image operations remain eligible.
 
 Video operation routes are stored by account/project. Status requests without a routing scope are split by owning account and merged, so polling cannot move to a different Google account.
 

@@ -11,6 +11,8 @@ chmod 600 .env.production
 
 Set an HTTPS public URL, a strong `FLOW_PROVIDER_BOOTSTRAP_API_KEY`, and the Cloudflare Tunnel token. Keep the environment file out of Git.
 
+The production image copies only the installed Python application. `.dockerignore` excludes environment files, local databases, Git metadata, virtual environments, test artifacts, and local API-key files from the Docker build context.
+
 The Cloudflare published application route should forward the Provider hostname to `http://api:8000`. Do not place an interactive challenge on the `/v1/*` Flow endpoints or `/api/extensions/ws`. Apply normal WAF/DDoS controls and an IP-based rate limit to extension WebSocket handshakes.
 
 ## Deploy
