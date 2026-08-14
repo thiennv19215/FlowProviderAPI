@@ -1,6 +1,6 @@
 # Tài liệu tích hợp FlowProviderAPI
 
-Tài liệu này mô tả contract HTTP hiện tại của FlowProviderAPI dành cho backend/frontend tích hợp. API chuyển request tới Google Flow qua Chrome extension đang đăng nhập và trả lại HTTP status cùng body gần như nguyên bản từ Google Flow.
+Tài liệu này mô tả contract HTTP hiện tại của FlowProviderAPI dành cho backend tích hợp service-to-service. Frontend không gọi trực tiếp API này và không được nhận API key. Provider chuyển request tới Google Flow qua Chrome extension đang đăng nhập và trả lại HTTP status cùng body gần như nguyên bản từ Google Flow.
 
 ## 1. Thông tin chung
 
@@ -48,7 +48,147 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 | `GET` | `/health/live` | Kiểm tra process API đang chạy. |
 | `GET` | `/health/ready` | Kiểm tra extension/tài khoản Flow sẵn sàng. |
 
-## 3. Luồng tích hợp chuẩn
+## 3. Contract mapping cho backend
+
+Backend tích hợp chỉ gửi các enum ổn định của FlowProviderAPI. Không gửi trực tiếp
+Google model key như `GEM_PIX_2`, `NARWHAL`, `veo_3_1_*` hoặc `abra_r2v_*`;
+Provider tự map model nội bộ theo loại request, gói account và thời lượng.
+
+### 3.1. Mapping tạo ảnh
+
+| Giá trị nghiệp vụ của backend | `model` gửi Provider | Ghi chú |
+|---|---|---|
+| `pro`, `nano-banana-pro` | `NANO_BANANA_PRO` | Mặc định; Provider map sang model ảnh Pro hiện hành. |
+| `v2`, `nano-banana-2` | `NANO_BANANA_2` | Provider map sang model ảnh v2 hiện hành. |
+
+| Tỷ lệ UI/backend | `aspect_ratio` gửi Provider |
+|---|---|
+| `1:1`, `square` | `IMAGE_ASPECT_RATIO_SQUARE` |
+| `16:9`, `landscape` | `IMAGE_ASPECT_RATIO_LANDSCAPE` |
+| `9:16`, `portrait` | `IMAGE_ASPECT_RATIO_PORTRAIT` |
+
+Nếu bỏ `model`, mặc định là `NANO_BANANA_PRO`. Nếu bỏ `aspect_ratio`, mặc định
+là `IMAGE_ASPECT_RATIO_PORTRAIT`.
+
+### 3.2. Mapping image-to-video
+
+Image-to-video không nhận field `model`. Backend gửi `quality`; Provider kết hợp
+`quality + aspect_ratio + paygate tier` của account để chọn Veo model hợp lệ.
+
+| Chế độ backend | `quality` gửi Provider | Ý nghĩa |
+|---|---|---|
+| `economy`, `lite` | `lite` | Mặc định, ưu tiên tiết kiệm. |
+| `fast` | `fast` | Ưu tiên tốc độ. |
+| `quality`, `high` | `quality` | Ưu tiên chất lượng. |
+| `economy-relaxed` | `lite_relaxed` | Hàng đợi relaxed; chỉ dùng khi account hỗ trợ. |
+| `fast-relaxed` | `fast_relaxed` | Fast relaxed; chỉ dùng khi account hỗ trợ. |
+
+| Tỷ lệ UI/backend | `aspect_ratio` gửi Provider |
+|---|---|
+| `16:9`, `landscape` | `VIDEO_ASPECT_RATIO_LANDSCAPE` |
+| `9:16`, `portrait` | `VIDEO_ASPECT_RATIO_PORTRAIT` |
+
+Nếu bỏ `quality`, mặc định là `lite`. Nếu bỏ `aspect_ratio`, mặc định là
+`VIDEO_ASPECT_RATIO_LANDSCAPE`.
+
+### 3.3. Mapping Omni video
+
+Omni không nhận `model` hoặc `quality`. Backend gửi `duration_seconds`; Provider
+tự map sang Omni model tương ứng.
+
+| `duration_seconds` | Model nội bộ Provider tự chọn |
+|---:|---|
+| `2` | Omni 2 giây |
+| `4` | Omni 4 giây |
+| `8` | Omni 8 giây, mặc định |
+| `10` | Omni 10 giây |
+
+Omni nhận `VIDEO_ASPECT_RATIO_PORTRAIT` hoặc `VIDEO_ASPECT_RATIO_LANDSCAPE`;
+mặc định là portrait.
+
+### 3.4. Hàm mapping TypeScript khuyến nghị
+
+```ts
+type UiImageModel = "pro" | "v2";
+type UiAspect = "1:1" | "16:9" | "9:16";
+type UiVideoQuality = "lite" | "fast" | "quality" | "lite_relaxed" | "fast_relaxed";
+
+const IMAGE_MODEL = {
+  pro: "NANO_BANANA_PRO",
+  v2: "NANO_BANANA_2"
+} as const;
+
+const IMAGE_ASPECT = {
+  "1:1": "IMAGE_ASPECT_RATIO_SQUARE",
+  "16:9": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+  "9:16": "IMAGE_ASPECT_RATIO_PORTRAIT"
+} as const;
+
+const VIDEO_ASPECT = {
+  "16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+  "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT"
+} as const;
+
+export function buildImageRequest(input: {
+  prompt: string;
+  model?: UiImageModel;
+  aspect?: UiAspect;
+  variantCount?: number;
+  inputImages?: Array<{
+    image_base64: string;
+    mime_type: string;
+    file_name: string;
+  }>;
+}) {
+  return {
+    prompt: input.prompt,
+    model: IMAGE_MODEL[input.model ?? "pro"],
+    aspect_ratio: IMAGE_ASPECT[input.aspect ?? "9:16"],
+    variant_count: input.variantCount ?? 1,
+    input_images: input.inputImages ?? []
+  };
+}
+
+export function buildImageToVideoRequest(input: {
+  projectId: string;
+  mediaId: string;
+  prompt: string;
+  aspect?: Exclude<UiAspect, "1:1">;
+  quality?: UiVideoQuality;
+}) {
+  return {
+    type: "image_to_video" as const,
+    project_id: input.projectId,
+    prompt: input.prompt,
+    start_media_id: input.mediaId,
+    aspect_ratio: VIDEO_ASPECT[input.aspect ?? "16:9"],
+    quality: input.quality ?? "lite"
+  };
+}
+
+export function buildOmniRequest(input: {
+  projectId: string;
+  mediaIds: string[];
+  prompt: string;
+  aspect?: Exclude<UiAspect, "1:1">;
+  duration?: 2 | 4 | 8 | 10;
+}) {
+  return {
+    type: "omni" as const,
+    project_id: input.projectId,
+    prompt: input.prompt,
+    reference_media_ids: input.mediaIds,
+    aspect_ratio: VIDEO_ASPECT[input.aspect ?? "9:16"],
+    duration_seconds: input.duration ?? 8
+  };
+}
+```
+
+Schema dùng `extra="forbid"`. Các field tự chế như `ratio`, `width`, `height`,
+`modelKey`, hoặc gửi `model` vào request video sẽ bị trả HTTP `422`. Backend nên
+validate enum trước khi gọi Provider và không tự fallback âm thầm sang giá trị khác.
+
+## 4. Luồng tích hợp chuẩn
 
 ```text
 Tạo ảnh tự động:
@@ -62,7 +202,7 @@ Chế độ tương thích/video:
 
 Một project có thể được dùng xuyên suốt nhiều lần tạo ảnh/video. Không cần tạo project mới cho từng request.
 
-## 4. Project
+## 5. Project
 
 ### Liệt kê project
 
@@ -127,7 +267,7 @@ result.data.json.result.projectId
 
 Giá trị này được gửi lại dưới field `project_id` ở các request tiếp theo.
 
-## 5. Upload ảnh
+## 6. Upload ảnh
 
 Endpoint nhận JSON, không dùng `multipart/form-data`. Bên gọi đọc file, mã hóa Base64 rồi gửi `image_base64`.
 
@@ -224,7 +364,7 @@ if (!response.ok) throw new Error(JSON.stringify(body));
 const mediaId = body.media.name;
 ```
 
-## 6. Tạo ảnh
+## 7. Tạo ảnh
 
 ### Chế độ tự động (khuyến nghị)
 
@@ -246,7 +386,7 @@ Không gửi `project_id`. Provider tự chọn extension ít tải, tạo hoặ
 }
 ```
 
-Response có `X-Flow-Project-Id` để đối soát, nhưng backend tích hợp không cần lưu hoặc điều hướng project này.
+Response có `X-Flow-Project-Id`. Nếu chỉ nhận ảnh cuối thì backend không cần điều hướng project; nếu ảnh sẽ tiếp tục làm reference hoặc tạo video, phải lưu cặp `X-Flow-Project-Id + media[i].name` để gửi ở request sau.
 
 Nếu cùng nội dung ảnh đã được upload vào đúng account/project, Provider dùng thẳng media ID trong DB mà không thêm request kiểm tra. Nếu Google hiếm khi trả `404` vì media cũ, Provider xóa cache, upload lại và retry. Header `X-Flow-Media-Cache-Hits` cho biết số ảnh lấy từ cache trong request.
 
@@ -351,7 +491,7 @@ Với mỗi phần tử trong `media[]`, lấy:
 
 Số phần tử `media[]` tương ứng với số biến thể Flow trả về. Không giả định luôn chỉ có một ảnh.
 
-## 7. Tạo image-to-video
+## 8. Tạo image-to-video
 
 ### Request
 
@@ -379,7 +519,7 @@ POST /v1/videos/generations
 | `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_LANDSCAPE` (mặc định), `VIDEO_ASPECT_RATIO_PORTRAIT`. |
 | `quality` | Không | `lite` (mặc định), `fast`, `quality`, `lite_relaxed`, `fast_relaxed`. Một số mức phụ thuộc gói Flow của tài khoản. |
 
-## 8. Tạo Omni video
+## 9. Tạo Omni video
 
 ### Request
 
@@ -407,7 +547,10 @@ POST /v1/videos/generations
 
 ### Response bắt đầu tạo video
 
-Response là body upstream của Flow. Bên gọi cần thu thập tất cả operation name xuất hiện trong response, ví dụ:
+Response là body upstream của Flow và có hai shape thường gặp. Image-to-video có
+thể trả `operations[i].operation.name`; Omni thực tế thường trả
+`workflows[i].name` cùng `media[]`. Backend lưu các tên này để gửi vào
+`/v1/videos/status`:
 
 ```json
 {
@@ -422,9 +565,46 @@ Response là body upstream của Flow. Bên gọi cần thu thập tất cả op
 }
 ```
 
-Giữ nguyên toàn bộ chuỗi `operation.name`, kể cả prefix nếu Flow trả về.
+```json
+{
+  "workflows": [
+    {
+      "name": "WORKFLOW_ID",
+      "projectId": "978b0a04-9025-431e-aca8-544f37d0757c"
+    }
+  ],
+  "media": [
+    {
+      "name": "VIDEO_MEDIA_ID",
+      "workflowId": "WORKFLOW_ID"
+    }
+  ]
+}
+```
 
-## 9. Kiểm tra trạng thái video
+Hàm lấy poll name an toàn:
+
+```ts
+export function extractVideoPollNames(body: any): string[] {
+  const names = [
+    ...(body.operations ?? []).map((x: any) => x?.operation?.name ?? x?.name),
+    ...(body.workflows ?? []).map((x: any) => x?.name)
+  ].filter((x): x is string => typeof x === "string" && x.length > 0);
+
+  // Một số response không có operations/workflows; Provider route media.name.
+  if (names.length === 0) {
+    names.push(...(body.media ?? [])
+      .map((x: any) => x?.name)
+      .filter((x: any): x is string => typeof x === "string" && x.length > 0));
+  }
+  return [...new Set(names)];
+}
+```
+
+Giữ nguyên toàn bộ chuỗi poll name, kể cả prefix nếu Flow trả về. Không chỉ lấy
+`operations[]`, vì làm vậy sẽ bỏ sót response Omni dạng `workflows[]`.
+
+## 10. Kiểm tra trạng thái video
 
 ### Request
 
@@ -457,6 +637,26 @@ POST /v1/videos/status
 }
 ```
 
+Omni/media polling có thể trả shape sau thay cho `operations[]`:
+
+```json
+{
+  "media": [
+    {
+      "name": "VIDEO_MEDIA_ID",
+      "mediaMetadata": {
+        "mediaStatus": {
+          "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SCHEDULED"
+        }
+      },
+      "video": {
+        "dimensions": { "length": "4s" }
+      }
+    }
+  ]
+}
+```
+
 ### Response hoàn tất
 
 Cấu trúc media chi tiết do Flow quyết định và có thể bổ sung field theo thời gian. Khi video hoàn tất, Provider dùng đúng extension/account đã route để đổi media ID thành signed URL. Response có cả `media[i].downloadUrl` và `media[i].video.generatedVideo.fifeUrl`; header `X-Flow-Video-Urls` cho biết số URL đã lấy được. Signed URL có thời hạn nên backend cần tải/lưu video ngay nếu muốn lưu trữ lâu dài. Nếu Flow chưa cấp URL kịp, poll lại cùng operation thay vì tạo lại video:
@@ -472,6 +672,7 @@ Cấu trúc media chi tiết do Flow quyết định và có thể bổ sung fie
           "media": [
             {
               "name": "VIDEO_MEDIA_ID",
+              "downloadUrl": "https://flow-content.google/video/...",
               "video": {
                 "generatedVideo": {
                   "fifeUrl": "https://flow-content.google/video/..."
@@ -488,24 +689,36 @@ Cấu trúc media chi tiết do Flow quyết định và có thể bổ sung fie
 
 Nếu object operation có `error`, coi tác vụ thất bại và trả lỗi đó về ứng dụng. Không tạo lại mù quáng vì request đầu có thể đã được Flow nhận.
 
+Với response top-level `media[]`, hoàn tất khi
+`media[i].mediaMetadata.mediaStatus.mediaGenerationStatus` là
+`MEDIA_GENERATION_STATUS_SUCCESSFUL`. Khi đó đọc URL tại một trong hai path:
+
+```text
+media[i].downloadUrl
+media[i].video.generatedVideo.fifeUrl
+```
+
+Hai path trên do Provider bổ sung và có cùng signed URL.
+
 ### Khuyến nghị polling
 
 - Poll mỗi 5–10 giây; không gọi liên tục.
-- Dừng khi mọi operation có `done: true` hoặc có `error`.
+- Dừng khi mọi operation có `done: true`, có `error`, hoặc mọi media có trạng thái `MEDIA_GENERATION_STATUS_SUCCESSFUL`.
 - Đặt timeout nghiệp vụ phù hợp, ví dụ 10 phút.
-- HTTP `200` của endpoint status chỉ có nghĩa request kiểm tra hợp lệ; vẫn phải đọc `done`/`error` của từng operation.
+- HTTP `200` của endpoint status chỉ có nghĩa request kiểm tra hợp lệ; vẫn phải đọc `done`/`error` hoặc `mediaGenerationStatus`.
 - API không trả header `Retry-After`; bên gọi tự quản lý nhịp polling.
 
-## 10. HTTP status và lỗi
+## 11. HTTP status và lỗi
 
-Khi Google Flow đã phản hồi, API giữ HTTP status và body upstream, đồng thời thêm header:
+Backend phải xử lý ba nhóm lỗi độc lập:
 
-```http
-X-Flow-Upstream-Status: 200
-X-Request-Id: req_...
-```
+1. Provider từ chối request và trả error envelope chuẩn.
+2. Google Flow trả HTTP lỗi; Provider chuyển tiếp status/body gần như nguyên bản.
+3. Request poll video trả HTTP `200`, nhưng từng operation/media có trạng thái thất bại.
 
-Lỗi do Flow trả về như `403` hoặc `429` vẫn được chuyển tiếp với status tương ứng. Lỗi do lớp API phát sinh dùng envelope chuẩn:
+### 11.1. Lỗi do Provider phát sinh
+
+Lỗi do lớp API phát sinh dùng envelope chuẩn:
 
 ```json
 {
@@ -515,8 +728,8 @@ Lỗi do Flow trả về như `403` hoặc `429` vẫn được chuyển tiếp 
     "message": "Request validation failed.",
     "details": [
       {
-        "field": "body.variant_count",
-        "code": "less_than_equal",
+        "field": "variant_count",
+        "code": "OUT_OF_RANGE",
         "message": "Input should be less than or equal to 4"
       }
     ],
@@ -526,25 +739,84 @@ Lỗi do Flow trả về như `403` hoặc `429` vẫn được chuyển tiếp 
 }
 ```
 
+Ý nghĩa các field:
+
+| Field | Cách xử lý |
+|---|---|
+| `error.status_code` | Giống HTTP status của response. |
+| `error.code` | Mã ổn định để backend điều khiển nghiệp vụ. |
+| `error.details[]` | Lỗi theo field; có thể rỗng. |
+| `error.request_id` | Dùng đối soát log với Provider. |
+| `error.retryable` | `true` khi cùng request có thể thử lại sau backoff. |
+
+Validation có thể trả các detail code: `REQUIRED_FIELD`, `INVALID_CHOICE`,
+`UNKNOWN_FIELD`, `INVALID_LENGTH`, `OUT_OF_RANGE`, `INVALID_TYPE`,
+`INVALID_VALUE`. Backend nên hiển thị lỗi theo `details[i].field`, không parse
+chuỗi tiếng Anh trong `message`.
+
+### 11.2. Lỗi chuyển tiếp từ Google Flow
+
+Khi Google Flow đã phản hồi HTTP, Provider giữ status và body upstream. Response
+có header `X-Flow-Upstream-Status`, ví dụ:
+
+```http
+HTTP/1.1 429 Too Many Requests
+X-Flow-Upstream-Status: 429
+X-Request-Id: req_...
+Content-Type: application/json
+```
+
+Body upstream không bắt buộc có envelope `{"error":{"code":...}}` của Provider;
+nó có thể là JSON shape khác hoặc plain text. Backend nhận biết nhóm này bằng
+header `X-Flow-Upstream-Status`, lưu `X-Request-Id`, và tạo mã nội bộ như
+`FLOW_UPSTREAM_429` nếu cần chuẩn hóa.
+
+### 11.3. Video thất bại bên trong HTTP `200`
+
+`POST /v1/videos/status` có thể trả HTTP `200` nhưng task thất bại. Với operation,
+kiểm tra `operation.error`. Với media polling, kiểm tra
+`media[i].mediaMetadata.mediaStatus.mediaGenerationStatus`; mọi trạng thái terminal
+khác `MEDIA_GENERATION_STATUS_SUCCESSFUL` phải được coi là thất bại, ví dụ:
+
+```json
+{
+  "media": [
+    {
+      "name": "VIDEO_MEDIA_ID",
+      "mediaMetadata": {
+        "mediaStatus": {
+          "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_UNSUCCESSFUL"
+        }
+      }
+    }
+  ]
+}
+```
+
+Không tự tạo lại video chỉ dựa trên lỗi poll. Request generation ban đầu có thể đã
+trừ credit; backend nên lưu poll name, trạng thái cuối và `X-Request-Id` để đối soát.
+
 | HTTP | Code thường gặp | Ý nghĩa/Xử lý |
 |---:|---|---|
-| `400` | `INVALID_JSON` | JSON sai cú pháp; sửa request, không retry nguyên trạng. |
+| `400` | `INVALID_JSON`, `INVALID_CONTENT_LENGTH`, `ROUTING_SCOPE_INVALID` | Sửa request/header, không retry nguyên trạng. |
 | `401` | `INVALID_API_KEY` | Thiếu/sai API key. |
 | `403` | Upstream Flow | Tài khoản/quyền/captcha bị từ chối; trả lỗi cho người dùng. |
-| `404` | `NOT_FOUND` hoặc upstream | Sai endpoint/resource/media/operation. |
-| `409` | `PROJECT_ROUTE_UNKNOWN` | Project tường minh chưa có mapping account; gọi `/v1/projects`, dùng scope v2 đúng account, hoặc dùng managed image flow. |
-| `409` | `CONFLICT` | Trạng thái tài nguyên xung đột khác. |
+| `404` | `ENDPOINT_NOT_FOUND` hoặc upstream | Sai endpoint/resource/media/operation. |
+| `409` | `PROJECT_ROUTE_UNKNOWN`, `OPERATION_ROUTE_UNKNOWN` | Provider chưa biết account sở hữu project/operation; list project hoặc dùng identifier do Provider vừa trả. |
+| `409` | `PROJECT_ACCOUNT_MISMATCH`, `OPERATION_ACCOUNT_MISMATCH` | Routing scope không sở hữu resource; không chuyển sang account khác. |
 | `413` | `PAYLOAD_TOO_LARGE` | Ảnh Base64 hoặc request quá lớn. |
-| `422` | `VALIDATION_ERROR` | Field thiếu hoặc giá trị không thuộc enum/range. |
+| `422` | `VALIDATION_ERROR`, `INVALID_IMAGE_BASE64`, `INVALID_VIDEO_QUALITY` | Field/payload/model không hợp lệ; sửa request. |
 | `429` | Upstream Flow hoặc rate limit API | Hết quota/bị giới hạn; backoff trước khi thử lại. |
-| `502` | `EXTENSION_REQUEST_FAILED` | Extension/Flow trả response không hợp lệ. |
-| `503` | `PROVIDER_ACCOUNT_UNAVAILABLE` | Không có extension/tài khoản sẵn sàng; có thể retry với backoff. |
-| `503` | `EXTENSION_DISCONNECTED` | Extension mất kết nối; có thể retry. |
+| `500` | `INTERNAL_ERROR` | Lỗi Provider ngoài dự kiến; retry có giới hạn và báo vận hành. |
+| `502` | `EXTENSION_REQUEST_FAILED`, `PROJECT_RECOVERY_FAILED` | Extension/Flow trả response không hợp lệ hoặc khôi phục project thất bại. |
+| `503` | `PROVIDER_ACCOUNT_UNAVAILABLE`, `PROJECT_ACCOUNT_UNAVAILABLE`, `VIDEO_ACCOUNT_UNAVAILABLE` | Không có account/slot/credit phù hợp; retry với backoff. |
+| `503` | `ROUTING_SCOPE_UNAVAILABLE`, `OPERATION_ACCOUNT_UNAVAILABLE`, `EXTENSION_DISCONNECTED` | Account sở hữu resource đang offline hoặc hết slot; không fallback sang account khác. |
 | `504` | `EXTENSION_TIMEOUT` | Hết thời gian chờ. Với video, kiểm tra status trước khi tạo lại. |
 
-Luôn ưu tiên xử lý theo `HTTP status`, sau đó theo `error.code`; không phân tích chuỗi `message` để điều khiển nghiệp vụ.
+Luôn ưu tiên xử lý theo `HTTP status`, sau đó theo `error.code` và `retryable`;
+không phân tích chuỗi `message` để điều khiển nghiệp vụ.
 
-## 11. Hàm gọi API mẫu
+## 12. Hàm gọi API mẫu
 
 ```js
 const API_URL = "https://api.shopcongngheso5.io.vn";
@@ -568,8 +840,17 @@ async function callFlow(path, payload) {
     : await response.text();
 
   if (!response.ok) {
-    const error = new Error(`FlowProvider returned ${response.status}`);
+    const providerError = typeof body === "object" ? body?.error : null;
+    const upstreamStatus = response.headers.get("x-flow-upstream-status");
+    const error = new Error(
+      providerError?.message ?? `FlowProvider returned ${response.status}`
+    );
     error.status = response.status;
+    error.code = providerError?.code
+      ?? (upstreamStatus ? `FLOW_UPSTREAM_${upstreamStatus}` : `HTTP_${response.status}`);
+    error.retryable = providerError?.retryable
+      ?? [408, 425, 429, 500, 502, 503, 504].includes(response.status);
+    error.details = providerError?.details ?? [];
     error.requestId = response.headers.get("x-request-id");
     error.body = body;
     throw error;
@@ -577,9 +858,36 @@ async function callFlow(path, payload) {
 
   return body;
 }
+
+export function assertVideoPollSucceeded(body) {
+  for (const item of body.operations ?? []) {
+    const operation = item?.operation ?? item;
+    if (operation?.error) {
+      const error = new Error("Google Flow video operation failed");
+      error.code = "VIDEO_OPERATION_FAILED";
+      error.body = operation.error;
+      throw error;
+    }
+  }
+
+  const failedMediaStatuses = new Set([
+    "MEDIA_GENERATION_STATUS_UNSUCCESSFUL",
+    "MEDIA_GENERATION_STATUS_FAILED",
+    "MEDIA_GENERATION_STATUS_CANCELLED"
+  ]);
+  for (const media of body.media ?? []) {
+    const status = media?.mediaMetadata?.mediaStatus?.mediaGenerationStatus;
+    if (failedMediaStatuses.has(status)) {
+      const error = new Error(`Google Flow video failed with ${status}`);
+      error.code = "VIDEO_MEDIA_FAILED";
+      error.body = media;
+      throw error;
+    }
+  }
+}
 ```
 
-## 12. Health check
+## 13. Health check
 
 Health endpoint không yêu cầu API key:
 
@@ -600,13 +908,13 @@ Ví dụ `/health/ready`:
 
 `status` là `waiting_for_provider` khi API/SQLite đã hoạt động nhưng chưa có extension sẵn sàng. Trạng thái này vẫn trả HTTP 200 để extension có thể kết nối. Khi SQLite không truy cập được, endpoint trả HTTP 503 với `status: unavailable`. Chỉ gửi request tạo nội dung khi `status` là `ready` và `provider_accounts` lớn hơn `0`.
 
-## 13. Checklist cho bên tích hợp
+## 14. Checklist cho bên tích hợp
 
 - Lưu API key ở backend/secret manager.
 - Tạo hoặc tái sử dụng một `project_id` hợp lý theo nghiệp vụ.
 - Giữ mọi media tham chiếu trong cùng project.
 - Sau upload, lưu `media.name` làm media ID.
-- Sau tạo ảnh, đọc tất cả phần tử `media[]` và lưu URL ngay.
-- Sau tạo video, lưu operation name rồi polling có khoảng nghỉ.
+- Sau tạo ảnh, đọc tất cả phần tử `media[]`, lưu URL ngay và lưu `X-Flow-Project-Id` cùng media ID nếu còn bước tham chiếu/video.
+- Sau tạo video, dùng `extractVideoPollNames`: lưu `operation.name`, `workflow.name`, hoặc fallback `media.name`, rồi polling có khoảng nghỉ.
 - Lưu kết quả ảnh/video về storage của hệ thống tích hợp trước khi URL Flow hết hạn.
 - Ghi log `X-Request-Id`, HTTP status và `error.code`; không ghi API key hoặc URL signed đầy đủ vào log công khai.
