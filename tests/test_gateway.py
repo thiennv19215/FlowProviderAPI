@@ -99,6 +99,34 @@ def test_create_project_and_check_operations_return_upstream_results(monkeypatch
     assert check.headers["x-provider-routing-scope"] == scope
 
 
+def test_list_projects_encodes_pagination_and_returns_routing_scope(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    captured = []
+
+    async def fake_trpc(_connection_id, **kwargs):
+        captured.append(kwargs)
+        return {"status": 200, "data": {"result": {"data": {"json": {"result": {"projects": [{"projectId": "projects/1"}]}}}}}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    with TestClient(application) as client:
+        default_page = client.get("/v1/projects", headers=headers())
+        first = client.get("/v1/projects?page_size=25", headers=headers())
+        scope = first.headers["x-provider-routing-scope"]
+        second = client.get("/v1/projects?page_size=10&cursor=next/page", headers=headers(scope))
+
+    assert default_page.status_code == first.status_code == second.status_code == 200
+    assert first.json()["result"]["data"]["json"]["result"]["projects"][0]["projectId"] == "projects/1"
+    assert captured[0]["method"] == "GET"
+    assert "project.searchUserProjects?input=" in captured[0]["url"]
+    assert "%22pageSize%22%3A10" in captured[0]["url"]
+    assert "%22pageSize%22%3A25" in captured[1]["url"]
+    assert "%22cursor%22%3Anull" in captured[1]["url"]
+    assert "%22undefined%22" in captured[1]["url"]
+    assert "%22cursor%22%3A%22next%2Fpage%22" in captured[2]["url"]
+    assert second.headers["x-provider-routing-scope"] == scope
+
+
 def test_routing_scope_pins_follow_up_calls_to_the_same_installation(monkeypatch):
     application = app()
     first = SimpleNamespace(

@@ -36,6 +36,7 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 
 | Method | Endpoint | Chức năng |
 |---|---|---|
+| `GET` | `/v1/projects` | Liệt kê Google Flow project của tài khoản. |
 | `POST` | `/v1/projects` | Tạo một Google Flow project. |
 | `POST` | `/v1/media` | Upload ảnh vào project và nhận media ID. |
 | `POST` | `/v1/images/generations` | Tạo ảnh mới, có hoặc không có ảnh tham chiếu. |
@@ -57,7 +58,23 @@ Tạo project
 
 Một project có thể được dùng xuyên suốt nhiều lần tạo ảnh/video. Không cần tạo project mới cho từng request.
 
-## 4. Tạo project
+## 4. Project
+
+### Liệt kê project
+
+```http
+GET /v1/projects?page_size=10&cursor=<cursor>
+```
+
+`page_size` mặc định là `10`, cho phép từ 1 đến 100. Bỏ `cursor` ở trang đầu; ở trang kế tiếp, gửi cursor do Google Flow trả về. Danh sách nằm tại:
+
+```text
+result.data.json.result.projects
+```
+
+Khi phân trang, gửi lại `X-Provider-Routing-Scope` nhận từ response để tiếp tục truy vấn đúng tài khoản Google Flow.
+
+### Tạo project
 
 ### Request
 

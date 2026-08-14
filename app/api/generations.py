@@ -3,9 +3,11 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import uuid
+from urllib.parse import quote
 
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, Header, Query, Request, Response
 
 from app.api.errors import APIError
 from app.api.schemas import (
@@ -16,7 +18,8 @@ from app.api.schemas import (
 from app.providers.google_flow.client import BoundFlowClient
 from app.providers.google_flow.sdk.constants import (
     API_HEADERS, CAPTCHA_IMAGE, CAPTCHA_VIDEO, FLOW_API_BASE, TRPC_CREATE_PROJECT,
-    TRPC_HEADERS, UPLOAD_IMAGE_URL, VIDEO_I2V_URL, VIDEO_OMNI_URL, VIDEO_POLL_URL,
+    TRPC_HEADERS, TRPC_SEARCH_PROJECTS, UPLOAD_IMAGE_URL, VIDEO_I2V_URL, VIDEO_OMNI_URL,
+    VIDEO_POLL_URL,
 )
 from app.providers.google_flow.sdk.helpers import client_context, resolve_image_model, resolve_video_model
 
@@ -130,6 +133,30 @@ async def _api(client, *, url: str, body: dict, captcha_action: str | None = Non
         body=body,
         captcha_action=captcha_action,
     )
+
+
+@router.get("/v1/projects", response_model=None)
+async def list_projects(
+    request: Request,
+    page_size: int = Query(default=10, ge=1, le=100),
+    cursor: str | None = Query(default=None, min_length=1, max_length=2000),
+    authorization: str | None = Header(default=None),
+    routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
+) -> Response:
+    runtime = request.app.state.runtime
+    connection, client = _connection(request, authorization, routing_scope)
+    payload: dict = {
+        "json": {"pageSize": page_size, "toolName": "PINHOLE", "cursor": cursor},
+    }
+    if cursor is None:
+        payload["meta"] = {"values": {"cursor": ["undefined"]}}
+    encoded_input = quote(json.dumps(payload, separators=(",", ":")), safe="")
+    result = await client.trpc_request(
+        url=f"{TRPC_SEARCH_PROJECTS}?input={encoded_input}",
+        method="GET",
+        headers=TRPC_HEADERS,
+    )
+    return _scoped_response(result, runtime.settings, connection)
 
 
 @router.post("/v1/projects", response_model=None)
