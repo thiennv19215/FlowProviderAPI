@@ -26,11 +26,11 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 ### Đặc điểm xử lý
 
 - API lưu mapping project và hash ảnh → media ID theo đúng extension/account/project; đăng nhập Google account khác trên cùng extension không dùng lại mapping cũ.
+- **Tự động quản lý project (Auto-managed project)**: Backend tích hợp **không cần tạo hoặc truyền `project_id`**. Provider tự động tạo/tái sử dụng project mặc định (`FlowProvider`) cho từng tài khoản Google và quản lý mapping media/operation. (Nếu backend truyền `project_id`, Provider vẫn tôn trọng để tương thích hoặc nhóm tài nguyên theo ý muốn).
 - Ảnh upload được chuyển trực tiếp vào Google Flow dưới dạng Base64.
 - Tạo ảnh trả kết quả đồng bộ sau khi Flow xử lý xong.
 - Tạo video trả operation; bên gọi chủ động kiểm tra bằng `/v1/videos/status`.
 - URL ảnh/video do Google Flow cấp có thể hết hạn hoặc bị thu hồi. Bên tích hợp nên tải và lưu kết quả ngay khi hoàn tất.
-- Các media dùng chung một luồng phải thuộc cùng `project_id`.
 - Provider ưu tiên tối đa 3 request đồng thời trên một extension rồi mới chuyển sang extension tiếp theo.
 - Mỗi video job reserve trước tối thiểu 20 credits, hoặc mức Omni cao hơn đã biết; các request đồng thời không thể dùng lặp cùng số dư. Sau mọi lần gọi video, kể cả timeout chưa rõ kết quả, Provider khóa paid routing cho account đó đến khi refresh credit thành công. Account vẫn có thể xử lý ảnh.
 - Provider lưu account/project và loại poll (`operation` hoặc `media`) của video operation/workflow; `/v1/videos/status` tự chia request theo đúng account, giữ thứ tự đầu vào và gộp kết quả, không cần routing scope đối với operation được tạo qua Provider.
@@ -150,7 +150,7 @@ export function buildImageRequest(input: {
 }
 
 export function buildImageToVideoRequest(input: {
-  projectId: string;
+  projectId?: string;
   mediaId: string;
   prompt: string;
   aspect?: Exclude<UiAspect, "1:1">;
@@ -158,7 +158,7 @@ export function buildImageToVideoRequest(input: {
 }) {
   return {
     type: "image_to_video" as const,
-    project_id: input.projectId,
+    ...(input.projectId ? { project_id: input.projectId } : {}),
     prompt: input.prompt,
     start_media_id: input.mediaId,
     aspect_ratio: VIDEO_ASPECT[input.aspect ?? "16:9"],
@@ -167,7 +167,7 @@ export function buildImageToVideoRequest(input: {
 }
 
 export function buildOmniRequest(input: {
-  projectId: string;
+  projectId?: string;
   mediaIds: string[];
   prompt: string;
   aspect?: Exclude<UiAspect, "1:1">;
@@ -175,7 +175,7 @@ export function buildOmniRequest(input: {
 }) {
   return {
     type: "omni" as const,
-    project_id: input.projectId,
+    ...(input.projectId ? { project_id: input.projectId } : {}),
     prompt: input.prompt,
     reference_media_ids: input.mediaIds,
     aspect_ratio: VIDEO_ASPECT[input.aspect ?? "9:16"],
@@ -191,16 +191,15 @@ validate enum trước khi gọi Provider và không tự fallback âm thầm sa
 ## 4. Luồng tích hợp chuẩn
 
 ```text
-Tạo ảnh tự động:
-  gửi prompt + input_images
-  -> Provider chọn account, project, upload và generate
-  -> nhận kết quả
+Luồng chuẩn (Khuyến nghị - Không cần quản lý project):
+  1. Upload ảnh qua /v1/media (hoặc gửi thẳng Base64 qua input_images khi tạo ảnh).
+  2. Tạo ảnh qua /v1/images/generations hoặc tạo video qua /v1/videos/generations.
+  3. Kiểm tra tiến độ video qua /v1/videos/status.
+  -> Provider tự động điều phối account, khởi tạo project, cache media và gộp kết quả.
 
-Chế độ tương thích/video:
-  tạo project -> upload -> generate -> kiểm tra status
+Chế độ tương thích (Tùy chọn):
+  Gọi POST /v1/projects để tự tạo project riêng nếu muốn phân nhóm project theo nghiệp vụ.
 ```
-
-Một project có thể được dùng xuyên suốt nhiều lần tạo ảnh/video. Không cần tạo project mới cho từng request.
 
 ## 5. Project
 
@@ -283,7 +282,6 @@ POST /v1/media
 
 ```json
 {
-  "project_id": "978b0a04-9025-431e-aca8-544f37d0757c",
   "file_name": "product.jpg",
   "mime_type": "image/jpeg",
   "image_base64": "/9j/4AAQSkZJRgABAQ..."
@@ -292,7 +290,7 @@ POST /v1/media
 
 | Field | Bắt buộc | Ràng buộc |
 |---|---:|---|
-| `project_id` | Có | Project ID của Google Flow. |
+| `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project cụ thể. |
 | `file_name` | Không | Mặc định `upload.png`, tối đa 255 ký tự. |
 | `mime_type` | Có | Bắt đầu bằng `image/`, ví dụ `image/jpeg`, `image/png`. |
 | `image_base64` | Có | Chuỗi Base64 thuần, không thêm prefix `data:image/...;base64,`. Tổng Base64 trong một request tối đa 64 MiB ký tự. |
@@ -502,7 +500,6 @@ POST /v1/videos/generations
 ```json
 {
   "type": "image_to_video",
-  "project_id": "978b0a04-9025-431e-aca8-544f37d0757c",
   "prompt": "Slow cinematic camera movement around the product",
   "start_media_id": "b207ef8f-e3ce-44d3-9f2f-043dd0a61275",
   "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
@@ -513,7 +510,7 @@ POST /v1/videos/generations
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
 | `type` | Có | Luôn là `image_to_video`. |
-| `project_id` | Có | Project chứa `start_media_id`. |
+| `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project. |
 | `prompt` | Có | 1–12.000 ký tự. |
 | `start_media_id` | Có | Media ID ảnh upload hoặc ảnh vừa sinh. |
 | `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_LANDSCAPE` (mặc định), `VIDEO_ASPECT_RATIO_PORTRAIT`. |
@@ -526,7 +523,6 @@ POST /v1/videos/generations
 ```json
 {
   "type": "omni",
-  "project_id": "978b0a04-9025-431e-aca8-544f37d0757c",
   "prompt": "Create a vertical cinematic product advertisement",
   "reference_media_ids": [
     "b207ef8f-e3ce-44d3-9f2f-043dd0a61275"
@@ -539,7 +535,7 @@ POST /v1/videos/generations
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
 | `type` | Có | Luôn là `omni`. |
-| `project_id` | Có | Project chứa các media tham chiếu. |
+| `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project. |
 | `prompt` | Có | 1–12.000 ký tự. |
 | `reference_media_ids` | Có | Từ 1 đến 8 media ID. |
 | `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_PORTRAIT` (mặc định), `VIDEO_ASPECT_RATIO_LANDSCAPE`. |
@@ -911,10 +907,8 @@ Ví dụ `/health/ready`:
 ## 14. Checklist cho bên tích hợp
 
 - Lưu API key ở backend/secret manager.
-- Tạo hoặc tái sử dụng một `project_id` hợp lý theo nghiệp vụ.
-- Giữ mọi media tham chiếu trong cùng project.
-- Sau upload, lưu `media.name` làm media ID.
-- Sau tạo ảnh, đọc tất cả phần tử `media[]`, lưu URL ngay và lưu `X-Flow-Project-Id` cùng media ID nếu còn bước tham chiếu/video.
-- Sau tạo video, dùng `extractVideoPollNames`: lưu `operation.name`, `workflow.name`, hoặc fallback `media.name`, rồi polling có khoảng nghỉ.
+- Backend **không cần tạo hay quản lý `project_id`**; Provider sẽ tự động điều phối và gom nhóm tài nguyên.
+- Sau upload hoặc tạo ảnh, lưu `media.name` làm media ID để dùng cho các bước tiếp theo (video/reference).
+- Sau tạo video, dùng `extractVideoPollNames`: lưu `operation.name`, `workflow.name`, hoặc fallback `media.name`, rồi polling có khoảng nghỉ qua `/v1/videos/status`.
 - Lưu kết quả ảnh/video về storage của hệ thống tích hợp trước khi URL Flow hết hạn.
 - Ghi log `X-Request-Id`, HTTP status và `error.code`; không ghi API key hoặc URL signed đầy đủ vào log công khai.
