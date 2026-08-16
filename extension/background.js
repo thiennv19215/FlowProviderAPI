@@ -4,6 +4,7 @@ const SERVER_KEY = "flow-provider-server-url-v1";
 const SERVER_DEFAULT_VERSION_KEY = "flow-provider-server-default-version-v1";
 const INSTALLATION_KEY = "flow-provider-installation-id-v1";
 const PROFILE_KEY = "flow-provider-profile-id-v1";
+const SIMULATION_MODE_KEY = "flow-provider-simulation-mode-v1";
 const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
 const ALLOWED_FETCH_HOSTS = ["labs.google", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
@@ -124,6 +125,21 @@ async function getProfileMeta() {
   let email = "";
   try { email = (await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }))?.email || ""; } catch (_) {}
   return { runtimeId, profileId, profileName: email || "Browser extension" };
+}
+
+async function getSimulationMode() {
+  const data = await chrome.storage.local.get(SIMULATION_MODE_KEY);
+  return data?.[SIMULATION_MODE_KEY] === true;
+}
+
+async function setSimulationMode(enabled) {
+  const simulationMode = enabled === true;
+  await chrome.storage.local.set({ [SIMULATION_MODE_KEY]: simulationMode });
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "simulation_mode_changed", simulationMode }));
+  }
+  appendActivity(simulationMode ? "Simulation mode enabled" : "Simulation mode disabled", "done");
+  return simulationMode;
 }
 
 function allowedFetchUrl(value) {
@@ -315,7 +331,7 @@ async function handleRpc(msg, signal) {
 
 async function connectionState() {
   const config = await getConnectionConfig();
-  return { serverUrl: config.serverUrl, connected: socket?.readyState === WebSocket.OPEN, account: accountState, activity: activityState, version: chrome.runtime.getManifest().version };
+  return { serverUrl: config.serverUrl, connected: socket?.readyState === WebSocket.OPEN, account: accountState, activity: activityState, simulationMode: await getSimulationMode(), version: chrome.runtime.getManifest().version };
 }
 
 function scheduleReconnect() {
@@ -359,7 +375,7 @@ async function connect() {
       }
       const meta = await getProfileMeta();
       if (ws !== socket || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: "extension_ready", installationId: await getInstallationId(), protocolVersion: PROTOCOL_VERSION, connectionId: id("conn"), ...meta }));
+      ws.send(JSON.stringify({ type: "extension_ready", installationId: await getInstallationId(), protocolVersion: PROTOCOL_VERSION, connectionId: id("conn"), simulationMode: await getSimulationMode(), ...meta }));
       await syncAuth(ws);
     };
     ws.onmessage = async (event) => {
@@ -420,6 +436,7 @@ async function setupDnr() {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "FLOW_PROVIDER_GET_STATE") { connectionState().then(sendResponse); return true; }
+  if (msg?.type === "FLOW_PROVIDER_SET_SIMULATION_MODE") { setSimulationMode(msg.enabled).then((simulationMode) => sendResponse({ ok: true, simulationMode })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setConnectionConfig(msg.serverUrl).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_OPEN_FLOW") { openFlowHome().then((v) => sendResponse({ ok: true, ...v })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   return false;

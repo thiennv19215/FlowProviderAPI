@@ -36,6 +36,18 @@ async def test_auth_available_clears_previous_google_account_state(monkeypatch):
     await bridge.close_background_tasks()
 
 
+async def test_extension_simulation_mode_is_tracked_without_reconnecting():
+    bridge = FlowBridge(flow_api_key="test-key")
+    socket = FakeSocket()
+    connection = bridge.register(socket, {
+        "installationId": "install-test", "simulationMode": True,
+    })
+
+    assert connection.simulation_mode is True
+    await bridge.handle_message({"type": "simulation_mode_changed", "simulationMode": False}, socket)
+    assert connection.simulation_mode is False
+
+
 async def test_media_redirect_uses_browser_cookies_and_url_encodes_id(monkeypatch):
     bridge = FlowBridge(flow_api_key="test-key")
     captured = {}

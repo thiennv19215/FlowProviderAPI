@@ -3,6 +3,8 @@ const accountEl = document.querySelector("#account");
 const errorEl = document.querySelector("#error");
 const jobEl = document.querySelector("#job");
 const logsEl = document.querySelector("#logs");
+const simulateEl = document.querySelector("#simulate");
+const simulateHelpEl = document.querySelector("#simulate-help");
 const send = (message) => chrome.runtime.sendMessage(message);
 
 function timeLabel(value) {
@@ -52,8 +54,21 @@ async function refresh() {
   accountEl.textContent = state.account?.email
     ? `${state.account.email}${Number.isFinite(state.account.credits) ? ` · ${state.account.credits} credits` : ""}`
     : "Open Google Flow and sign in.";
+  simulateEl.checked = Boolean(state.simulationMode);
+  simulateHelpEl.hidden = !simulateEl.checked;
   renderActivity(state.activity);
 }
+
+simulateEl.onchange = async () => {
+  errorEl.textContent = "";
+  const result = await send({ type: "FLOW_PROVIDER_SET_SIMULATION_MODE", enabled: simulateEl.checked });
+  if (!result?.ok) {
+    simulateEl.checked = !simulateEl.checked;
+    errorEl.textContent = result?.error || "Cannot change simulation mode";
+    return;
+  }
+  simulateHelpEl.hidden = !simulateEl.checked;
+};
 
 document.querySelector("#flow").onclick = async () => {
   errorEl.textContent = "";

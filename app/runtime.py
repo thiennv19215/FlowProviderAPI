@@ -21,6 +21,7 @@ class Runtime:
     media_locks: weakref.WeakValueDictionary = field(default_factory=weakref.WeakValueDictionary)
     active_jobs: dict[str, int] = field(default_factory=dict)
     reserved_credits: dict[str, int] = field(default_factory=dict)
+    mock_operation_polls: dict[str, int] = field(default_factory=dict)
 
     def connection_load(self, connection) -> int:
         return max(
@@ -29,6 +30,8 @@ class Runtime:
         )
 
     def available_credits(self, connection) -> int | None:
+        if getattr(connection, "simulation_mode", False):
+            return 1_000_000_000
         if not isinstance(getattr(connection, "credits", None), int):
             return None
         return connection.credits - self.reserved_credits.get(connection.id, 0)

@@ -48,11 +48,12 @@ class ExtensionConnection:
     failed_count: int=0
     last_error: str|None=None
     extension_connection_id: str|None=None
+    simulation_mode: bool=False
     suspect_since: float|None=None
 
     @property
     def ready(self)->bool:
-        return bool(self.flow_key and self.account_email and self.paygate_tier and self.suspect_since is None)
+        return bool(self.simulation_mode or (self.flow_key and self.account_email and self.paygate_tier and self.suspect_since is None))
 
     @property
     def health_status(self)->str:
@@ -119,7 +120,7 @@ class FlowBridge:
         if not installation:raise ValueError("installation_id_required")
         cid=self.stable_account_id(installation);prior=self._connections.get(cid)
         if prior:self.clear(connection_id=cid)
-        conn=ExtensionConnection(id=cid,ws=ws,installation_id=installation,runtime_id=str(hello.get("runtimeId") or "chrome")[:40],profile_id=str(hello.get("profileId") or installation)[:128],profile_name=str(hello.get("profileName") or "Browser extension")[:160],max_slots=self.slot_capacity,extension_connection_id=str(hello.get("connectionId") or "")[:128] or None)
+        conn=ExtensionConnection(id=cid,ws=ws,installation_id=installation,runtime_id=str(hello.get("runtimeId") or "chrome")[:40],profile_id=str(hello.get("profileId") or installation)[:128],profile_name=str(hello.get("profileName") or "Browser extension")[:160],max_slots=self.slot_capacity,extension_connection_id=str(hello.get("connectionId") or "")[:128] or None,simulation_mode=hello.get("simulationMode") is True)
         self._connections[cid]=conn;self._installation_to_id[installation]=cid;self._ws_to_id[id(ws)]=cid;return conn
 
     def clear(self,ws:Any|None=None,*,connection_id:str|None=None)->None:
@@ -157,7 +158,7 @@ class FlowBridge:
         now=time.time();result=[]
         for c in sorted(self._connections.values(),key=lambda x:x.connected_at):
             cooldown=max(0,int(c.cooldown_until-now)) if c.cooldown_until and c.cooldown_until>now else 0
-            result.append({"id":c.id,"installation_id":c.installation_id,"runtime_id":c.runtime_id,"profile_name":c.profile_name,"profile_id":c.profile_id,"email":c.account_email,"connected":True,"ready":c.ready,"health_status":c.health_status,"paygate_tier":c.paygate_tier,"sku":c.sku,"credits":c.credits,"slot_capacity":c.max_slots,"cooldown_remaining_s":cooldown,"cooldown_reason":c.cooldown_reason,"last_seen_at":c.last_seen_at,"request_count":c.request_count,"success_count":c.success_count,"failed_count":c.failed_count,"last_error":c.last_error})
+            result.append({"id":c.id,"installation_id":c.installation_id,"runtime_id":c.runtime_id,"profile_name":c.profile_name,"profile_id":c.profile_id,"email":c.account_email,"connected":True,"ready":c.ready,"health_status":c.health_status,"simulation_mode":c.simulation_mode,"paygate_tier":c.paygate_tier,"sku":c.sku,"credits":c.credits,"slot_capacity":c.max_slots,"cooldown_remaining_s":cooldown,"cooldown_reason":c.cooldown_reason,"last_seen_at":c.last_seen_at,"request_count":c.request_count,"success_count":c.success_count,"failed_count":c.failed_count,"last_error":c.last_error})
         return result
 
     def ready_connections(self,*,min_credits:int=0)->list[ExtensionConnection]:
@@ -194,6 +195,9 @@ class FlowBridge:
         if msg_type=="auth_sync_status" and conn:
             status=str(data.get("status") or "")
             if status in {"needs_labs_sign_in","signed_out","auth_error"}:self._invalidate_auth(conn,str(data.get("reason") or status));await self._send_auth_ack(conn)
+            return
+        if msg_type=="simulation_mode_changed" and conn:
+            conn.simulation_mode=data.get("simulationMode") is True
             return
         if msg_type=="pong":return
         req_id=data.get("id")

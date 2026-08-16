@@ -9,6 +9,14 @@
     <h1>Flow Provider</h1>
     <div id="status" class="status">Checking...</div>
     <p id="account"></p>
+    <label class="toggle-row" for="simulate">
+      <span>
+        <strong>Chế độ giả lập</strong>
+        <small>Đánh dấu kết nối để backend xử lý phản hồi mock.</small>
+      </span>
+      <input id="simulate" type="checkbox" role="switch" aria-describedby="simulate-help">
+    </label>
+    <p id="simulate-help" class="simulation-note" hidden>Đang bật giả lập. Kết nối này sẽ được backend nhận diện là mock.</p>
     <section class="activity">
       <div class="activity-head">
         <span>Activity</span>

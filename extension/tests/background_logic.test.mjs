@@ -151,6 +151,21 @@ test('configured production migration preserves an explicit custom server', asyn
   assert.equal(h.sockets[0].url, 'wss://custom.example.com/api/extensions/ws');
 });
 
+test('simulation mode is persisted and announced to the connected provider', async () => {
+  const h = buildHarness();
+  await flush();
+  const ws = h.sockets[0];
+  ws.readyState = h.context.WebSocket.OPEN;
+
+  const enabled = await vm.runInContext('setSimulationMode(true)', h.context);
+  const state = await vm.runInContext('connectionState()', h.context);
+
+  assert.equal(enabled, true);
+  assert.equal(h.storage['flow-provider-simulation-mode-v1'], true);
+  assert.equal(state.simulationMode, true);
+  assert.ok(ws.sent.some((frame) => frame.type === 'simulation_mode_changed' && frame.simulationMode === true));
+});
+
 test('CANCEL_RPC aborts an in-flight SW_FETCH', async () => {
   const h = buildHarness();
   await flush();

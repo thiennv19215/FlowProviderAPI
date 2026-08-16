@@ -11,6 +11,21 @@ h1 { margin: 0 0 12px; font-size: 18px; }
 .status { color: #9da7b3; }
 .status.connected { color: #3fb950; }
 p { margin: 8px 0 0; overflow-wrap: anywhere; }
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 10px;
+  border: 1px solid #30363d;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.toggle-row strong, .toggle-row small { display: block; }
+.toggle-row small { margin-top: 3px; color: #9da7b3; font-size: 11px; line-height: 1.35; }
+.toggle-row input { width: 34px; height: 18px; accent-color: #d29922; cursor: pointer; }
+.simulation-note { color: #d29922; font-size: 12px; }
 .activity {
   margin-top: 14px;
   padding-top: 12px;
