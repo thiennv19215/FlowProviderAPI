@@ -48,7 +48,7 @@ class CreateProjectRequest(BaseModel):
 
 class ImageUploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    project_id: str = Field(min_length=1, max_length=500)
+    project_id: str | None = Field(default=None, min_length=1, max_length=500)
     file_name: str = Field(default="upload.png", min_length=1, max_length=255)
     mime_type: str = Field(min_length=3, max_length=120, pattern=r"^image/")
     image_base64: str = Field(min_length=1, max_length=MAX_BASE64_TOTAL_CHARS)
@@ -77,15 +77,13 @@ class ImageGenerationRequest(BaseModel):
             raise ValueError("reference_media_ids and input_images may contain at most 8 images in total")
         if sum(len(image.image_base64) for image in self.input_images) > MAX_BASE64_TOTAL_CHARS:
             raise ValueError("input_images may contain at most 64 MiB of Base64 data in total")
-        if self.reference_media_ids and not self.project_id:
-            raise ValueError("project_id is required when reference_media_ids are supplied")
         return self
 
 
 class ImageToVideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["image_to_video"]
-    project_id: str = Field(min_length=1, max_length=500)
+    project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     start_media_id: str = Field(min_length=1, max_length=500)
     aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_LANDSCAPE"
@@ -95,7 +93,7 @@ class ImageToVideoGenerationRequest(BaseModel):
 class OmniVideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["omni"]
-    project_id: str = Field(min_length=1, max_length=500)
+    project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     reference_media_ids: list[str] = Field(min_length=1, max_length=8)
     aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_PORTRAIT"

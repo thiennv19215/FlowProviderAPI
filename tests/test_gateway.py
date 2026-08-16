@@ -1141,3 +1141,84 @@ def test_omni_reserves_its_higher_known_credit_cost(monkeypatch):
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "VIDEO_ACCOUNT_UNAVAILABLE"
+
+
+def test_optional_project_id_across_media_and_video(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    trpc_calls = []
+    api_calls = []
+
+    async def fake_trpc(_connection_id, **kwargs):
+        trpc_calls.append(kwargs)
+        return {
+            "status": 200,
+            "data": {"result": {"data": {"json": {"result": {"projects": [{
+                "projectId": "projects/managed-auto",
+                "projectInfo": {"projectTitle": "FlowProvider"},
+            }]}}}}},
+        }
+
+    async def fake_api(_connection_id, **kwargs):
+        api_calls.append(kwargs)
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/uploaded-auto"}}}
+        return {
+            "status": 200,
+            "data": {"operations": [{"operation": {"name": "operations/video-1"}}]},
+        }
+
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+
+    with TestClient(application) as client:
+        # 1. Media upload without project_id
+        upload_resp = client.post(
+            "/v1/media",
+            headers=headers(),
+            json={"image_base64": "aGVsbG8=", "mime_type": "image/png"},
+        )
+        assert upload_resp.status_code == 200
+        assert upload_resp.headers["X-Flow-Project-Id"] == "projects/managed-auto"
+
+        # 2. Image generation with reference_media_ids without project_id
+        gen_img_resp = client.post(
+            "/v1/images/generations",
+            headers=headers(),
+            json={
+                "prompt": "test prompt",
+                "reference_media_ids": ["media/uploaded-auto"],
+            },
+        )
+        assert gen_img_resp.status_code == 200
+        assert gen_img_resp.headers["X-Flow-Project-Id"] == "projects/managed-auto"
+
+        # 3. Video generation (image_to_video) without project_id
+        connection = application.state.runtime.bridge.ready_connections()[0]
+        connection.credits = 100
+        video_resp = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "prompt": "animate this",
+                "start_media_id": "media/uploaded-auto",
+            },
+        )
+        assert video_resp.status_code == 200
+        assert video_resp.headers["X-Flow-Project-Id"] == "projects/managed-auto"
+
+        # 4. Omni video generation without project_id
+        connection.credits = 100
+        omni_resp = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "omni",
+                "prompt": "animate omni",
+                "reference_media_ids": ["media/uploaded-auto"],
+            },
+        )
+        assert omni_resp.status_code == 200
+        assert omni_resp.headers["X-Flow-Project-Id"] == "projects/managed-auto"
+

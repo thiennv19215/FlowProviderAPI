@@ -561,6 +561,8 @@ async def create_project(
     return _scoped_response(result, runtime.settings, connection)
 
 
+
+
 @router.post("/v1/media", response_model=None)
 async def upload_image(
     payload: ImageUploadRequest,
@@ -573,17 +575,19 @@ async def upload_image(
         request, authorization, routing_scope, project_id=payload.project_id,
     )
     if getattr(connection, "simulation_mode", False):
+        resolved_project_id = payload.project_id or _mock_id("project")
         media_id = _mock_id("media")
-        return _mock_response({"media": {"name": media_id, "projectId": payload.project_id, "mimeType": payload.mime_type, "mediaMetadata": {"mediaType": "MEDIA_TYPE_IMAGE"}}}, runtime.settings, connection)
+        return _mock_response({"media": {"name": media_id, "projectId": resolved_project_id, "mimeType": payload.mime_type, "mediaMetadata": {"mediaType": "MEDIA_TYPE_IMAGE"}}}, runtime.settings, connection)
+    resolved_project_id = payload.project_id or await _managed_project(runtime, connection, client)
     digest = _image_digest(payload.image_base64)
     account_key = _account_key(connection)
-    async with runtime.media_lock(account_key, payload.project_id, digest):
-        cached = runtime.projects.get_media(account_key, payload.project_id, digest)
+    async with runtime.media_lock(account_key, resolved_project_id, digest):
+        cached = runtime.projects.get_media(account_key, resolved_project_id, digest)
         if cached:
             cached_data = cached.response_data or {
                 "media": {
                     "name": cached.google_media_id,
-                    "projectId": payload.project_id,
+                    "projectId": resolved_project_id,
                 }
             }
             response = _scoped_response(
@@ -595,11 +599,11 @@ async def upload_image(
                 runtime.settings,
                 connection,
             )
-            response.headers["X-Flow-Project-Id"] = payload.project_id
+            response.headers["X-Flow-Project-Id"] = resolved_project_id
             response.headers["X-Flow-Media-Cache-Hits"] = "1"
             return response
         body = {
-            "clientContext": {"projectId": payload.project_id, "tool": "PINHOLE"},
+            "clientContext": {"projectId": resolved_project_id, "tool": "PINHOLE"},
             "fileName": payload.file_name,
             "imageBytes": payload.image_base64,
             "isHidden": False,
@@ -607,12 +611,12 @@ async def upload_image(
             "mimeType": payload.mime_type,
         }
         result = await _api(client, url=UPLOAD_IMAGE_URL, body=body)
-        _remember_project_on_success(runtime, connection, payload.project_id, result)
+        _remember_project_on_success(runtime, connection, resolved_project_id, result)
         media_id = extract_upload_media_id(result)
         if media_id:
             runtime.projects.put_media(
                 account_key,
-                payload.project_id,
+                resolved_project_id,
                 digest,
                 media_id,
                 payload.mime_type,
@@ -622,7 +626,7 @@ async def upload_image(
                 result.get("headers") if isinstance(result.get("headers"), dict) else None,
             )
     response = _scoped_response(result, runtime.settings, connection)
-    response.headers["X-Flow-Project-Id"] = payload.project_id
+    response.headers["X-Flow-Project-Id"] = resolved_project_id
     response.headers["X-Flow-Media-Cache-Hits"] = "0"
     return response
 
@@ -758,6 +762,8 @@ async def generate_image(
     raise APIError(502, "PROJECT_RECOVERY_FAILED", "Google Flow project recovery failed.", retryable=True)
 
 
+
+
 @router.post("/v1/videos/generations", response_model=None)
 async def generate_video(
     payload: VideoGenerationRequest,
@@ -778,12 +784,14 @@ async def generate_video(
         project_id=payload.project_id,
     )
     if getattr(connection, "simulation_mode", False):
+        resolved_project_id = payload.project_id or _mock_id("project")
         operation_id = _mock_id("operation")
-        runtime.projects.put_operation(operation_id, _account_key(connection), payload.project_id, "operation", operation_id)
+        runtime.projects.put_operation(operation_id, _account_key(connection), resolved_project_id, "operation", operation_id)
         runtime.mock_operation_polls[operation_id] = 0
         return _mock_response({"operations": [_mock_video_operation(operation_id, done=False)]}, runtime.settings, connection)
+    resolved_project_id = payload.project_id or await _managed_project(runtime, connection, client)
     tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
-    ctx = client_context(payload.project_id, tier)
+    ctx = client_context(resolved_project_id, tier)
     if isinstance(payload, ImageToVideoGenerationRequest):
         model = resolve_video_model(tier, payload.aspect_ratio, payload.quality)
         if not model:
@@ -802,9 +810,11 @@ async def generate_video(
         }
         result = await _api(client, url=VIDEO_I2V_URL, body=body, captcha_action=CAPTCHA_VIDEO)
         _refresh_paid_account(runtime, connection)
-        _remember_project_on_success(runtime, connection, payload.project_id, result)
-        _remember_operations(runtime, connection, payload.project_id, result)
-        return _scoped_response(result, runtime.settings, connection)
+        _remember_project_on_success(runtime, connection, resolved_project_id, result)
+        _remember_operations(runtime, connection, resolved_project_id, result)
+        response = _scoped_response(result, runtime.settings, connection)
+        response.headers["X-Flow-Project-Id"] = resolved_project_id
+        return response
     body = {
         "mediaGenerationContext": {
             "batchId": str(uuid.uuid4()),
@@ -825,9 +835,11 @@ async def generate_video(
     }
     result = await _api(client, url=VIDEO_OMNI_URL, body=body, captcha_action=CAPTCHA_VIDEO)
     _refresh_paid_account(runtime, connection)
-    _remember_project_on_success(runtime, connection, payload.project_id, result)
-    _remember_operations(runtime, connection, payload.project_id, result)
-    return _scoped_response(result, runtime.settings, connection)
+    _remember_project_on_success(runtime, connection, resolved_project_id, result)
+    _remember_operations(runtime, connection, resolved_project_id, result)
+    response = _scoped_response(result, runtime.settings, connection)
+    response.headers["X-Flow-Project-Id"] = resolved_project_id
+    return response
 
 
 @router.post("/v1/videos/status", response_model=None)
