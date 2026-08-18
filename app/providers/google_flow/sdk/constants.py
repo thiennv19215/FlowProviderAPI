@@ -11,8 +11,8 @@ VIDEO_OMNI_URL = f"{FLOW_API_BASE}/v1/video:batchAsyncGenerateVideoReferenceImag
 VIDEO_POLL_URL = f"{FLOW_API_BASE}/v1/video:batchCheckAsyncVideoGenerationStatus"
 UPLOAD_IMAGE_URL = f"{FLOW_API_BASE}/v1/flow/uploadImage"
 
-OMNI_FLASH_DURATION_KEYS = {2: "abra_r2v_2s", 4: "abra_r2v_4s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}
-OMNI_FLASH_CREDIT_COST = {2: 10, 4: 15, 8: 25, 10: 30}
+OMNI_FLASH_DURATION_KEYS = {4: "abra_r2v_4s", 6: "abra_r2v_6s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}
+OMNI_FLASH_CREDIT_COST = {4: 15, 6: 20, 8: 25, 10: 30}
 IMAGE_MODELS = {"NANO_BANANA_PRO": "GEM_PIX_2", "NANO_BANANA_2": "NARWHAL"}
 DEFAULT_IMAGE_MODEL_KEY = "NANO_BANANA_PRO"
 VIDEO_MODEL_KEYS = {

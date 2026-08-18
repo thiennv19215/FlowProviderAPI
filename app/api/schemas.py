@@ -97,11 +97,11 @@ class OmniVideoGenerationRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
     reference_media_ids: list[str] = Field(min_length=1, max_length=8)
     aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_PORTRAIT"
-    duration_seconds: Literal[2, 4, 8, 10] = 8
+    duration_seconds: Literal[4, 6, 8, 10] = 8
 
     @property
     def duration_model(self) -> str:
-        return {2: "abra_r2v_2s", 4: "abra_r2v_4s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}[self.duration_seconds]
+        return {4: "abra_r2v_4s", 6: "abra_r2v_6s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}[self.duration_seconds]
 
 
 VideoGenerationRequest = Annotated[

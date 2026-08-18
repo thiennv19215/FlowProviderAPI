@@ -98,8 +98,8 @@ tự map sang Omni model tương ứng.
 
 | `duration_seconds` | Model nội bộ Provider tự chọn |
 |---:|---|
-| `2` | Omni 2 giây |
 | `4` | Omni 4 giây |
+| `6` | Omni 6 giây |
 | `8` | Omni 8 giây, mặc định |
 | `10` | Omni 10 giây |
 
@@ -539,7 +539,7 @@ POST /v1/videos/generations
 | `prompt` | Có | 1–12.000 ký tự. |
 | `reference_media_ids` | Có | Từ 1 đến 8 media ID. |
 | `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_PORTRAIT` (mặc định), `VIDEO_ASPECT_RATIO_LANDSCAPE`. |
-| `duration_seconds` | Không | `2`, `4`, `8` (mặc định), `10`. |
+| `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10`. |
 
 ### Response bắt đầu tạo video
 
