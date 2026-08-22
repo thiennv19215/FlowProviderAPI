@@ -89,3 +89,5 @@ Khi tạo image-to-video, lấy media ID từ ảnh đã tạo/upload và truy�
 ```bash
 mcp dev app/mcp_server.py:mcp
 ```
+
+Xem thêm: [Sổ tay thực chiến kết nối AI Agent](thuc-chien-ket-noi-agent.vi.md) (Code mẫu Python/Node.js, Cursor, Claude Desktop, xử lý video end-to-end).
