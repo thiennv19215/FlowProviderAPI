@@ -45,6 +45,8 @@ See [deployment](docs/deployment.md).
 
 Integration documentation: [Vietnamese API integration guide](docs/integration-guide.vi.md).
 
+AI agents can use the included MCP adapter over local `stdio`. See [Vietnamese MCP agent guide](docs/mcp-agent.vi.md).
+
 ## Operational endpoints
 
 - `GET /health/live`
