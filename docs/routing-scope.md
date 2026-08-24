@@ -6,7 +6,7 @@ Google Flow projects and media are account-scoped. In a multi-account deployment
 
 The Provider also records uploaded media ownership and uses a known `media_id` to recover its account/project route for video generation. Callers should still forward the returned project/scope explicitly. When media is uploaded specifically for a paid video, `required_credits` lets account selection exclude connectors that cannot submit that video. A bounded failover attempt can pass prior `project_id` values in `excluded_project_ids`; the Provider then selects a different account and uploads fresh media there.
 
-Managed image-generation requests omit `project_id` and send optional Base64 references through `input_images`. For that flow, the Provider owns account selection and project reuse, so the caller does not need to store or return a routing scope. The scope contract below applies only to compatibility endpoints where callers explicitly reuse Google project or media IDs across requests.
+Managed image-generation requests omit `project_id` and send optional Base64 references through `input_images`. For that flow, the Provider owns account selection and reuses the newest existing project on that Google account. It creates a `FlowProvider` project only when a complete lookup confirms that the account has no projects, so reconnects and concurrent requests do not spam projects. The caller does not need to store or return a routing scope. The scope contract below applies only to compatibility endpoints where callers explicitly reuse Google project or media IDs across requests.
 
 ## Contract
 

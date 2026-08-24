@@ -7,26 +7,42 @@ import hashlib
 import hmac
 import json
 import uuid
+from datetime import datetime
 from urllib.parse import quote
 
 from fastapi import APIRouter, Header, Query, Request, Response
 
 from app.api.errors import APIError
 from app.api.schemas import (
-    CreateProjectRequest, ImageGenerationRequest, ImageUploadRequest,
-    ImageToVideoGenerationRequest, OmniVideoGenerationRequest, VideoGenerationRequest,
+    CreateProjectRequest,
+    ImageGenerationRequest,
+    ImageToVideoGenerationRequest,
+    ImageUploadRequest,
+    OmniVideoGenerationRequest,
+    VideoGenerationRequest,
     VideoStatusRequest,
 )
 from app.providers.google_flow.client import BoundFlowClient
 from app.providers.google_flow.sdk.constants import (
-    API_HEADERS, CAPTCHA_IMAGE, CAPTCHA_VIDEO, FLOW_API_BASE, TRPC_CREATE_PROJECT,
+    API_HEADERS,
+    CAPTCHA_IMAGE,
+    CAPTCHA_VIDEO,
+    FLOW_API_BASE,
     OMNI_FLASH_CREDIT_COST,
-    TRPC_HEADERS, TRPC_SEARCH_PROJECTS, UPLOAD_IMAGE_URL, VIDEO_I2V_URL, VIDEO_OMNI_URL,
+    TRPC_CREATE_PROJECT,
+    TRPC_HEADERS,
+    TRPC_SEARCH_PROJECTS,
+    UPLOAD_IMAGE_URL,
+    VIDEO_I2V_URL,
+    VIDEO_OMNI_URL,
     VIDEO_POLL_URL,
 )
 from app.providers.google_flow.sdk.helpers import (
-    client_context, extract_project_id, extract_upload_media_id,
-    resolve_image_model, resolve_video_model,
+    client_context,
+    extract_project_id,
+    extract_upload_media_id,
+    resolve_image_model,
+    resolve_video_model,
 )
 
 router = APIRouter(tags=["Google Flow"])
@@ -300,6 +316,43 @@ def _project_items(result: dict) -> list[dict]:
     return [item for item in projects if isinstance(item, dict) and item.get("projectId")]
 
 
+def _project_page_is_valid(result: dict) -> bool:
+    try:
+        projects = result["data"]["result"]["data"]["json"]["result"]["projects"]
+    except (KeyError, TypeError):
+        return False
+    return isinstance(projects, list)
+
+
+def _project_created_at(item: dict) -> float | None:
+    info = item.get("projectInfo") if isinstance(item.get("projectInfo"), dict) else {}
+    for source in (info, item):
+        for key in ("createTime", "creationTime", "createdAt"):
+            value = source.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str) and value:
+                try:
+                    return datetime.fromisoformat(value).timestamp()
+                except ValueError:
+                    continue
+    return None
+
+
+def _latest_project(projects: list[dict]) -> dict | None:
+    if not projects:
+        return None
+    timestamps = [_project_created_at(item) for item in projects]
+    if all(value is not None for value in timestamps):
+        return max(
+            zip(projects, timestamps, strict=True),
+            key=lambda pair: pair[1],
+        )[0]
+    # Google Flow currently returns newest projects first. Preserve that order
+    # when a response omits creation timestamps instead of guessing from IDs.
+    return projects[0]
+
+
 def _project_cursor(result: dict) -> str | None:
     try:
         page = result["data"]["result"]["data"]["json"]["result"]
@@ -446,6 +499,8 @@ async def _managed_project(runtime, connection, client) -> str:
         title = "FlowProvider"
         cursor = None
         seen_cursors: set[str] = set()
+        discovered_projects: list[dict] = []
+        lookup_complete = False
         for _page_number in range(20):
             search_payload = {
                 "json": {"pageSize": 10, "toolName": "PINHOLE", "cursor": cursor},
@@ -461,29 +516,44 @@ async def _managed_project(runtime, connection, client) -> str:
                 isinstance(search_result.get("status"), int) and search_result["status"] >= 400
             ):
                 raise _flow_failure(search_result, "PROJECT_LIST_FAILED", "Google Flow project lookup failed.")
+            if not _project_page_is_valid(search_result):
+                raise APIError(
+                    502,
+                    "PROJECT_LIST_INVALID",
+                    "Google Flow project lookup returned an invalid response.",
+                    retryable=True,
+                )
             projects = _project_items(search_result)
+            discovered_projects.extend(projects)
             for item in projects:
                 info = item.get("projectInfo") if isinstance(item.get("projectInfo"), dict) else {}
                 runtime.projects.remember_project(
                     account_key, item["projectId"], str(info.get("projectTitle") or "Untitled"),
                 )
-            existing = next(
-                (
-                    item for item in projects
-                    if isinstance(item.get("projectInfo"), dict)
-                    and item["projectInfo"].get("projectTitle") == title
-                ),
-                None,
-            )
-            if existing:
-                runtime.projects.put(account_key, existing["projectId"], title)
-                runtime.mark_project_synced(connection, account_key)
-                return existing["projectId"]
             next_cursor = _project_cursor(search_result)
             if not next_cursor or next_cursor in seen_cursors:
+                lookup_complete = True
                 break
             seen_cursors.add(next_cursor)
             cursor = next_cursor
+        existing = _latest_project(discovered_projects)
+        if existing:
+            info = (
+                existing.get("projectInfo")
+                if isinstance(existing.get("projectInfo"), dict)
+                else {}
+            )
+            existing_title = str(info.get("projectTitle") or "Untitled")
+            runtime.projects.put(account_key, existing["projectId"], existing_title)
+            runtime.mark_project_synced(connection, account_key)
+            return existing["projectId"]
+        if not lookup_complete:
+            raise APIError(
+                503,
+                "PROJECT_LIST_INCOMPLETE",
+                "Google Flow project lookup did not finish; refusing to create a duplicate project.",
+                retryable=True,
+            )
         result = await client.trpc_request(
             url=TRPC_CREATE_PROJECT,
             method="POST",
@@ -540,17 +610,19 @@ async def list_projects(
             str(info.get("projectTitle") or "Untitled"),
         )
     if cursor is None:
-        newest_managed = next(
-            (
-                item for item in project_items
-                if isinstance(item.get("projectInfo"), dict)
-                and item["projectInfo"].get("projectTitle") == "FlowProvider"
-            ),
-            None,
-        )
-        if newest_managed:
+        newest_project = _latest_project(project_items)
+        if newest_project:
             account_key = _account_key(connection)
-            runtime.projects.put(account_key, newest_managed["projectId"], "FlowProvider")
+            info = (
+                newest_project.get("projectInfo")
+                if isinstance(newest_project.get("projectInfo"), dict)
+                else {}
+            )
+            runtime.projects.put(
+                account_key,
+                newest_project["projectId"],
+                str(info.get("projectTitle") or "Untitled"),
+            )
             runtime.mark_project_synced(connection, account_key)
     return _scoped_response(result, runtime.settings, connection)
 

@@ -434,7 +434,27 @@ def test_automatic_image_generation_creates_project_when_account_has_no_managed_
     assert trpc_methods == ["GET", "POST"]
 
 
-def test_managed_project_search_follows_cursor_before_creating_duplicate(monkeypatch):
+def test_managed_project_does_not_create_when_lookup_response_is_invalid(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    trpc_methods = []
+
+    async def fake_trpc(_connection_id, **kwargs):
+        trpc_methods.append(kwargs["method"])
+        return {"status": 200, "data": {"unexpected": "shape"}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/images/generations", headers=headers(), json={"prompt": "test"}
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "PROJECT_LIST_INVALID"
+    assert trpc_methods == ["GET"]
+
+
+def test_managed_project_search_reuses_newest_existing_project_without_creating(monkeypatch):
     application = app()
     connect(application, monkeypatch)
     trpc_calls = []
@@ -468,8 +488,62 @@ def test_managed_project_search_follows_cursor_before_creating_duplicate(monkeyp
         response = client.post("/v1/images/generations", headers=headers(), json={"prompt": "test"})
 
     assert response.status_code == 200
-    assert response.headers["x-flow-project-id"] == "projects/managed"
+    assert response.headers["x-flow-project-id"] == "projects/other"
     assert len(trpc_calls) == 2
+    assert all(call["method"] == "GET" for call in trpc_calls)
+
+
+def test_managed_project_search_selects_newest_across_all_pages(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    trpc_calls = []
+
+    async def fake_trpc(_connection_id, **kwargs):
+        trpc_calls.append(kwargs)
+        if len(trpc_calls) == 1:
+            return {
+                "status": 200,
+                "data": {"result": {"data": {"json": {"result": {
+                    "projects": [{
+                        "projectId": "projects/older",
+                        "projectInfo": {
+                            "projectTitle": "FlowProvider",
+                            "createTime": "2026-08-20T10:00:00Z",
+                        },
+                    }],
+                    "nextCursor": "page-2",
+                }}}}},
+            }
+        return {
+            "status": 200,
+            "data": {"result": {"data": {"json": {"result": {"projects": [{
+                "projectId": "projects/newest",
+                "projectInfo": {
+                    "projectTitle": "FlowProvider",
+                    "createTime": "2026-08-23T10:00:00Z",
+                },
+            }]}}}}},
+        }
+
+    api_urls = []
+
+    async def fake_api(_connection_id, **kwargs):
+        api_urls.append(kwargs["url"])
+        return {"status": 200, "data": {"media": []}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/images/generations", headers=headers(), json={"prompt": "test"}
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-project-id"] == "projects/newest"
+    assert len(trpc_calls) == 2
+    assert all(call["method"] == "GET" for call in trpc_calls)
+    assert len(api_urls) == 1
+    assert "/projects/newest/" in api_urls[0]
 
 
 def test_managed_project_refreshes_stale_db_mapping_and_selects_newest(monkeypatch):

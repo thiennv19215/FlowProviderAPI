@@ -26,7 +26,7 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 ### Đặc điểm xử lý
 
 - API lưu mapping project và hash ảnh → media ID theo đúng extension/account/project; đăng nhập Google account khác trên cùng extension không dùng lại mapping cũ.
-- **Tự động quản lý project (Auto-managed project)**: Backend tích hợp **không cần tạo hoặc truyền `project_id`**. Provider tự động tạo/tái sử dụng project mặc định (`FlowProvider`) cho từng tài khoản Google và quản lý mapping media/operation. (Nếu backend truyền `project_id`, Provider vẫn tôn trọng để tương thích hoặc nhóm tài nguyên theo ý muốn).
+- **Tự động quản lý project (Auto-managed project)**: Backend tích hợp **không cần tạo hoặc truyền `project_id`**. Provider dùng lại project mới nhất hiện có trên từng tài khoản Google; chỉ tạo project `FlowProvider` khi lookup đầy đủ xác nhận account chưa có project nào. Provider quản lý mapping media/operation. (Nếu backend truyền `project_id`, Provider vẫn tôn trọng để tương thích hoặc nhóm tài nguyên theo ý muốn).
 - Ảnh upload được chuyển trực tiếp vào Google Flow dưới dạng Base64.
 - Tạo ảnh trả kết quả đồng bộ sau khi Flow xử lý xong.
 - Tạo video trả operation; bên gọi chủ động kiểm tra bằng `/v1/videos/status`.
