@@ -49,6 +49,10 @@ class CreateProjectRequest(BaseModel):
 class ImageUploadRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
+    excluded_project_ids: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=20
+    )
+    required_credits: int = Field(default=0, ge=0, le=1000)
     file_name: str = Field(default="upload.png", min_length=1, max_length=255)
     mime_type: str = Field(min_length=3, max_length=120, pattern=r"^image/")
     image_base64: str = Field(min_length=1, max_length=MAX_BASE64_TOTAL_CHARS)

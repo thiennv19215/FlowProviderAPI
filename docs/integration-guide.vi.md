@@ -291,6 +291,8 @@ POST /v1/media
 | Field | Bắt buộc | Ràng buộc |
 |---|---:|---|
 | `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project cụ thể. |
+| `required_credits` | Không | Mặc định `0`. Khi upload ảnh để tạo video, truyền số credit tối thiểu của video (`20` cho I2V/lite; Omni 8 giây là `25`) để ảnh được đặt trên một account đủ khả năng render. |
+| `excluded_project_ids` | Không | Danh sách project của các account đã thất bại trong cùng lượt failover. Provider loại các account sở hữu project này và upload lại ảnh sang account khác. |
 | `file_name` | Không | Mặc định `upload.png`, tối đa 255 ký tự. |
 | `mime_type` | Có | Bắt đầu bằng `image/`, ví dụ `image/jpeg`, `image/png`. |
 | `image_base64` | Có | Chuỗi Base64 thuần, không thêm prefix `data:image/...;base64,`. Tổng Base64 trong một request tối đa 64 MiB ký tự. |
@@ -385,6 +387,8 @@ Không gửi `project_id`. Provider tự chọn extension ít tải, tạo hoặ
 ```
 
 Response có `X-Flow-Project-Id`. Nếu chỉ nhận ảnh cuối thì backend không cần điều hướng project; nếu ảnh sẽ tiếp tục làm reference hoặc tạo video, phải lưu cặp `X-Flow-Project-Id + media[i].name` để gửi ở request sau.
+
+Với luồng tách riêng `POST /v1/media` rồi `POST /v1/videos/generations`, caller phải gửi `required_credits` khi upload và chuyển `X-Flow-Project-Id` từ response upload thành `project_id` của request video. Điều này giữ cả hai call trên cùng Chrome extension/account trong triển khai đa account.
 
 Nếu cùng nội dung ảnh đã được upload vào đúng account/project, Provider dùng thẳng media ID trong DB mà không thêm request kiểm tra. Nếu Google hiếm khi trả `404` vì media cũ, Provider xóa cache, upload lại và retry. Header `X-Flow-Media-Cache-Hits` cho biết số ảnh lấy từ cache trong request.
 

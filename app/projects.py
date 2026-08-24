@@ -155,6 +155,9 @@ class ProjectStore:
                     "CREATE INDEX IF NOT EXISTS idx_media_last_used ON provider_media (last_used_at)"
                 )
                 self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_media_google_id ON provider_media (google_media_id, status)"
+                )
+                self._connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_operations_account_project ON provider_operations (installation_id, google_project_id, status)"
                 )
                 self._connection.execute(
@@ -318,6 +321,46 @@ class ProjectStore:
             json.loads(row["response_json"]) if row["response_json"] else None,
             row["response_status"],
             json.loads(row["response_headers_json"]) if row["response_headers_json"] else None,
+        )
+
+    def get_media_by_google_id(self, google_media_id: str) -> ProviderMedia | None:
+        """Return the active account/project route that owns a Google media ID."""
+        with self._lock:
+            row = self._db().execute(
+                """
+                SELECT installation_id, google_project_id, content_sha256,
+                       google_media_id, mime_type, file_name, response_json,
+                       response_status, response_headers_json
+                FROM provider_media
+                WHERE google_media_id = ? AND status = 'active'
+                ORDER BY last_used_at DESC
+                LIMIT 1
+                """,
+                (google_media_id,),
+            ).fetchone()
+            if row is not None:
+                self._db().execute(
+                    """
+                    UPDATE provider_media SET last_used_at = CURRENT_TIMESTAMP
+                    WHERE installation_id = ? AND google_project_id = ?
+                      AND content_sha256 = ?
+                    """,
+                    (
+                        row["installation_id"],
+                        row["google_project_id"],
+                        row["content_sha256"],
+                    ),
+                )
+                self._db().commit()
+        if row is None:
+            return None
+        return ProviderMedia(
+            row["installation_id"], row["google_project_id"], row["content_sha256"],
+            row["google_media_id"], row["mime_type"], row["file_name"],
+            json.loads(row["response_json"]) if row["response_json"] else None,
+            row["response_status"],
+            json.loads(row["response_headers_json"])
+            if row["response_headers_json"] else None,
         )
 
     def put_media(

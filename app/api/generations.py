@@ -102,6 +102,7 @@ def _connection(
     *,
     min_credits: int = 0,
     project_id: str | None = None,
+    excluded_account_keys: set[str] | None = None,
 ):
     runtime = request.app.state.runtime
     _authorize(runtime.settings, authorization)
@@ -112,6 +113,10 @@ def _connection(
     simulation_connections = [item for item in available if getattr(item, "simulation_mode", False)]
     if simulation_connections:
         available = simulation_connections
+    if excluded_account_keys:
+        available = [
+            item for item in available if _account_key(item) not in excluded_account_keys
+        ]
 
     if routing_scope:
         scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope)
@@ -230,6 +235,23 @@ def _mock_response(data: dict, settings, connection) -> Response:
 
 def _mock_id(kind: str) -> str:
     return f"mock/{kind}/{uuid.uuid4()}"
+
+
+def _stored_media_route(runtime, media_ids: list[str]) -> tuple[str, str] | None:
+    """Resolve known media IDs to their single owning account and project."""
+    routes = {
+        (media.installation_id, media.google_project_id)
+        for media_id in media_ids
+        if (media := runtime.projects.get_media_by_google_id(media_id)) is not None
+    }
+    if len(routes) > 1:
+        raise APIError(
+            409,
+            "MEDIA_ROUTE_MISMATCH",
+            "Referenced media belong to different Google Flow accounts or projects.",
+            field="reference_media_ids",
+        )
+    return next(iter(routes), None)
 
 
 def _mock_trpc(result: dict) -> dict:
@@ -571,8 +593,18 @@ async def upload_image(
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
+    excluded_account_keys = {
+        account_key
+        for project_id in payload.excluded_project_ids
+        if (account_key := runtime.projects.installation_for_project(project_id))
+    }
     connection, client = _connection(
-        request, authorization, routing_scope, project_id=payload.project_id,
+        request,
+        authorization,
+        routing_scope,
+        min_credits=payload.required_credits,
+        project_id=payload.project_id,
+        excluded_account_keys=excluded_account_keys,
     )
     if getattr(connection, "simulation_mode", False):
         resolved_project_id = payload.project_id or _mock_id("project")
@@ -776,20 +808,41 @@ async def generate_video(
         max(20, OMNI_FLASH_CREDIT_COST[payload.duration_seconds])
         if isinstance(payload, OmniVideoGenerationRequest) else 20
     )
+    media_ids = (
+        [payload.start_media_id]
+        if isinstance(payload, ImageToVideoGenerationRequest)
+        else list(payload.reference_media_ids)
+    )
+    stored_route = _stored_media_route(request.app.state.runtime, media_ids)
+    stored_account_key, stored_project_id = stored_route or (None, None)
+    if payload.project_id and stored_project_id and payload.project_id != stored_project_id:
+        raise APIError(
+            409,
+            "MEDIA_PROJECT_MISMATCH",
+            "Referenced media do not belong to the requested Google Flow project.",
+            field="project_id",
+        )
+    effective_project_id = payload.project_id or stored_project_id
     connection, client = _connection(
         request,
         authorization,
         routing_scope,
         min_credits=credit_cost,
-        project_id=payload.project_id,
+        project_id=effective_project_id,
     )
+    if stored_account_key and _account_key(connection) != stored_account_key:
+        raise APIError(
+            409,
+            "MEDIA_ACCOUNT_MISMATCH",
+            "Referenced media do not belong to the selected Google Flow account.",
+        )
     if getattr(connection, "simulation_mode", False):
         resolved_project_id = payload.project_id or _mock_id("project")
         operation_id = _mock_id("operation")
         runtime.projects.put_operation(operation_id, _account_key(connection), resolved_project_id, "operation", operation_id)
         runtime.mock_operation_polls[operation_id] = 0
         return _mock_response({"operations": [_mock_video_operation(operation_id, done=False)]}, runtime.settings, connection)
-    resolved_project_id = payload.project_id or await _managed_project(runtime, connection, client)
+    resolved_project_id = effective_project_id or await _managed_project(runtime, connection, client)
     tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
     ctx = client_context(resolved_project_id, tier)
     if isinstance(payload, ImageToVideoGenerationRequest):

@@ -1091,6 +1091,141 @@ def test_video_generation_excludes_accounts_below_twenty_credits(monkeypatch):
     assert rejected.json()["error"]["code"] == "VIDEO_ACCOUNT_UNAVAILABLE"
 
 
+def test_video_reference_upload_selects_credit_eligible_account(monkeypatch):
+    application = app()
+    low = SimpleNamespace(
+        id="low", installation_id="low-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=19, connected_at=1,
+    )
+    eligible = SimpleNamespace(
+        id="eligible", installation_id="eligible-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=2,
+    )
+    application.state.runtime.projects.put(
+        "eligible-installation", "projects/eligible", "FlowProvider"
+    )
+    application.state.runtime.mark_project_synced(eligible, "eligible-installation")
+    monkeypatch.setattr(
+        application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [low, eligible]
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    calls = []
+
+    async def fake_api(connection_id, **kwargs):
+        calls.append((connection_id, kwargs["body"]["clientContext"]["projectId"]))
+        return {"status": 200, "data": {"media": {"name": "media/eligible"}}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/media",
+            headers=headers(),
+            json={
+                "image_base64": "aGVsbG8=",
+                "mime_type": "image/png",
+                "required_credits": 20,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-project-id"] == "projects/eligible"
+    assert calls == [("eligible", "projects/eligible")]
+
+
+def test_video_reference_upload_excludes_failed_project_account(monkeypatch):
+    application = app()
+    first = SimpleNamespace(
+        id="first", installation_id="first-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=1,
+    )
+    second = SimpleNamespace(
+        id="second", installation_id="second-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=2,
+    )
+    application.state.runtime.projects.put(
+        "first-installation", "projects/first", "FlowProvider"
+    )
+    application.state.runtime.projects.put(
+        "second-installation", "projects/second", "FlowProvider"
+    )
+    application.state.runtime.mark_project_synced(first, "first-installation")
+    application.state.runtime.mark_project_synced(second, "second-installation")
+    monkeypatch.setattr(
+        application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [first, second]
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    calls = []
+
+    async def fake_api(connection_id, **kwargs):
+        calls.append((connection_id, kwargs["body"]["clientContext"]["projectId"]))
+        return {"status": 200, "data": {"media": {"name": "media/retry"}}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/media",
+            headers=headers(),
+            json={
+                "image_base64": "aGVsbG8=",
+                "mime_type": "image/png",
+                "required_credits": 20,
+                "excluded_project_ids": ["projects/first"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-project-id"] == "projects/second"
+    assert calls == [("second", "projects/second")]
+
+
+def test_unscoped_video_routes_to_the_extension_that_uploaded_its_media(monkeypatch):
+    application = app()
+    other = SimpleNamespace(
+        id="other", installation_id="other-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=1,
+    )
+    owner = SimpleNamespace(
+        id="owner", installation_id="owner-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=2,
+    )
+    application.state.runtime.projects.remember_project(
+        "owner-installation", "projects/owner", "Owner project"
+    )
+    application.state.runtime.projects.put_media(
+        "owner-installation",
+        "projects/owner",
+        "content-sha",
+        "media/reference",
+        "image/png",
+        "reference.png",
+    )
+    monkeypatch.setattr(
+        application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [other, owner]
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    calls = []
+
+    async def fake_api(connection_id, **kwargs):
+        calls.append((connection_id, kwargs["body"]["clientContext"]["projectId"]))
+        return {"status": 200, "data": {"operations": []}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "prompt": "move",
+                "start_media_id": "media/reference",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-project-id"] == "projects/owner"
+    assert calls == [("owner", "projects/owner")]
+
+
 def test_failed_paid_attempt_still_invalidates_and_refreshes_credit(monkeypatch):
     application = app()
     connection = connect(application, monkeypatch)
@@ -1221,4 +1356,3 @@ def test_optional_project_id_across_media_and_video(monkeypatch):
         )
         assert omni_resp.status_code == 200
         assert omni_resp.headers["X-Flow-Project-Id"] == "projects/managed-auto"
-
