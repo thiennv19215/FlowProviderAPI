@@ -222,7 +222,26 @@ async function findOrOpenFlowHome() {
     return { tabId: existing.id, isNew: false };
   }
 
-  const tab = await chrome.tabs.create({ url: FLOW_HOME_URL, active: false });
+  const normalWindows = await chrome.windows.getAll({ windowTypes: ["normal"] }).catch(() => []);
+  const targetWindow = normalWindows
+    .filter((window) => window.id)
+    .sort((left, right) => Number(right.focused) - Number(left.focused))[0];
+  let tab;
+  if (targetWindow?.id) {
+    tab = await chrome.tabs.create({
+      windowId: targetWindow.id,
+      url: FLOW_HOME_URL,
+      active: false,
+    });
+  } else {
+    const createdWindow = await chrome.windows.create({
+      url: FLOW_HOME_URL,
+      focused: false,
+      type: "normal",
+    });
+    tab = createdWindow.tabs?.[0];
+  }
+  if (!tab?.id) throw new Error("flow_tab_create_failed");
   await waitForTab(tab.id);
   return { tabId: tab.id, isNew: true };
 }

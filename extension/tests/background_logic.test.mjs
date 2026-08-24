@@ -53,6 +53,10 @@ function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig =
       get: async () => null,
       create: async () => ({ id: 1 }),
     },
+    windows: {
+      getAll: async () => [{ id: 1, focused: true }],
+      create: async () => ({ id: 1, tabs: [{ id: 1 }] }),
+    },
     scripting: { executeScript: async () => [{ result: { ok: true, data: 'token' } }] },
     declarativeNetRequest: { updateDynamicRules: async () => {} },
   };
@@ -267,6 +271,37 @@ test('concurrent openFlowHome calls create at most one Flow tab', async () => {
   ]);
   assert.equal(createCalls, 1);
   assert.deepEqual(results.map((result) => result.tabId), [77, 77, 77]);
+});
+
+test('openFlowHome creates a normal window when Chrome has no current window', async () => {
+  const h = buildHarness();
+  await flush();
+  let tabCreateCalls = 0;
+  let windowCreateCalls = 0;
+  h.context.chrome.tabs.query = async () => [];
+  h.context.chrome.tabs.create = async () => {
+    tabCreateCalls += 1;
+    throw new Error('No current window');
+  };
+  h.context.chrome.tabs.get = async (tabId) => ({
+    id: tabId,
+    url: 'https://labs.google/fx/vi/tools/flow',
+    status: 'complete',
+  });
+  h.context.chrome.windows.getAll = async () => [];
+  h.context.chrome.windows.create = async (options) => {
+    windowCreateCalls += 1;
+    assert.equal(options.url, 'https://labs.google/fx/vi/tools/flow');
+    assert.equal(options.focused, false);
+    assert.equal(options.type, 'normal');
+    return { id: 9, tabs: [{ id: 91 }] };
+  };
+
+  const result = await vm.runInContext('openFlowHome()', h.context);
+  assert.equal(result.tabId, 91);
+  assert.equal(result.isNew, true);
+  assert.equal(tabCreateCalls, 0);
+  assert.equal(windowCreateCalls, 1);
 });
 
 test('concurrent auth synchronization shares one labs session request', async () => {
