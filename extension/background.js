@@ -34,11 +34,19 @@ function sanitizeLogValue(value, key = "", depth = 0) {
     try {
       const url = new URL(text);
       if (["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
-        url.search = "";
-        url.hash = "";
-        text = url.toString();
+        text = url.pathname || "/";
       }
-    } catch (_) {}
+    } catch (_) {
+      text = text.replace(/\b(?:https?|wss?):\/\/[^\s"'<>]+/gi, (candidate) => {
+        try {
+          const url = new URL(candidate);
+          return url.pathname || "/";
+        } catch (_) {
+          return "[url]";
+        }
+      });
+    }
+    text = text.replace(/\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b/gi, "[domain]");
     return text.slice(0, MAX_LOG_DETAIL_CHARS);
   }
   if (depth >= 2) return "[object]";
@@ -437,12 +445,12 @@ async function connect() {
     const server = new URL(config.serverUrl);
     server.protocol = server.protocol === "https:" ? "wss:" : "ws:";
     server.pathname = `${server.pathname.replace(/\/$/, "")}/api/extensions/ws`;
-    appendActivity("Backend connecting", "running", server.origin);
+    appendActivity("Backend connecting", "running", `WebSocket · protocol v${PROTOCOL_VERSION}`);
     const ws = new WebSocket(server.toString(), ["flow-provider-v7"]);
     socket = ws;
     ws.onopen = async () => {
       reconnectAttempt = 0;
-      appendActivity("Backend connected", "done", server.host);
+      appendActivity("Backend connected", "done", `protocol v${PROTOCOL_VERSION}`);
       // Session capture and interactive RPCs need a Flow page. Reuse an
       // existing tab so reconnects do not accumulate background tabs.
       try {
@@ -464,7 +472,7 @@ async function connect() {
           appendActivity(
             "Account synchronized",
             accountState.ready ? "done" : "error",
-            `${accountState.email || "unknown account"}${Number.isFinite(accountState.credits) ? ` · ${accountState.credits} credits` : ""}`,
+            Number.isFinite(accountState.credits) ? `${accountState.credits} credits` : "account ready",
           );
           return;
         }

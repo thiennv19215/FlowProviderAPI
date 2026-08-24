@@ -374,9 +374,17 @@ test('extension logs redact credentials and URL query values', async () => {
     'extensionLog("error", "Auth failed", { authorization: "Bearer private-token" })',
     h.context,
   );
+  vm.runInContext(
+    'extensionLog("info", "Request", { url: "https://api.shopcongngheso5.io.vn/v1/media?key=secret-value" })',
+    h.context,
+  );
   const state = await vm.runInContext('connectionState()', h.context);
   const serialized = JSON.stringify({ logs: state.activity.logs, console: h.consoleEvents });
   assert.equal(serialized.includes('secret-value'), false);
   assert.equal(serialized.includes('private-token'), false);
+  assert.equal(serialized.includes('example.test'), false);
+  assert.equal(serialized.includes('shopcongngheso5.io.vn'), false);
+  assert.equal(serialized.includes('127.0.0.1'), false);
+  assert.match(serialized, /\/v1\/media/);
   assert.match(serialized, /redacted/);
 });
