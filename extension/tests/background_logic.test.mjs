@@ -11,6 +11,7 @@ const productionConfig = JSON.parse(JSON.stringify(configContext.self.FLOW_PROVI
 function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig = null } = {}) {
   const sockets = [];
   const fetchSignals = [];
+  const consoleEvents = [];
   const storage = { ...initialStorage };
 
   class MockWebSocket {
@@ -65,7 +66,14 @@ function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig =
     self: extensionConfig ? { FLOW_PROVIDER_EXTENSION_CONFIG: extensionConfig } : {}, chrome, WebSocket: MockWebSocket,
     URL, AbortController, Uint8Array, TextEncoder,
     btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
-    setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {}, console, Date, Math,
+    setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+    console: {
+      info: (...args) => consoleEvents.push({ level: 'info', args }),
+      warn: (...args) => consoleEvents.push({ level: 'warn', args }),
+      error: (...args) => consoleEvents.push({ level: 'error', args }),
+      log: (...args) => consoleEvents.push({ level: 'log', args }),
+    },
+    Date, Math,
     crypto: globalThis.crypto,
     navigator: {},
     fetch: fetchImpl || ((_url, options = {}) => new Promise((_resolve, reject) => {
@@ -78,7 +86,7 @@ function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig =
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(source, context, { filename: 'background.js' });
-  return { context, sockets, fetchSignals, storage };
+  return { context, sockets, fetchSignals, storage, consoleEvents };
 }
 
 async function flush() {
@@ -345,11 +353,30 @@ test('local offscreen keepalive does not duplicate the backend websocket heartbe
 test('popup state exposes a bounded activity log for provider RPC progress', async () => {
   const h = buildHarness();
   await flush();
-  for (let index = 0; index < 20; index += 1) {
+  vm.runInContext('activityState.logs = []', h.context);
+  for (let index = 0; index < 80; index += 1) {
     vm.runInContext(`appendActivity("event ${index}", "done")`, h.context);
   }
   const state = await vm.runInContext('connectionState()', h.context);
-  assert.equal(state.activity.logs.length, 12);
-  assert.equal(state.activity.logs[0].label, 'event 19');
+  assert.equal(state.activity.logs.length, 50);
+  assert.equal(state.activity.logs[0].label, 'event 79');
   assert.equal(state.activity.activeCount, 0);
+});
+
+test('extension logs redact credentials and URL query values', async () => {
+  const h = buildHarness();
+  await flush();
+  vm.runInContext(
+    'appendActivity("Fetch failed", "error", "https://example.test/path?key=secret-value Bearer private-token")',
+    h.context,
+  );
+  vm.runInContext(
+    'extensionLog("error", "Auth failed", { authorization: "Bearer private-token" })',
+    h.context,
+  );
+  const state = await vm.runInContext('connectionState()', h.context);
+  const serialized = JSON.stringify({ logs: state.activity.logs, console: h.consoleEvents });
+  assert.equal(serialized.includes('secret-value'), false);
+  assert.equal(serialized.includes('private-token'), false);
+  assert.match(serialized, /redacted/);
 });

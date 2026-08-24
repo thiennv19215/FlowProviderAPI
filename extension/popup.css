@@ -32,9 +32,20 @@ p { margin: 8px 0 0; overflow-wrap: anywhere; }
   border-top: 1px solid #21262d;
 }
 .activity-head { display: flex; justify-content: space-between; font-size: 12px; color: #9da7b3; }
+.activity-actions { display: flex; align-items: center; gap: 8px; }
+.log-action {
+  width: auto;
+  margin: 0;
+  padding: 2px 6px;
+  border: 1px solid #30363d;
+  background: transparent;
+  color: #9da7b3;
+  font-size: 10px;
+  font-weight: 500;
+}
 .job { color: #d29922; }
 .job.idle { color: #7d8590; }
-.logs { max-height: 150px; margin-top: 7px; overflow-y: auto; font: 11px ui-monospace, monospace; }
+.logs { max-height: 210px; margin-top: 7px; overflow-y: auto; font: 11px ui-monospace, monospace; }
 .log { display: grid; grid-template-columns: 48px 12px 1fr; gap: 4px; padding: 3px 0; color: #9da7b3; }
 .log .mark.done { color: #3fb950; }
 .log .mark.running { color: #d29922; }

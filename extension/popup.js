@@ -5,6 +5,7 @@ const jobEl = document.querySelector("#job");
 const logsEl = document.querySelector("#logs");
 const simulateEl = document.querySelector("#simulate");
 const simulateHelpEl = document.querySelector("#simulate-help");
+const copyLogsEl = document.querySelector("#copy-logs");
 const send = (message) => chrome.runtime.sendMessage(message);
 
 function timeLabel(value) {
@@ -74,6 +75,26 @@ document.querySelector("#flow").onclick = async () => {
   errorEl.textContent = "";
   const result = await send({ type: "FLOW_PROVIDER_OPEN_FLOW" });
   if (!result?.ok) errorEl.textContent = result?.error || "Cannot open Google Flow";
+};
+
+copyLogsEl.onclick = async () => {
+  errorEl.textContent = "";
+  try {
+    const state = await send({ type: "FLOW_PROVIDER_GET_STATE" });
+    const lines = [
+      `Flow Provider ${state.version || "unknown"}`,
+      `Connected: ${Boolean(state.connected)}`,
+      `Account ready: ${Boolean(state.account?.ready)}`,
+      ...((state.activity?.logs || []).slice().reverse().map((item) => (
+        `${new Date(item.at).toISOString()} ${String(item.status || "info").toUpperCase()} ${item.label || "Activity"}${item.detail ? ` · ${item.detail}` : ""}`
+      ))),
+    ];
+    await navigator.clipboard.writeText(lines.join("\n"));
+    copyLogsEl.textContent = "Copied";
+    setTimeout(() => { copyLogsEl.textContent = "Copy logs"; }, 1200);
+  } catch (error) {
+    errorEl.textContent = error?.message || "Cannot copy logs";
+  }
 };
 
 refresh().catch(() => {

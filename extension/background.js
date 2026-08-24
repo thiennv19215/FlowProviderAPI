@@ -9,7 +9,9 @@ const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
 const ALLOWED_FETCH_HOSTS = ["labs.google", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
 const AUTH_REFRESH_MS = 5 * 60 * 1000;
-const MAX_ACTIVITY_LOGS = 12;
+const MAX_ACTIVITY_LOGS = 50;
+const MAX_LOG_DETAIL_CHARS = 240;
+const SENSITIVE_LOG_KEY = /authorization|cookie|token|secret|api.?key|body|base64|image/i;
 
 let socket = null;
 let reconnectTimer = null;
@@ -22,6 +24,48 @@ let authSyncInFlight = null;
 const inflightRpcControllers = new Map();
 let activityState = { activeCount: 0, current: null, logs: [] };
 
+function sanitizeLogValue(value, key = "", depth = 0) {
+  if (SENSITIVE_LOG_KEY.test(key)) return "[redacted]";
+  if (value == null || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    let text = value
+      .replace(/Bearer\s+[A-Za-z0-9._~-]+/gi, "Bearer [redacted]")
+      .replace(/([?&](?:key|token|secret|api_key)=)[^&\s]+/gi, "$1[redacted]");
+    try {
+      const url = new URL(text);
+      if (["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
+        url.search = "";
+        url.hash = "";
+        text = url.toString();
+      }
+    } catch (_) {}
+    return text.slice(0, MAX_LOG_DETAIL_CHARS);
+  }
+  if (depth >= 2) return "[object]";
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).map((item) => sanitizeLogValue(item, key, depth + 1));
+  }
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .slice(0, 20)
+        .map(([childKey, childValue]) => [
+          childKey,
+          sanitizeLogValue(childValue, childKey, depth + 1),
+        ]),
+    );
+  }
+  return String(value).slice(0, MAX_LOG_DETAIL_CHARS);
+}
+
+function extensionLog(level, event, details = null) {
+  const prefix = `[Flow Provider ${chrome.runtime.getManifest().version}] ${event}`;
+  const safeDetails = details == null ? null : sanitizeLogValue(details);
+  const writer = level === "error" ? console.error : level === "warn" ? console.warn : console.info;
+  if (safeDetails == null || safeDetails === "") writer.call(console, prefix);
+  else writer.call(console, prefix, safeDetails);
+}
+
 function activityLabel(message) {
   if (message.type === "OPEN_FLOW_TAB") return "Preparing Flow";
   if (message.type === "INJECT_RECAPTCHA") return "Solving captcha";
@@ -33,7 +77,10 @@ function activityLabel(message) {
 }
 
 function appendActivity(label, status, detail = null) {
-  activityState.logs = [{ at: Date.now(), label, status, detail }, ...activityState.logs].slice(0, MAX_ACTIVITY_LOGS);
+  const safeLabel = sanitizeLogValue(label);
+  const safeDetail = detail == null ? null : sanitizeLogValue(detail);
+  activityState.logs = [{ at: Date.now(), label: safeLabel, status, detail: safeDetail }, ...activityState.logs].slice(0, MAX_ACTIVITY_LOGS);
+  extensionLog(status === "error" ? "error" : status === "running" ? "info" : "info", safeLabel, safeDetail);
 }
 
 function beginActivity(message) {
@@ -218,6 +265,7 @@ async function findOrOpenFlowHome() {
       || Number(right.active) - Number(left.active)
       || Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
   if (existing?.id) {
+    appendActivity("Flow tab reused", "done", `tab ${existing.id}`);
     await waitForTab(existing.id);
     return { tabId: existing.id, isNew: false };
   }
@@ -242,6 +290,7 @@ async function findOrOpenFlowHome() {
     tab = createdWindow.tabs?.[0];
   }
   if (!tab?.id) throw new Error("flow_tab_create_failed");
+  appendActivity("Flow tab opened", "done", `tab ${tab.id}`);
   await waitForTab(tab.id);
   return { tabId: tab.id, isNew: true };
 }
@@ -314,8 +363,15 @@ async function swFetch(spec, signal) {
     else signal.addEventListener("abort", abortFromCaller, { once: true });
   }
   const timer = setTimeout(() => controller.abort(), spec.timeoutMs || 45000);
+  const startedAt = Date.now();
+  const requestLabel = `${spec.method || "GET"} ${sanitizeLogValue(spec.url)}`;
   try {
     const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: controller.signal });
+    extensionLog(resp.ok ? "info" : "warn", "Fetch completed", {
+      request: requestLabel,
+      status: resp.status,
+      durationMs: Date.now() - startedAt,
+    });
     const type = spec.responseType || ((resp.headers.get("content-type") || "").includes("json") ? "json" : "text");
     const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url, headers: Object.fromEntries(resp.headers.entries()) };
     if (type === "json") {
@@ -357,6 +413,7 @@ function scheduleReconnect() {
   if (reconnectTimer) return;
   const delay = Math.min(1000 * 2 ** reconnectAttempt, 15000);
   reconnectAttempt += 1;
+  appendActivity("Backend reconnect scheduled", "running", `${delay} ms`);
   reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
 }
 
@@ -380,17 +437,18 @@ async function connect() {
     const server = new URL(config.serverUrl);
     server.protocol = server.protocol === "https:" ? "wss:" : "ws:";
     server.pathname = `${server.pathname.replace(/\/$/, "")}/api/extensions/ws`;
+    appendActivity("Backend connecting", "running", server.origin);
     const ws = new WebSocket(server.toString(), ["flow-provider-v7"]);
     socket = ws;
     ws.onopen = async () => {
       reconnectAttempt = 0;
-      appendActivity("Backend connected", "done");
+      appendActivity("Backend connected", "done", server.host);
       // Session capture and interactive RPCs need a Flow page. Reuse an
       // existing tab so reconnects do not accumulate background tabs.
       try {
         await openFlowHome();
       } catch (error) {
-        console.warn("Flow Provider could not prepare a Flow tab", error?.message || error);
+        appendActivity("Flow tab unavailable", "error", error?.message || error);
       }
       const meta = await getProfileMeta();
       if (ws !== socket || ws.readyState !== WebSocket.OPEN) return;
@@ -403,6 +461,11 @@ async function connect() {
         const msg = JSON.parse(event.data);
         if (msg.type === "auth_sync_ack") {
           accountState = { email: msg.email || accountState.email, credits: Number.isFinite(msg.credits) ? msg.credits : accountState.credits, ready: msg.status === "synced" };
+          appendActivity(
+            "Account synchronized",
+            accountState.ready ? "done" : "error",
+            `${accountState.email || "unknown account"}${Number.isFinite(accountState.credits) ? ` · ${accountState.credits} credits` : ""}`,
+          );
           return;
         }
         if (msg.type === "please_resend_userinfo") { await syncAuth(ws); return; }
@@ -426,12 +489,12 @@ async function connect() {
           }
           finally { inflightRpcControllers.delete(String(msg.id)); }
         }
-      } catch (error) { console.error("Flow Provider message error", error); }
+      } catch (error) { appendActivity("Backend message failed", "error", error?.message || error); }
     };
-    ws.onclose = () => { if (ws === socket) { socket = null; accountState.ready = false; appendActivity("Backend disconnected", "error"); scheduleReconnect(); } };
-    ws.onerror = () => {};
+    ws.onclose = (event) => { if (ws === socket) { socket = null; accountState.ready = false; appendActivity("Backend disconnected", "error", `code ${event?.code || 0}`); scheduleReconnect(); } };
+    ws.onerror = () => { extensionLog("warn", "Backend socket error"); };
   } catch (error) {
-    console.warn("Flow Provider connect failed", error?.message || error);
+    appendActivity("Backend connection failed", "error", error?.message || error);
     scheduleReconnect();
   }
 }
@@ -450,7 +513,7 @@ async function setupDnr() {
       { id: 1201, priority: 1, action: { type: "modifyHeaders", requestHeaders: [{ header: "origin", operation: "set", value: "https://labs.google" }, { header: "referer", operation: "set", value: "https://labs.google/" }] }, condition: { urlFilter: "aisandbox-pa.googleapis.com", excludedInitiatorDomains: ["labs.google"], resourceTypes: ["xmlhttprequest"] } },
       { id: 1202, priority: 1, action: { type: "modifyHeaders", requestHeaders: [{ header: "origin", operation: "set", value: "https://labs.google" }, { header: "referer", operation: "set", value: "https://labs.google/fx/tools/flow" }] }, condition: { urlFilter: "labs.google/fx/api/trpc/", excludedInitiatorDomains: ["labs.google"], resourceTypes: ["xmlhttprequest"] } }
     ] });
-  } catch (error) { console.warn("DNR setup failed", error); }
+  } catch (error) { appendActivity("Network rules failed", "error", error?.message || error); }
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
