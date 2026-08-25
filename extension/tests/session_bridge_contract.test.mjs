@@ -15,6 +15,11 @@ test('session bridge loads after background so it can reuse connector state', ()
   assert.match(loader, /background\.js", "session-bridge\.js/);
 });
 
+test('private connector credentials load from an optional local config', () => {
+  assert.match(loader, /importScripts\("config\.local\.js"\)/);
+  assert.match(loader, /try \{/);
+});
+
 test('production extension defaults to the public provider hostname', () => {
   assert.equal(configContext.self.FLOW_PROVIDER_EXTENSION_CONFIG.defaultServerUrl, 'https://api.shopcongngheso5.io.vn');
   assert.ok(manifest.host_permissions.includes('https://api.shopcongngheso5.io.vn/*'));

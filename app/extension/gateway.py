@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 
@@ -56,9 +57,17 @@ async def _serve(websocket:WebSocket):
     await websocket.accept(subprotocol="flow-provider-v7" if has_protocol else None)
     adapter=SocketAdapter(websocket);conn=None;heartbeat_task=None
     try:
+        if not has_protocol:
+            await websocket.close(4406,"extension subprotocol required");return
         hello=await receive_json(websocket,HELLO_TIMEOUT)
         if hello.get("type")!="extension_ready":await websocket.close(4400,"extension_ready frame required");return
         if hello.get("protocolVersion") not in PROTOCOL_VERSIONS:await websocket.close(4400,"extension protocol mismatch");return
+        expected_key=runtime.settings.extension_api_key
+        supplied_key=str(hello.get("connectorApiKey") or "")
+        if expected_key and not hmac.compare_digest(expected_key,supplied_key):
+            await websocket.close(4401,"extension authentication failed");return
+        if hello.get("simulationMode") is True and not runtime.settings.allow_simulation_mode:
+            await websocket.close(4403,"extension simulation mode is disabled");return
         installation=str(hello.get("installationId") or "").strip()
         if not installation:await websocket.close(4400,"installation id required");return
         if len(installation)>MAX_INSTALLATION_ID_CHARS:await websocket.close(4400,"installation id too long");return

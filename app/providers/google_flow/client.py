@@ -330,7 +330,25 @@ class FlowBridge:
 
 
 class BoundFlowClient:
-    def __init__(self,bridge:FlowBridge,connection_id:str):self.bridge=bridge;self.connection_id=connection_id
-    async def api_request(self,**kwargs):return await self.bridge.api_request(self.connection_id,**kwargs)
-    async def trpc_request(self,**kwargs):return await self.bridge.trpc_request(self.connection_id,**kwargs)
-    async def resolve_media_url(self,media_id:str,*,thumbnail:bool=False)->str|None:return await self.bridge.resolve_media_url(self.connection_id,media_id,thumbnail=thumbnail)
+    def __init__(self,bridge:FlowBridge,connection_id:str):
+        self.bridge=bridge;self.connection_id=connection_id
+
+    def _observe(self,result:dict)->dict:
+        status=result.get("status") if isinstance(result,dict) else None
+        if isinstance(result,dict) and (result.get("error") or (isinstance(status,int) and status>=400)):
+            reason=str(result.get("error") or f"upstream_http_{status}")
+            self.bridge.mark_provider_failure(
+                self.connection_id,
+                reason,
+                status_code=status if isinstance(status,int) else None,
+            )
+        return result
+
+    async def api_request(self,**kwargs):
+        return self._observe(await self.bridge.api_request(self.connection_id,**kwargs))
+
+    async def trpc_request(self,**kwargs):
+        return self._observe(await self.bridge.trpc_request(self.connection_id,**kwargs))
+
+    async def resolve_media_url(self,media_id:str,*,thumbnail:bool=False)->str|None:
+        return await self.bridge.resolve_media_url(self.connection_id,media_id,thumbnail=thumbnail)

@@ -9,7 +9,7 @@ cp .env.production.example .env.production
 chmod 600 .env.production
 ```
 
-Set an HTTPS public URL, a strong `FLOW_PROVIDER_BOOTSTRAP_API_KEY`, and the Cloudflare Tunnel token. Keep the environment file out of Git.
+Set an HTTPS public URL, a strong `FLOW_PROVIDER_BOOTSTRAP_API_KEY`, a separate strong `FLOW_PROVIDER_EXTENSION_API_KEY`, and the Cloudflare Tunnel token. Set `FLOW_PROVIDER_ALLOW_SIMULATION_MODE=false`. Copy `extension/config.local.example.js` to the Git-ignored `extension/config.local.js` and put only the extension key there before packaging the private connector; never copy the backend business key into Chrome. Keep the environment file out of Git.
 
 The production image copies only the installed Python application. `.dockerignore` excludes environment files, local databases, Git metadata, virtual environments, test artifacts, and local API-key files from the Docker build context.
 

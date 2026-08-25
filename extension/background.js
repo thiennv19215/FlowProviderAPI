@@ -5,10 +5,12 @@ const SERVER_DEFAULT_VERSION_KEY = "flow-provider-server-default-version-v1";
 const INSTALLATION_KEY = "flow-provider-installation-id-v1";
 const PROFILE_KEY = "flow-provider-profile-id-v1";
 const SIMULATION_MODE_KEY = "flow-provider-simulation-mode-v1";
+const FLOW_TAB_ID_KEY = "flow-provider-flow-tab-id-v1";
 const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
 const ALLOWED_FETCH_HOSTS = ["labs.google", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
 const AUTH_REFRESH_MS = 5 * 60 * 1000;
+const FLOW_TAB_OPEN_COOLDOWN_MS = 60 * 1000;
 const MAX_ACTIVITY_LOGS = 50;
 const MAX_LOG_DETAIL_CHARS = 240;
 const SENSITIVE_LOG_KEY = /authorization|cookie|token|secret|api.?key|body|base64|image/i;
@@ -21,6 +23,7 @@ let cachedBearerAt = 0;
 let lastAuthSyncAt = 0;
 let accountState = { email: null, credits: null, ready: false };
 let authSyncInFlight = null;
+let lastFlowTabOpenAttemptAt = 0;
 const inflightRpcControllers = new Map();
 let activityState = { activeCount: 0, current: null, logs: [] };
 
@@ -273,9 +276,22 @@ async function findOrOpenFlowHome() {
       || Number(right.active) - Number(left.active)
       || Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
   if (existing?.id) {
+    await chrome.storage.local.set({ [FLOW_TAB_ID_KEY]: existing.id });
     appendActivity("Flow tab reused", "done", `tab ${existing.id}`);
     await waitForTab(existing.id);
     return { tabId: existing.id, isNew: false };
+  }
+
+  const stored = await chrome.storage.local.get(FLOW_TAB_ID_KEY);
+  const trackedTabId = Number(stored?.[FLOW_TAB_ID_KEY]);
+  if (Number.isInteger(trackedTabId) && trackedTabId > 0) {
+    const tracked = await chrome.tabs.get(trackedTabId).catch(() => null);
+    if (tracked) {
+      appendActivity("Flow tab reused", "done", `tab ${trackedTabId}`);
+      await waitForTab(trackedTabId);
+      return { tabId: trackedTabId, isNew: false };
+    }
+    await chrome.storage.local.remove(FLOW_TAB_ID_KEY);
   }
 
   const normalWindows = await chrome.windows.getAll({ windowTypes: ["normal"] }).catch(() => []);
@@ -298,13 +314,19 @@ async function findOrOpenFlowHome() {
     tab = createdWindow.tabs?.[0];
   }
   if (!tab?.id) throw new Error("flow_tab_create_failed");
+  await chrome.storage.local.set({ [FLOW_TAB_ID_KEY]: tab.id });
   appendActivity("Flow tab opened", "done", `tab ${tab.id}`);
   await waitForTab(tab.id);
   return { tabId: tab.id, isNew: true };
 }
 
-async function openFlowHome() {
+async function openFlowHome({ respectCooldown = false } = {}) {
   if (openFlowHomeInFlight) return await openFlowHomeInFlight;
+  const now = Date.now();
+  if (respectCooldown && now - lastFlowTabOpenAttemptAt < FLOW_TAB_OPEN_COOLDOWN_MS) {
+    throw new Error("flow_tab_open_cooldown");
+  }
+  lastFlowTabOpenAttemptAt = now;
   const pending = findOrOpenFlowHome();
   openFlowHomeInFlight = pending;
   try {
@@ -442,26 +464,36 @@ async function connect() {
   if (socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.readyState)) return;
   try {
     const config = await getConnectionConfig();
+    const [installationId, simulationMode, meta] = await Promise.all([
+      getInstallationId(), getSimulationMode(), getProfileMeta(),
+    ]);
+    const connectorApiKey = String(CONFIG.connectorApiKey || "").trim();
     const server = new URL(config.serverUrl);
     server.protocol = server.protocol === "https:" ? "wss:" : "ws:";
     server.pathname = `${server.pathname.replace(/\/$/, "")}/api/extensions/ws`;
     appendActivity("Backend connecting", "running", `WebSocket · protocol v${PROTOCOL_VERSION}`);
     const ws = new WebSocket(server.toString(), ["flow-provider-v7"]);
     socket = ws;
-    ws.onopen = async () => {
+    ws.onopen = () => {
       reconnectAttempt = 0;
       appendActivity("Backend connected", "done", `protocol v${PROTOCOL_VERSION}`);
-      // Session capture and interactive RPCs need a Flow page. Reuse an
-      // existing tab so reconnects do not accumulate background tabs.
-      try {
-        await openFlowHome();
-      } catch (error) {
-        appendActivity("Flow tab unavailable", "error", error?.message || error);
-      }
-      const meta = await getProfileMeta();
       if (ws !== socket || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: "extension_ready", installationId: await getInstallationId(), protocolVersion: PROTOCOL_VERSION, connectionId: id("conn"), simulationMode: await getSimulationMode(), ...meta }));
-      await syncAuth(ws);
+      // Complete the backend handshake before waiting for Google Flow. A Flow
+      // page can take longer than the backend hello timeout or redirect to a
+      // sign-in page; neither case should force a reconnect/open-tab loop.
+      ws.send(JSON.stringify({
+        type: "extension_ready",
+        installationId,
+        protocolVersion: PROTOCOL_VERSION,
+        connectionId: id("conn"),
+        simulationMode,
+        ...(connectorApiKey ? { connectorApiKey } : {}),
+        ...meta,
+      }));
+      void openFlowHome({ respectCooldown: true }).catch((error) => {
+        appendActivity("Flow tab unavailable", "error", error?.message || error);
+      });
+      void syncAuth(ws);
     };
     ws.onmessage = async (event) => {
       if (ws !== socket) return;

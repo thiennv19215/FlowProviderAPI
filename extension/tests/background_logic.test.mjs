@@ -108,6 +108,24 @@ test('connect uses only the versioned websocket protocol and removes legacy gate
   assert.equal(h.storage['flow-provider-gateway-token-v1'], undefined);
 });
 
+test('connector key is sent only inside the TLS websocket hello frame', async () => {
+  const h = buildHarness({}, {
+    extensionConfig: {
+      ...productionConfig,
+      defaultServerUrl: 'https://provider.example.com',
+      connectorApiKey: 'connector-secret',
+    },
+  });
+  await flush();
+  const ws = h.sockets[0];
+  assert.equal(ws.url.includes('connector-secret'), false);
+  ws.readyState = h.context.WebSocket.OPEN;
+  await ws.onopen();
+  await flush();
+  const hello = ws.sent.find((frame) => frame.type === 'extension_ready');
+  assert.equal(hello.connectorApiKey, 'connector-secret');
+});
+
 test('legacy /ext/token server setting is sanitized without migrating its token', async () => {
   const h = buildHarness({ 'flow-provider-server-url-v1': 'https://provider.example.com/ext/old-secret' });
   await flush();
@@ -255,6 +273,76 @@ test('a successful backend connection opens one inactive Flow tab when none exis
   await flush();
 
   assert.equal(createCalls, 1);
+});
+
+test('backend handshake is sent before a Flow tab finishes loading', async () => {
+  const h = buildHarness({}, {
+    fetchImpl: async () => { throw new Error('labs unavailable'); },
+  });
+  await flush();
+  h.context.chrome.tabs.query = async () => [];
+  h.context.chrome.tabs.create = async () => ({ id: 88 });
+  h.context.chrome.tabs.get = async () => await new Promise(() => {});
+
+  const ws = h.sockets[0];
+  ws.readyState = h.context.WebSocket.OPEN;
+  void ws.onopen();
+  await flush();
+
+  assert.ok(ws.sent.some((frame) => frame.type === 'extension_ready'));
+});
+
+test('reconnect cooldown prevents repeatedly creating Flow tabs after open failure', async () => {
+  const h = buildHarness({}, {
+    fetchImpl: async () => { throw new Error('labs unavailable'); },
+  });
+  await flush();
+  let createCalls = 0;
+  h.context.chrome.tabs.query = async () => [];
+  h.context.chrome.tabs.create = async () => {
+    createCalls += 1;
+    return { id: 88 };
+  };
+  h.context.chrome.tabs.get = async () => null;
+
+  const first = h.sockets[0];
+  first.readyState = h.context.WebSocket.OPEN;
+  await first.onopen();
+  await flush();
+
+  await vm.runInContext('socket = null; reconnectTimer = null; connect()', h.context);
+  await flush();
+  const second = h.sockets[1];
+  second.readyState = h.context.WebSocket.OPEN;
+  await second.onopen();
+  await flush();
+
+  assert.equal(createCalls, 1);
+  assert.ok(first.sent.some((frame) => frame.type === 'extension_ready'));
+  assert.ok(second.sent.some((frame) => frame.type === 'extension_ready'));
+});
+
+test('a tracked Flow tab is reused after it redirects to sign-in', async () => {
+  const h = buildHarness({ 'flow-provider-flow-tab-id-v1': 42 });
+  await flush();
+  let createCalls = 0;
+  h.context.chrome.tabs.query = async () => [];
+  h.context.chrome.tabs.get = async () => ({
+    id: 42,
+    url: 'https://accounts.google.com/signin',
+    status: 'complete',
+  });
+  h.context.chrome.tabs.create = async () => {
+    createCalls += 1;
+    return { id: 99 };
+  };
+  vm.runInContext('waitForTab = async () => { throw new Error("flow_tab_redirected"); }', h.context);
+
+  await assert.rejects(
+    vm.runInContext('openFlowHome()', h.context),
+    /flow_tab_redirected/,
+  );
+  assert.equal(createCalls, 0);
 });
 
 test('concurrent openFlowHome calls create at most one Flow tab', async () => {

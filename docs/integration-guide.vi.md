@@ -171,7 +171,7 @@ export function buildOmniRequest(input: {
   mediaIds: string[];
   prompt: string;
   aspect?: Exclude<UiAspect, "1:1">;
-  duration?: 2 | 4 | 8 | 10;
+  duration?: 4 | 6 | 8 | 10;
 }) {
   return {
     type: "omni" as const,
@@ -811,7 +811,7 @@ trừ credit; backend nên lưu poll name, trạng thái cuối và `X-Request-I
 | `502` | `EXTENSION_REQUEST_FAILED`, `PROJECT_RECOVERY_FAILED` | Extension/Flow trả response không hợp lệ hoặc khôi phục project thất bại. |
 | `503` | `PROVIDER_ACCOUNT_UNAVAILABLE`, `PROJECT_ACCOUNT_UNAVAILABLE`, `VIDEO_ACCOUNT_UNAVAILABLE` | Không có account/slot/credit phù hợp; retry với backoff. |
 | `503` | `ROUTING_SCOPE_UNAVAILABLE`, `OPERATION_ACCOUNT_UNAVAILABLE`, `EXTENSION_DISCONNECTED` | Account sở hữu resource đang offline hoặc hết slot; không fallback sang account khác. |
-| `504` | `EXTENSION_TIMEOUT` | Hết thời gian chờ. Với video, kiểm tra status trước khi tạo lại. |
+| `504` | `EXTENSION_TIMEOUT` | Hết thời gian chờ. Với video trả phí, `retryable=false` vì kết quả có thể đã được Flow nhận; không tạo lại khi chưa đối soát operation gốc. |
 
 Luôn ưu tiên xử lý theo `HTTP status`, sau đó theo `error.code` và `retryable`;
 không phân tích chuỗi `message` để điều khiển nghiệp vụ.

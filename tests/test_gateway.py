@@ -3,8 +3,10 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app import main as main_module
 from app.config import Settings
 from app.main import create_app
 
@@ -16,6 +18,26 @@ def app():
         public_base_url="https://provider.test",
         project_store_path=":memory:",
     ))
+
+
+def test_production_requires_connector_auth_and_disables_simulation():
+    common = {
+        "env": "production",
+        "bootstrap_api_key": "fpa_prod_backend_secret",
+        "public_base_url": "https://provider.example.com",
+        "project_store_path": ":memory:",
+    }
+    with pytest.raises(ValueError, match="extension connector API key"):
+        Settings(**common, allow_simulation_mode=False)
+    with pytest.raises(ValueError, match="disable extension simulation"):
+        Settings(**common, extension_api_key="fpe_prod_connector_secret")
+
+    settings = Settings(
+        **common,
+        extension_api_key="fpe_prod_connector_secret",
+        allow_simulation_mode=False,
+    )
+    assert settings.extension_api_key == "fpe_prod_connector_secret"
 
 
 def headers(scope: str | None = None):
@@ -77,6 +99,30 @@ def test_content_length_limit_rejects_request_before_parsing_body():
         )
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
+
+
+def test_streamed_body_limit_rejects_request_without_content_length(monkeypatch):
+    monkeypatch.setattr(main_module, "MAX_REQUEST_BYTES", 10)
+    application = app()
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/images/generations",
+            headers=headers(),
+            content=iter((b'{"prompt":', b'"too large"}')),
+        )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
+
+
+def test_business_auth_is_checked_before_json_body_parsing():
+    with TestClient(app()) as client:
+        response = client.post(
+            "/v1/images/generations",
+            headers={"Content-Type": "application/json"},
+            content=b"not-json",
+        )
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "INVALID_API_KEY"
 
 
 def test_generation_requires_auth_and_connection():
@@ -1300,6 +1346,56 @@ def test_unscoped_video_routes_to_the_extension_that_uploaded_its_media(monkeypa
     assert calls == [("owner", "projects/owner")]
 
 
+def test_unscoped_image_routes_to_the_extension_that_owns_reference_media(monkeypatch):
+    application = app()
+    other = SimpleNamespace(
+        id="other", installation_id="other-installation", account_email="other@example.com",
+        max_slots=3, paygate_tier="PAYGATE_TIER_ONE", credits=100,
+        connected_at=1, simulation_mode=False,
+    )
+    owner = SimpleNamespace(
+        id="owner", installation_id="owner-installation", account_email="owner@example.com",
+        max_slots=3, paygate_tier="PAYGATE_TIER_ONE", credits=100,
+        connected_at=2, simulation_mode=False,
+    )
+    owner_key = "owner-installation\nowner@example.com"
+    application.state.runtime.projects.put_media(
+        owner_key,
+        "projects/owner",
+        "content-sha",
+        "media/reference",
+        "image/png",
+        "reference.png",
+    )
+    monkeypatch.setattr(
+        application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [other, owner]
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    calls = []
+
+    async def fake_api(connection_id, **kwargs):
+        calls.append((connection_id, kwargs["body"]["clientContext"]["projectId"]))
+        return {"status": 200, "data": {"media": [{"name": "media/generated"}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/images/generations",
+            headers=headers(),
+            json={"prompt": "use owner media", "reference_media_ids": ["media/reference"]},
+        )
+        generated_route = application.state.runtime.projects.get_media_by_google_id(
+            "media/generated"
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-project-id"] == "projects/owner"
+    assert calls == [("owner", "projects/owner")]
+    assert generated_route is not None
+    assert generated_route.installation_id == owner_key
+    assert generated_route.google_project_id == "projects/owner"
+
+
 def test_failed_paid_attempt_still_invalidates_and_refreshes_credit(monkeypatch):
     application = app()
     connection = connect(application, monkeypatch)
@@ -1326,6 +1422,34 @@ def test_failed_paid_attempt_still_invalidates_and_refreshes_credit(monkeypatch)
 
     assert response.status_code == 500
     assert refreshes == [("account-1", {"initial_delay": 2})]
+
+
+def test_paid_video_timeout_is_not_advertised_as_retryable(monkeypatch):
+    application = app()
+    connection = connect(application, monkeypatch)
+
+    async def fake_api(_connection_id, **_kwargs):
+        return {"error": "timeout"}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(
+        application.state.runtime.bridge, "schedule_account_refresh", lambda *_args, **_kwargs: None
+    )
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "project_id": "project-1",
+                "prompt": "move",
+                "start_media_id": "media/1",
+            },
+        )
+
+    assert response.status_code == 504
+    assert response.json()["error"]["code"] == "EXTENSION_TIMEOUT"
+    assert response.json()["error"]["retryable"] is False
 
 
 def test_omni_reserves_its_higher_known_credit_cost(monkeypatch):

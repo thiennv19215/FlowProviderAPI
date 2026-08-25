@@ -1,8 +1,10 @@
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app.config import Settings
 from app.main import create_app
 from app.providers.google_flow.browser_bridge import FlowBridge
+from app.providers.google_flow.client import BoundFlowClient
 
 
 class FakeSocket:
@@ -76,6 +78,32 @@ async def test_media_redirect_uses_browser_cookies_and_url_encodes_id(monkeypatc
     assert captured["params"]["spec"]["responseType"] == "none"
 
 
+async def test_bound_client_applies_rate_limit_cooldown_and_auth_invalidation(monkeypatch):
+    bridge = FlowBridge(flow_api_key="test-key", cooldown_seconds=180)
+    socket = FakeSocket()
+    connection = bridge.register(socket, {"installationId": "install-test"})
+    connection.flow_key = "browser-owned"
+    connection.account_email = "owner@example.com"
+    connection.paygate_tier = "PAYGATE_TIER_ONE"
+    responses = [
+        {"status": 429, "error": "upstream_http_429"},
+        {"status": 401, "error": "upstream_http_401"},
+    ]
+
+    async def fake_api_request(_connection_id, **_kwargs):
+        return responses.pop(0)
+
+    monkeypatch.setattr(bridge, "api_request", fake_api_request)
+    client = BoundFlowClient(bridge, connection.id)
+    await client.api_request(url="https://example.test")
+    assert connection.cooldown_until is not None
+    assert connection.cooldown_reason == "rate_limit"
+
+    await client.api_request(url="https://example.test")
+    assert connection.flow_key is None
+    assert connection.paygate_tier is None
+
+
 def test_extension_connects_on_gateway_runtime_path():
     app = create_app(Settings(env="test", bootstrap_api_key="test", project_store_path=":memory:"))
     with TestClient(app) as client:
@@ -85,6 +113,69 @@ def test_extension_connects_on_gateway_runtime_path():
                 "installationId": "install-test", "profileName": "Test Chrome"})
             assert client.get("/api/health").json()["ok"] is True
             assert app.state.runtime.bridge.connected is True
+        assert app.state.runtime.bridge.connected is False
+
+
+def test_extension_gateway_rejects_an_invalid_connector_key():
+    app = create_app(Settings(
+        env="test",
+        bootstrap_api_key="test",
+        extension_api_key="connector-secret",
+        project_store_path=":memory:",
+    ))
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/extensions/ws", subprotocols=["flow-provider-v7"]) as ws:
+            ws.send_json({
+                "type": "extension_ready",
+                "protocolVersion": 7,
+                "installationId": "attacker",
+                "connectorApiKey": "wrong-secret",
+                "simulationMode": True,
+            })
+            try:
+                ws.receive_json()
+            except WebSocketDisconnect as exc:
+                assert exc.code == 4401
+            else:
+                raise AssertionError("invalid connector key must close the socket")
+        assert app.state.runtime.bridge.connected is False
+
+
+def test_extension_gateway_requires_the_versioned_subprotocol():
+    app = create_app(Settings(env="test", bootstrap_api_key="test", project_store_path=":memory:"))
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/extensions/ws") as ws:
+            try:
+                ws.receive_json()
+            except WebSocketDisconnect as exc:
+                assert exc.code == 4406
+            else:
+                raise AssertionError("missing extension subprotocol must close the socket")
+
+
+def test_extension_gateway_rejects_simulation_when_disabled():
+    app = create_app(Settings(
+        env="test",
+        bootstrap_api_key="test",
+        extension_api_key="connector-secret",
+        allow_simulation_mode=False,
+        project_store_path=":memory:",
+    ))
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/extensions/ws", subprotocols=["flow-provider-v7"]) as ws:
+            ws.send_json({
+                "type": "extension_ready",
+                "protocolVersion": 7,
+                "installationId": "connector",
+                "connectorApiKey": "connector-secret",
+                "simulationMode": True,
+            })
+            try:
+                ws.receive_json()
+            except WebSocketDisconnect as exc:
+                assert exc.code == 4403
+            else:
+                raise AssertionError("disabled simulation mode must close the socket")
         assert app.state.runtime.bridge.connected is False
 
 

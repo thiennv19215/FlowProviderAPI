@@ -118,6 +118,7 @@ def _connection(
     *,
     min_credits: int = 0,
     project_id: str | None = None,
+    required_account_key: str | None = None,
     excluded_account_keys: set[str] | None = None,
 ):
     runtime = request.app.state.runtime
@@ -136,6 +137,12 @@ def _connection(
 
     if routing_scope:
         scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope)
+        if required_account_key and scoped_account_key != required_account_key:
+            raise APIError(
+                409,
+                "MEDIA_ACCOUNT_MISMATCH",
+                "The routing scope does not own the referenced media.",
+            )
         connection = next(
             (
                 item for item in available
@@ -161,6 +168,34 @@ def _connection(
                 )
         if not _reserve(request, connection, min_credits):
             raise APIError(503, "ROUTING_SCOPE_UNAVAILABLE", "The routed account is at capacity.", retryable=True)
+        return connection, BoundFlowClient(runtime.bridge, connection.id)
+    if required_account_key:
+        connection = next(
+            (
+                item for item in available
+                if _account_key(item) == required_account_key
+                and runtime.can_reserve(item, min_credits)
+            ),
+            None,
+        )
+        if connection is None:
+            raise APIError(
+                503,
+                "MEDIA_ACCOUNT_UNAVAILABLE",
+                "The Google Flow account that owns the referenced media is unavailable.",
+                retryable=True,
+            )
+        if project_id:
+            project_account_key = runtime.projects.installation_for_project(project_id)
+            if project_account_key and project_account_key != required_account_key:
+                raise APIError(
+                    409,
+                    "MEDIA_PROJECT_MISMATCH",
+                    "The referenced media do not belong to the requested Google Flow project.",
+                    field="project_id",
+                )
+        if not _reserve(request, connection, min_credits):
+            raise APIError(503, "MEDIA_ACCOUNT_UNAVAILABLE", "The media account is at capacity.", retryable=True)
         return connection, BoundFlowClient(runtime.bridge, connection.id)
     if project_id:
         account_key = runtime.projects.installation_for_project(project_id)
@@ -241,6 +276,20 @@ def _scoped_response(result: dict, settings, connection) -> Response:
     if account_key:
         response.headers[ROUTING_SCOPE_HEADER] = _encode_routing_scope(settings, account_key)
     return response
+
+
+def _paid_scoped_response(result: dict, settings, connection) -> Response:
+    """Do not advertise an uncertain paid request as safe to repeat."""
+    if result.get("error") and not isinstance(result.get("status"), int):
+        exc = _error(result)
+        if exc.code in {"EXTENSION_TIMEOUT", "EXTENSION_DISCONNECTED"}:
+            exc.retryable = False
+            exc.message = (
+                "The paid generation outcome is unknown. Do not create it again "
+                "without reconciling the original operation."
+            )
+        raise exc
+    return _scoped_response(result, settings, connection)
 
 
 def _mock_response(data: dict, settings, connection) -> Response:
@@ -396,6 +445,30 @@ def _remember_operations(runtime, connection, project_id: str, result: dict) -> 
         name = media.get("name") if isinstance(media, dict) else None
         if isinstance(name, str) and name:
             runtime.projects.put_operation(name, account_key, project_id, "media", name)
+
+
+def _remember_generated_media(runtime, connection, project_id: str, result: dict) -> None:
+    """Keep generated image media sticky for later image/video requests."""
+    status = result.get("status")
+    data = result.get("data")
+    if not isinstance(status, int) or status >= 400 or not isinstance(data, dict):
+        return
+    account_key = _account_key(connection)
+    for media in data.get("media") or []:
+        media_id = media.get("name") if isinstance(media, dict) else None
+        if not isinstance(media_id, str) or not media_id:
+            continue
+        route_digest = hashlib.sha256(
+            f"generated-media-route\0{media_id}".encode("utf-8")
+        ).hexdigest()
+        runtime.projects.put_media(
+            account_key,
+            project_id,
+            route_digest,
+            media_id,
+            "image/generated",
+            "generated-image",
+        )
 
 
 def _video_generation_succeeded(media: dict) -> bool:
@@ -743,8 +816,22 @@ async def generate_image(
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
+    stored_route = _stored_media_route(runtime, list(payload.reference_media_ids))
+    stored_account_key, stored_project_id = stored_route or (None, None)
+    if payload.project_id and stored_project_id and payload.project_id != stored_project_id:
+        raise APIError(
+            409,
+            "MEDIA_PROJECT_MISMATCH",
+            "Referenced media do not belong to the requested Google Flow project.",
+            field="project_id",
+        )
+    effective_project_id = payload.project_id or stored_project_id
     connection, client = _connection(
-        request, authorization, routing_scope, project_id=payload.project_id,
+        request,
+        authorization,
+        routing_scope,
+        project_id=effective_project_id,
+        required_account_key=stored_account_key,
     )
     if getattr(connection, "simulation_mode", False):
         project_id = payload.project_id or _mock_id("project")
@@ -757,12 +844,12 @@ async def generate_image(
         response = _mock_response({"media": media}, runtime.settings, connection)
         response.headers["X-Flow-Project-Id"] = project_id
         return response
-    managed = payload.project_id is None
+    managed = effective_project_id is None
     account_key = _account_key(connection)
     force_upload: set[str] = set()
     project_recovered = False
     for attempt in range(3):
-        project_id = payload.project_id or await _managed_project(runtime, connection, client)
+        project_id = effective_project_id or await _managed_project(runtime, connection, client)
         reference_media_ids = list(payload.reference_media_ids)
         cached_digests: list[str] = []
         cache_hits = 0
@@ -859,6 +946,7 @@ async def generate_image(
             force_upload.clear()
             continue
         _remember_project_on_success(runtime, connection, project_id, result)
+        _remember_generated_media(runtime, connection, project_id, result)
         response = _scoped_response(result, runtime.settings, connection)
         response.headers["X-Flow-Project-Id"] = project_id
         response.headers["X-Flow-Media-Cache-Hits"] = str(cache_hits)
@@ -901,6 +989,7 @@ async def generate_video(
         routing_scope,
         min_credits=credit_cost,
         project_id=effective_project_id,
+        required_account_key=stored_account_key,
     )
     if stored_account_key and _account_key(connection) != stored_account_key:
         raise APIError(
@@ -937,7 +1026,7 @@ async def generate_video(
         _refresh_paid_account(runtime, connection)
         _remember_project_on_success(runtime, connection, resolved_project_id, result)
         _remember_operations(runtime, connection, resolved_project_id, result)
-        response = _scoped_response(result, runtime.settings, connection)
+        response = _paid_scoped_response(result, runtime.settings, connection)
         response.headers["X-Flow-Project-Id"] = resolved_project_id
         return response
     body = {
@@ -962,7 +1051,7 @@ async def generate_video(
     _refresh_paid_account(runtime, connection)
     _remember_project_on_success(runtime, connection, resolved_project_id, result)
     _remember_operations(runtime, connection, resolved_project_id, result)
-    response = _scoped_response(result, runtime.settings, connection)
+    response = _paid_scoped_response(result, runtime.settings, connection)
     response.headers["X-Flow-Project-Id"] = resolved_project_id
     return response
 

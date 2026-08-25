@@ -6,7 +6,7 @@ Google Flow API and orchestration service backed by signed-in Chrome MV3 connect
 
 Clients call fixed business endpoints for projects, image upload, image generation and video generation. The backend selects an available extension, lets the browser add Google authentication/captcha, and returns the upstream HTTP status and body unchanged.
 
-Image generation can run in either compatibility mode with an explicit `project_id`, or managed mode without one. In managed mode the Provider chooses a ready extension, recovers or creates that installation/account's `FlowProvider` project once, and caches project and uploaded-media IDs in SQLite. Repeated inline images are matched by SHA-256 within the same installation, Google account, and project and reuse their media ID directly. A rare stale-media `404` invalidates the cache and triggers one upload retry. Google credentials and image bytes remain browser-owned/request-scoped.
+Image generation can run in either compatibility mode with an explicit `project_id`, or managed mode without one. In managed mode the Provider chooses a ready extension, reuses that account's newest project or creates `FlowProvider` when none exists, and caches project and media routes in SQLite. Repeated inline images are matched by SHA-256 within the same installation, Google account, and project and reuse their media ID directly. A rare stale-media `404` invalidates the cache and triggers one upload retry. Google credentials and image bytes remain browser-owned/request-scoped.
 
 Scheduling reserves up to three complete HTTP jobs on one ready extension before moving to the next. Each video job also reserves at least 20 credits, or its higher known Omni cost, before it starts, so concurrent requests cannot reuse the same visible balance. After every paid attempt, including an uncertain timeout, paid routing remains blocked until the managed credit refresh succeeds. Image operations remain eligible.
 
@@ -20,7 +20,11 @@ Required production values:
 FLOW_PROVIDER_ENV=production
 FLOW_PROVIDER_PUBLIC_BASE_URL=https://provider.example.com
 FLOW_PROVIDER_BOOTSTRAP_API_KEY=fpa_prod_<secret>
+FLOW_PROVIDER_EXTENSION_API_KEY=fpe_prod_<different-secret>
+FLOW_PROVIDER_ALLOW_SIMULATION_MODE=false
 ```
+
+Copy `extension/config.local.example.js` to the Git-ignored `extension/config.local.js`, then set the same extension connector key there before packaging or loading the private connector. Never put the backend business API key in the extension.
 
 ## Run locally
 

@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 15
     env:
       FLOW_PROVIDER_BOOTSTRAP_API_KEY: ${{ secrets.FLOW_PROVIDER_BOOTSTRAP_API_KEY }}
+      FLOW_PROVIDER_EXTENSION_API_KEY: ${{ secrets.FLOW_PROVIDER_EXTENSION_API_KEY }}
     steps:
       - name: Deploy origin/main
         working-directory: /home/ubuntu/FlowProviderAPI
@@ -31,10 +32,22 @@ jobs:
           git fetch origin main
           git checkout main
           git pull --ff-only origin main
+          : "${FLOW_PROVIDER_BOOTSTRAP_API_KEY:?missing FLOW_PROVIDER_BOOTSTRAP_API_KEY secret}"
+          : "${FLOW_PROVIDER_EXTENSION_API_KEY:?missing FLOW_PROVIDER_EXTENSION_API_KEY secret}"
           if grep -q '^FLOW_PROVIDER_BOOTSTRAP_API_KEY=' .env.production; then
             sed -i "s|^FLOW_PROVIDER_BOOTSTRAP_API_KEY=.*$|FLOW_PROVIDER_BOOTSTRAP_API_KEY=$FLOW_PROVIDER_BOOTSTRAP_API_KEY|" .env.production
           else
             printf '\nFLOW_PROVIDER_BOOTSTRAP_API_KEY=%s\n' "$FLOW_PROVIDER_BOOTSTRAP_API_KEY" >> .env.production
+          fi
+          if grep -q '^FLOW_PROVIDER_EXTENSION_API_KEY=' .env.production; then
+            sed -i "s|^FLOW_PROVIDER_EXTENSION_API_KEY=.*$|FLOW_PROVIDER_EXTENSION_API_KEY=$FLOW_PROVIDER_EXTENSION_API_KEY|" .env.production
+          else
+            printf '\nFLOW_PROVIDER_EXTENSION_API_KEY=%s\n' "$FLOW_PROVIDER_EXTENSION_API_KEY" >> .env.production
+          fi
+          if grep -q '^FLOW_PROVIDER_ALLOW_SIMULATION_MODE=' .env.production; then
+            sed -i 's|^FLOW_PROVIDER_ALLOW_SIMULATION_MODE=.*$|FLOW_PROVIDER_ALLOW_SIMULATION_MODE=false|' .env.production
+          else
+            printf '\nFLOW_PROVIDER_ALLOW_SIMULATION_MODE=false\n' >> .env.production
           fi
           bash scripts/deploy-production.sh
 
