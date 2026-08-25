@@ -134,35 +134,20 @@ def test_generation_requires_auth_and_connection():
     assert unavailable.json()["error"]["code"] == "PROVIDER_ACCOUNT_UNAVAILABLE"
 
 
-def test_simulation_connection_returns_mock_media_without_calling_google(monkeypatch):
+def test_simulation_connection_is_never_used_for_generation(monkeypatch):
     application = app()
     connection = connect(application, monkeypatch)
     connection.simulation_mode = True
 
-    async def no_google(*_args, **_kwargs):
-        raise AssertionError("simulation must not call Google Flow")
-
-    monkeypatch.setattr(application.state.runtime.bridge, "api_request", no_google)
     with TestClient(application) as client:
         image = client.post(
             "/v1/images/generations", headers=headers(),
-            json={"project_id": "project-1", "prompt": "mock image", "variant_count": 2},
+            json={"prompt": "must not be mocked", "variant_count": 2},
         )
-        video = client.post(
-            "/v1/videos/generations", headers=headers(),
-            json={"type": "image_to_video", "project_id": "project-1", "prompt": "mock video", "start_media_id": "media/1"},
-        )
-        operation = video.json()["operations"][0]["operation"]["name"]
-        pending = client.post("/v1/videos/status", headers=headers(), json={"operation_names": [operation]})
-        status = client.post("/v1/videos/status", headers=headers(), json={"operation_names": [operation]})
 
-    assert image.status_code == video.status_code == pending.status_code == status.status_code == 200
-    assert image.headers["x-flow-mock"] == video.headers["x-flow-mock"] == status.headers["x-flow-mock"] == "true"
-    assert len(image.json()["media"]) == 2
-    assert pending.json()["operations"][0]["operation"]["done"] is False
-    completed = status.json()["operations"][0]["operation"]
-    assert completed["done"] is True
-    assert completed["response"]["media"][0]["video"]["generatedVideo"]["fifeUrl"].startswith("https://")
+    assert image.status_code == 503
+    assert image.json()["error"]["code"] == "PROVIDER_ACCOUNT_UNAVAILABLE"
+    assert "x-flow-mock" not in image.headers
 
 
 def test_image_generation_calls_fixed_extension_operation_and_returns_raw_response(monkeypatch):

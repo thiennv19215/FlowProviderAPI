@@ -48,8 +48,6 @@ from app.providers.google_flow.sdk.helpers import (
 router = APIRouter(tags=["Google Flow"])
 ROUTING_SCOPE_HEADER = "X-Provider-Routing-Scope"
 ROUTING_SCOPE_VERSION = "v2"
-MOCK_IMAGE_URL = "https://placehold.co/1024x1024/png?text=FlowProvider+Mock"
-MOCK_VIDEO_URL = "https://storage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4"
 
 
 def _account_key(connection) -> str:
@@ -124,12 +122,9 @@ def _connection(
     runtime = request.app.state.runtime
     _authorize(runtime.settings, authorization)
     available = runtime.bridge.ready_connections()
-    # Simulation is a deliberate safety switch: when any connector enables it,
-    # no work (including work with a stale routing scope) may fall through to a
-    # real, credit-consuming account.
-    simulation_connections = [item for item in available if getattr(item, "simulation_mode", False)]
-    if simulation_connections:
-        available = simulation_connections
+    # Never route a business request to a simulated connector.  Production only
+    # serves responses produced by a real Google Flow account.
+    available = [item for item in available if not getattr(item, "simulation_mode", False)]
     if excluded_account_keys:
         available = [
             item for item in available if _account_key(item) not in excluded_account_keys
@@ -292,16 +287,6 @@ def _paid_scoped_response(result: dict, settings, connection) -> Response:
     return _scoped_response(result, settings, connection)
 
 
-def _mock_response(data: dict, settings, connection) -> Response:
-    response = _scoped_response({"status": 200, "data": data}, settings, connection)
-    response.headers["X-Flow-Mock"] = "true"
-    return response
-
-
-def _mock_id(kind: str) -> str:
-    return f"mock/{kind}/{uuid.uuid4()}"
-
-
 def _stored_media_route(runtime, media_ids: list[str]) -> tuple[str, str] | None:
     """Resolve known media IDs to their single owning account and project."""
     routes = {
@@ -317,23 +302,6 @@ def _stored_media_route(runtime, media_ids: list[str]) -> tuple[str, str] | None
             field="reference_media_ids",
         )
     return next(iter(routes), None)
-
-
-def _mock_trpc(result: dict) -> dict:
-    return {"result": {"data": {"json": {"result": result}}}}
-
-
-def _mock_video_operation(name: str, *, done: bool) -> dict:
-    operation = {"name": name, "done": done}
-    if done:
-        operation["response"] = {
-            "media": [{
-                "name": name.replace("operations/", "media/"),
-                "mediaMetadata": {"mediaGenerationStatus": {"status": "MEDIA_GENERATION_STATUS_SUCCESSFUL"}},
-                "video": {"generatedVideo": {"fifeUrl": MOCK_VIDEO_URL}},
-            }],
-        }
-    return {"operation": operation}
 
 
 def _flow_failure(result: dict, code: str, message: str) -> APIError:
@@ -661,8 +629,6 @@ async def list_projects(
 ) -> Response:
     runtime = request.app.state.runtime
     connection, client = _connection(request, authorization, routing_scope)
-    if getattr(connection, "simulation_mode", False):
-        return _mock_response(_mock_trpc({"projects": []}), runtime.settings, connection)
     payload: dict = {
         "json": {"pageSize": page_size, "toolName": "PINHOLE", "cursor": cursor},
     }
@@ -708,10 +674,6 @@ async def create_project(
 ) -> Response:
     runtime = request.app.state.runtime
     connection, client = _connection(request, authorization)
-    if getattr(connection, "simulation_mode", False):
-        project_id = _mock_id("project")
-        runtime.projects.remember_project(_account_key(connection), project_id, payload.title)
-        return _mock_response(_mock_trpc({"projectId": project_id}), runtime.settings, connection)
     result = await client.trpc_request(
         url=TRPC_CREATE_PROJECT,
         method="POST",
@@ -751,10 +713,6 @@ async def upload_image(
         project_id=payload.project_id,
         excluded_account_keys=excluded_account_keys,
     )
-    if getattr(connection, "simulation_mode", False):
-        resolved_project_id = payload.project_id or _mock_id("project")
-        media_id = _mock_id("media")
-        return _mock_response({"media": {"name": media_id, "projectId": resolved_project_id, "mimeType": payload.mime_type, "mediaMetadata": {"mediaType": "MEDIA_TYPE_IMAGE"}}}, runtime.settings, connection)
     resolved_project_id = payload.project_id or await _managed_project(runtime, connection, client)
     digest = _image_digest(payload.image_base64)
     account_key = _account_key(connection)
@@ -833,17 +791,6 @@ async def generate_image(
         project_id=effective_project_id,
         required_account_key=stored_account_key,
     )
-    if getattr(connection, "simulation_mode", False):
-        project_id = payload.project_id or _mock_id("project")
-        media = [
-            {"name": _mock_id("image"), "projectId": project_id, "downloadUrl": MOCK_IMAGE_URL,
-             "mediaMetadata": {"mediaType": "MEDIA_TYPE_IMAGE", "mediaGenerationStatus": {"status": "MEDIA_GENERATION_STATUS_SUCCESSFUL"}},
-             "image": {"generatedImage": {"fifeUrl": MOCK_IMAGE_URL}}}
-            for _ in range(payload.variant_count)
-        ]
-        response = _mock_response({"media": media}, runtime.settings, connection)
-        response.headers["X-Flow-Project-Id"] = project_id
-        return response
     managed = effective_project_id is None
     account_key = _account_key(connection)
     force_upload: set[str] = set()
@@ -997,12 +944,6 @@ async def generate_video(
             "MEDIA_ACCOUNT_MISMATCH",
             "Referenced media do not belong to the selected Google Flow account.",
         )
-    if getattr(connection, "simulation_mode", False):
-        resolved_project_id = payload.project_id or _mock_id("project")
-        operation_id = _mock_id("operation")
-        runtime.projects.put_operation(operation_id, _account_key(connection), resolved_project_id, "operation", operation_id)
-        runtime.mock_operation_polls[operation_id] = 0
-        return _mock_response({"operations": [_mock_video_operation(operation_id, done=False)]}, runtime.settings, connection)
     resolved_project_id = effective_project_id or await _managed_project(runtime, connection, client)
     tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
     ctx = client_context(resolved_project_id, tier)
@@ -1083,27 +1024,7 @@ async def check_video_operations(
         )
 
     available = runtime.bridge.ready_connections()
-    mock_connection = next(
-        (
-            item for item in available
-            if getattr(item, "simulation_mode", False)
-            and (scoped_account_key is None or _account_key(item) == scoped_account_key)
-            and all(
-                route is None or route.installation_id == _account_key(item)
-                for _name, route in route_rows
-            )
-        ),
-        None,
-    )
-    if mock_connection is not None:
-        operations = []
-        for name in payload.operation_names:
-            polls = runtime.mock_operation_polls.get(name, 0) + 1
-            runtime.mock_operation_polls[name] = polls
-            operations.append(_mock_video_operation(name, done=polls >= 2))
-        response = _mock_response({"operations": operations}, runtime.settings, mock_connection)
-        response.headers["X-Flow-Video-Urls"] = str(sum(item["operation"]["done"] for item in operations))
-        return response
+    available = [item for item in available if not getattr(item, "simulation_mode", False)]
     scoped_connection = None
     if scoped_account_key:
         scoped_connection = next(
