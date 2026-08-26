@@ -558,6 +558,7 @@ async function setupDnr() {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "FLOW_PROVIDER_GET_STATE") { connectionState().then(sendResponse); return true; }
+  if (msg?.type === "FLOW_PROVIDER_CLEAR_LOGS") { activityState.logs = []; sendResponse({ ok: true }); return true; }
   if (msg?.type === "FLOW_PROVIDER_SET_SIMULATION_MODE") { setSimulationMode(msg.enabled).then((simulationMode) => sendResponse({ ok: true, simulationMode })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setConnectionConfig(msg.serverUrl).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_OPEN_FLOW") { openFlowHome().then((v) => sendResponse({ ok: true, ...v })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }

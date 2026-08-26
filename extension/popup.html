@@ -1,34 +1,57 @@
 <!doctype html>
-<html>
+<html lang="vi">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <main>
-    <h1>Flow Provider</h1>
-    <div id="status" class="status">Checking...</div>
-    <p id="account"></p>
-    <label class="toggle-row" for="simulate">
-      <span>
-        <strong>Chế độ giả lập</strong>
-        <small>Đánh dấu kết nối để backend xử lý phản hồi mock.</small>
-      </span>
-      <input id="simulate" type="checkbox" role="switch" aria-describedby="simulate-help">
-    </label>
-    <p id="simulate-help" class="simulation-note" hidden>Đang bật giả lập. Kết nối này sẽ được backend nhận diện là mock.</p>
-    <section class="activity">
-      <div class="activity-head">
-        <span>Activity</span>
-        <div class="activity-actions">
-          <button id="copy-logs" class="log-action" type="button">Copy logs</button>
-          <span id="job" class="job idle">Idle</span>
+  <main class="app-container">
+    <header class="header">
+      <div class="brand">
+        <div class="brand-badge">FP</div>
+        <div class="brand-info">
+          <span class="brand-name">Flow Provider</span>
+          <span id="version" class="brand-ver">v1.0.8</span>
         </div>
       </div>
-      <div id="logs" class="logs"><div class="empty">No activity yet</div></div>
+      <div id="status-badge" class="status-badge checking">
+        <span class="status-dot"></span>
+        <span id="status" class="status-text">Checking...</span>
+      </div>
+    </header>
+
+    <section class="account-panel">
+      <div class="account-info">
+        <span class="account-icon">👤</span>
+        <span id="account" class="account-text">Đang kiểm tra tài khoản...</span>
+      </div>
+      <div id="credits-pill" class="credits-pill" hidden>
+        <span class="credits-icon">⚡</span>
+        <span id="credits-value">0 credits</span>
+      </div>
     </section>
-    <button id="flow">Open Google Flow</button>
-    <p id="error" class="error"></p>
+
+    <section class="activity-panel">
+      <div class="activity-header">
+        <div class="activity-title-wrap">
+          <span class="activity-title">Nhật ký hoạt động</span>
+          <span id="job" class="job-tag idle">Idle</span>
+        </div>
+        <div class="activity-btns">
+          <button id="copy-logs" class="btn-ghost" type="button" title="Sao chép nhật ký">Copy</button>
+          <button id="clear-logs" class="btn-ghost" type="button" title="Xóa nhật ký">Clear</button>
+        </div>
+      </div>
+      <div id="logs" class="logs-list">
+        <div class="empty-state">Chưa có hoạt động nào</div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <button id="flow" class="btn-primary" type="button">Mở Google Flow</button>
+      <div id="error" class="error-msg" hidden></div>
+    </footer>
   </main>
   <script src="popup.js"></script>
 </body>
