@@ -1092,8 +1092,38 @@ def test_video_status_does_not_treat_unsuccessful_as_success(monkeypatch):
             json={"operation_names": ["workflow-1"]},
         )
 
-    assert response.status_code == 200
-    assert response.headers["x-flow-video-urls"] == "0"
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "VIDEO_MEDIA_FAILED"
+    assert "MEDIA_GENERATION_STATUS_UNSUCCESSFUL" in response.json()["error"]["message"]
+
+
+def test_video_status_surfaces_operation_error_from_http_200(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    application.state.runtime.projects.put_operation(
+        "operations/failed", "installation-1", "project-1",
+    )
+
+    async def fake_api(_connection_id, **_kwargs):
+        return {
+            "status": 200,
+            "data": {"operations": [{"operation": {
+                "name": "operations/failed",
+                "done": True,
+                "error": {"code": 13, "message": "Generation failed in Flow"},
+            }}]},
+        }
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/status", headers=headers(),
+            json={"operation_names": ["operations/failed"]},
+        )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "VIDEO_OPERATION_FAILED"
+    assert "Generation failed in Flow" in response.json()["error"]["message"]
 
 
 def test_video_status_attaches_url_to_media_nested_in_completed_operation(monkeypatch):

@@ -454,6 +454,93 @@ def _video_generation_succeeded(media: dict) -> bool:
     return terminal in {"SUCCESS", "SUCCESSFUL", "SUCCEEDED", "COMPLETE", "COMPLETED", "DONE"}
 
 
+_VIDEO_FAILURE_TERMINALS = {
+    "ABORTED",
+    "BLOCKED",
+    "CANCELED",
+    "CANCELLED",
+    "ERROR",
+    "EXPIRED",
+    "FAILED",
+    "FAILURE",
+    "REJECTED",
+    "TIMEOUT",
+    "UNSUCCESSFUL",
+}
+
+
+def _video_media_generation_failed(status: object) -> bool:
+    if not isinstance(status, str) or not status:
+        return False
+    return status.upper().rsplit("_", 1)[-1] in _VIDEO_FAILURE_TERMINALS
+
+
+def _video_provider_error_message(error: object, fallback: str) -> str:
+    if isinstance(error, dict):
+        for key in ("message", "localizedMessage", "status", "code"):
+            value = error.get(key)
+            if isinstance(value, str) and value.strip():
+                return f"{fallback}: {value.strip()}"
+            if isinstance(value, (int, float)):
+                return f"{fallback}: {value}"
+    elif isinstance(error, str) and error.strip():
+        return f"{fallback}: {error.strip()}"
+    return fallback
+
+
+def _video_status_failure(result: dict) -> APIError | None:
+    """Convert Flow's HTTP-200 task failures into provider errors."""
+    data = result.get("data")
+    if not isinstance(data, dict):
+        return None
+
+    for item in data.get("operations") or []:
+        if not isinstance(item, dict):
+            continue
+        operation = item.get("operation") if isinstance(item.get("operation"), dict) else item
+        if not isinstance(operation, dict) or "error" not in operation:
+            continue
+        return APIError(
+            502,
+            "VIDEO_OPERATION_FAILED",
+            _video_provider_error_message(
+                operation.get("error"),
+                "Google Flow video operation failed.",
+            ),
+            retryable=False,
+        )
+
+    def failed_media_status(node: object) -> str | None:
+        if isinstance(node, list):
+            for item in node:
+                failure = failed_media_status(item)
+                if failure:
+                    return failure
+            return None
+        if not isinstance(node, dict):
+            return None
+        metadata = node.get("mediaMetadata")
+        media_status = metadata.get("mediaStatus") if isinstance(metadata, dict) else None
+        status = media_status.get("mediaGenerationStatus") if isinstance(media_status, dict) else None
+        if _video_media_generation_failed(status):
+            return str(status)
+        for value in node.values():
+            failure = failed_media_status(value)
+            if failure:
+                return failure
+        return None
+
+    failure_status = failed_media_status(data)
+    if failure_status:
+        return APIError(
+            502,
+            "VIDEO_MEDIA_FAILED",
+            f"Google Flow video generation failed with status {failure_status}.",
+            retryable=False,
+        )
+    return None
+
+
 def _completed_video_media(node: object, completed: bool = False) -> list[dict]:
     found: list[dict] = []
     if isinstance(node, list):
@@ -1107,6 +1194,9 @@ async def check_video_operations(
         status = result.get("status")
         if not isinstance(status, int) or status >= 400:
             return _response(result)
+        failure = _video_status_failure(result)
+        if failure:
+            raise failure
     url_counts = await asyncio.gather(*(
         _attach_video_urls(client, result)
         for (_connection, client, _body), result in zip(poll_jobs, results, strict=True)
