@@ -357,7 +357,7 @@ def test_unknown_explicit_project_is_never_guessed_even_with_one_account(monkeyp
     assert response.json()["error"]["code"] == "PROJECT_ROUTE_UNKNOWN"
 
 
-def test_scheduler_fills_three_slots_before_using_next_connection(monkeypatch):
+def test_scheduler_prefers_the_least_loaded_connection(monkeypatch):
     application = app()
     first = SimpleNamespace(
         id="account-1", installation_id="installation-1", max_slots=3,
@@ -387,20 +387,20 @@ def test_scheduler_fills_three_slots_before_using_next_connection(monkeypatch):
                 json={"prompt": "test"},
         )
         assert response.status_code == 200
-        pending["account-1"] = 2
+        pending["account-1"] = 1
         response = client.post(
             "/v1/images/generations", headers=headers(),
                 json={"prompt": "test"},
         )
         assert response.status_code == 200
-        pending["account-1"] = 3
+        pending["account-2"] = 1
         response = client.post(
             "/v1/images/generations", headers=headers(),
                 json={"prompt": "test"},
         )
         assert response.status_code == 200
 
-    assert calls == ["account-1", "account-1", "account-2"]
+    assert calls == ["account-1", "account-2", "account-1"]
 
 
 def test_job_reservation_enforces_capacity_between_extension_rpcs(monkeypatch):
@@ -1492,6 +1492,58 @@ def test_repeated_media_can_transfer_to_explicit_target_project(monkeypatch):
     assert downloads == ["media/reference"]
     assert uploads == [("target", "aGVsbG8=")]
     assert generations == [("target", "media/copied"), ("target", "media/copied")]
+
+
+def test_media_from_another_project_is_rehydrated_with_same_account(monkeypatch):
+    application = app()
+    connection = SimpleNamespace(
+        id="account", installation_id="installation", account_email="user@example.com",
+        max_slots=3, paygate_tier="PAYGATE_TIER_ONE", credits=100,
+        connected_at=1, simulation_mode=False,
+    )
+    account_key = "installation\nuser@example.com"
+    application.state.runtime.projects.put_media(
+        account_key,
+        "projects/source",
+        "content-sha",
+        "media/reference",
+        "image/png",
+        "reference.png",
+    )
+    application.state.runtime.projects.put(account_key, "projects/target", "Target project")
+    monkeypatch.setattr(
+        application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [connection]
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    calls = []
+
+    async def fake_download(_connection_id, media_id):
+        assert media_id == "media/reference"
+        return {"bytes": b"hello", "mime_type": "image/png"}
+
+    async def fake_api(connection_id, **kwargs):
+        calls.append((connection_id, kwargs["url"], kwargs["body"]))
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/copied"}}}
+        return {"status": 200, "data": {"media": [{"name": "media/generated"}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "download_media", fake_download)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/images/generations",
+            headers=headers(),
+            json={
+                "project_id": "projects/target",
+                "prompt": "reuse across projects",
+                "reference_media_ids": ["media/reference"],
+            },
+        )
+
+    assert response.status_code == 200
+    assert calls[0][0] == calls[1][0] == "account"
+    assert calls[0][1].endswith("/v1/flow/uploadImage")
+    assert calls[1][2]["requests"][0]["imageInputs"][0]["name"] == "media/copied"
 
 
 def test_failed_paid_attempt_still_invalidates_and_refreshes_credit(monkeypatch):

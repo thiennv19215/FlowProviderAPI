@@ -19,6 +19,7 @@ class Runtime:
     project_locks: dict[str, asyncio.Lock] = field(default_factory=dict)
     project_sync_sessions: dict[str, tuple[float, str]] = field(default_factory=dict)
     media_locks: weakref.WeakValueDictionary = field(default_factory=weakref.WeakValueDictionary)
+    media_transfer_slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
     active_jobs: dict[str, int] = field(default_factory=dict)
     reserved_credits: dict[str, int] = field(default_factory=dict)
 
@@ -69,6 +70,7 @@ class Runtime:
         return min(
             available,
             key=lambda item: (
+                self.connection_load(item),
                 item.connected_at if hasattr(item, "connected_at") else 0,
                 item.installation_id,
             ),

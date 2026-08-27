@@ -336,7 +336,7 @@ class FlowBridge:
         if parsed.scheme!="https" or not any(hostname==host or hostname.endswith(f".{host}") for host in MEDIA_DOWNLOAD_HOSTS):
             return {"error":"media_download_host_not_allowed"}
         try:
-            async with httpx.AsyncClient(timeout=60,follow_redirects=True) as client:
+            async with httpx.AsyncClient(timeout=60,follow_redirects=False) as client:
                 async with client.stream("GET",url) as response:
                     final_host=(response.url.host or "").lower()
                     if response.url.scheme!="https" or not any(final_host==host or final_host.endswith(f".{host}") for host in MEDIA_DOWNLOAD_HOSTS):

@@ -320,7 +320,11 @@ def _should_auto_transfer_media(runtime, project_id: str | None, routing_scope: 
     target_account_key = runtime.projects.installation_for_project(project_id)
     return bool(
         target_account_key
-        and any(media.installation_id != target_account_key for media in known_media.values())
+        and any(
+            (media.installation_id, media.google_project_id)
+            != (target_account_key, project_id)
+            for media in known_media.values()
+        )
     )
 
 
@@ -346,6 +350,97 @@ def _transfer_mime_type(media, downloaded: dict) -> str:
     return "image/png"
 
 
+async def _copy_media_to_target(
+    runtime,
+    target_account_key: str,
+    project_id: str,
+    target_client: BoundFlowClient,
+    source_client: BoundFlowClient,
+    media,
+    media_id: str,
+) -> str:
+    """Download and cache one source media while serializing duplicate copies."""
+    async with runtime.media_lock(target_account_key, project_id, media.content_sha256):
+        cached = runtime.projects.get_media(
+            target_account_key, project_id, media.content_sha256,
+        )
+        if cached:
+            return cached.google_media_id
+
+        async with runtime.media_transfer_slots:
+            downloaded = await source_client.download_media(media_id)
+            if downloaded.get("error"):
+                raise APIError(
+                    502,
+                    "MEDIA_REHYDRATION_FAILED",
+                    f"Referenced media could not be downloaded from its owning account: {downloaded['error']}",
+                    retryable=True,
+                )
+            raw_bytes = downloaded.get("bytes")
+            if not isinstance(raw_bytes, (bytes, bytearray)) or not raw_bytes:
+                raise APIError(
+                    502,
+                    "MEDIA_REHYDRATION_FAILED",
+                    "Referenced media download returned no image data.",
+                    retryable=True,
+                )
+            raw_bytes = bytes(raw_bytes)
+            content_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+            cached = runtime.projects.get_media(target_account_key, project_id, content_sha256)
+            if cached:
+                return cached.google_media_id
+
+            mime_type = _transfer_mime_type(media, downloaded)
+            upload_result = await _api(
+                target_client,
+                url=UPLOAD_IMAGE_URL,
+                body={
+                    "clientContext": {"projectId": project_id, "tool": "PINHOLE"},
+                    "fileName": media.file_name or "reference.png",
+                    "imageBytes": base64.b64encode(raw_bytes).decode("ascii"),
+                    "isHidden": False,
+                    "isUserUploaded": True,
+                    "mimeType": mime_type,
+                },
+            )
+            new_media_id = extract_upload_media_id(upload_result)
+            if not new_media_id:
+                raise _flow_failure(
+                    upload_result,
+                    "MEDIA_REHYDRATION_UPLOAD_FAILED",
+                    "Referenced media could not be uploaded to the selected account.",
+                )
+            response_data = upload_result.get("data") if isinstance(upload_result.get("data"), dict) else None
+            response_status = upload_result.get("status") if isinstance(upload_result.get("status"), int) else None
+            response_headers = upload_result.get("headers") if isinstance(upload_result.get("headers"), dict) else None
+            runtime.projects.put_media(
+                target_account_key,
+                project_id,
+                content_sha256,
+                new_media_id,
+                mime_type,
+                media.file_name or "reference.png",
+                response_data,
+                response_status,
+                response_headers,
+            )
+            # Generated media uses a synthetic source key. Keep an alias so a
+            # repeated transfer can reuse the copied ID without downloading again.
+            if media.content_sha256 != content_sha256:
+                runtime.projects.put_media(
+                    target_account_key,
+                    project_id,
+                    media.content_sha256,
+                    new_media_id,
+                    mime_type,
+                    media.file_name or "reference.png",
+                    response_data,
+                    response_status,
+                    response_headers,
+                )
+            return new_media_id
+
+
 async def _rehydrate_media_ids(
     runtime,
     connection,
@@ -359,7 +454,10 @@ async def _rehydrate_media_ids(
     source_clients: dict[str, BoundFlowClient] = {}
     for media_id in media_ids:
         media = known_media.get(media_id)
-        if media is None or media.installation_id == target_account_key:
+        if media is None or (
+            media.installation_id == target_account_key
+            and media.google_project_id == project_id
+        ):
             continue
         source_connection = _ready_connection_for_account(runtime, media.installation_id)
         if source_connection is None:
@@ -380,93 +478,25 @@ async def _rehydrate_media_ids(
     output: list[str] = []
     for media_id in media_ids:
         media = known_media.get(media_id)
-        if media is None or media.installation_id == target_account_key:
+        if media is None or (
+            media.installation_id == target_account_key
+            and media.google_project_id == project_id
+        ):
             output.append(media_id)
             continue
         if media_id in transferred:
             output.append(transferred[media_id])
             continue
 
-        cached = runtime.projects.get_media(
-            target_account_key, project_id, media.content_sha256,
-        )
-        if cached:
-            transferred[media_id] = cached.google_media_id
-            output.append(cached.google_media_id)
-            continue
-
-        downloaded = await source_clients[media.installation_id].download_media(media_id)
-        if downloaded.get("error"):
-            raise APIError(
-                502,
-                "MEDIA_REHYDRATION_FAILED",
-                f"Referenced media could not be downloaded from its owning account: {downloaded['error']}",
-                retryable=True,
-            )
-        raw_bytes = downloaded.get("bytes")
-        if not isinstance(raw_bytes, (bytes, bytearray)) or not raw_bytes:
-            raise APIError(
-                502,
-                "MEDIA_REHYDRATION_FAILED",
-                "Referenced media download returned no image data.",
-                retryable=True,
-            )
-        raw_bytes = bytes(raw_bytes)
-        content_sha256 = hashlib.sha256(raw_bytes).hexdigest()
-        cached = runtime.projects.get_media(target_account_key, project_id, content_sha256)
-        if cached:
-            transferred[media_id] = cached.google_media_id
-            output.append(cached.google_media_id)
-            continue
-
-        mime_type = _transfer_mime_type(media, downloaded)
-        upload_result = await _api(
-            target_client,
-            url=UPLOAD_IMAGE_URL,
-            body={
-                "clientContext": {"projectId": project_id, "tool": "PINHOLE"},
-                "fileName": media.file_name or "reference.png",
-                "imageBytes": base64.b64encode(raw_bytes).decode("ascii"),
-                "isHidden": False,
-                "isUserUploaded": True,
-                "mimeType": mime_type,
-            },
-        )
-        new_media_id = extract_upload_media_id(upload_result)
-        if not new_media_id:
-            raise _flow_failure(
-                upload_result,
-                "MEDIA_REHYDRATION_UPLOAD_FAILED",
-                "Referenced media could not be uploaded to the selected account.",
-            )
-        response_data = upload_result.get("data") if isinstance(upload_result.get("data"), dict) else None
-        response_status = upload_result.get("status") if isinstance(upload_result.get("status"), int) else None
-        response_headers = upload_result.get("headers") if isinstance(upload_result.get("headers"), dict) else None
-        runtime.projects.put_media(
+        new_media_id = await _copy_media_to_target(
+            runtime,
             target_account_key,
             project_id,
-            content_sha256,
-            new_media_id,
-            mime_type,
-            media.file_name or "reference.png",
-            response_data,
-            response_status,
-            response_headers,
+            target_client,
+            source_clients[media.installation_id],
+            media,
+            media_id,
         )
-        # Generated media uses a synthetic source key. Keep an alias so a
-        # repeated transfer can reuse the copied ID without downloading again.
-        if media.content_sha256 != content_sha256:
-            runtime.projects.put_media(
-                target_account_key,
-                project_id,
-                media.content_sha256,
-                new_media_id,
-                mime_type,
-                media.file_name or "reference.png",
-                response_data,
-                response_status,
-                response_headers,
-            )
         transferred[media_id] = new_media_id
         output.append(new_media_id)
     return output

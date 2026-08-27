@@ -1,3 +1,6 @@
+import httpx
+import app.providers.google_flow.client as flow_client_module
+
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -76,6 +79,54 @@ async def test_media_redirect_uses_browser_cookies_and_url_encodes_id(monkeypatc
     assert captured["rpc_type"] == "SW_FETCH"
     assert "name=media%2Fid+with+spaces" in captured["params"]["spec"]["url"]
     assert captured["params"]["spec"]["responseType"] == "none"
+
+
+async def test_download_media_reads_only_an_allowed_signed_image_url(monkeypatch):
+    bridge = FlowBridge(flow_api_key="test-key")
+
+    async def fake_resolve(_connection_id, _media_id, **_kwargs):
+        return "https://flow-content.google/image/signed"
+
+    class FakeResponse:
+        url = httpx.URL("https://flow-content.google/image/signed")
+        status_code = 200
+        headers = {"content-type": "image/png", "content-length": "5"}
+
+        def aiter_bytes(self):
+            async def chunks():
+                yield b"hello"
+
+            return chunks()
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, method, url):
+            assert method == "GET"
+            assert url == "https://flow-content.google/image/signed"
+            return FakeStream()
+
+    monkeypatch.setattr(bridge, "resolve_media_url", fake_resolve)
+    monkeypatch.setattr(flow_client_module.httpx, "AsyncClient", FakeClient)
+
+    result = await bridge.download_media("account-1", "media/image")
+
+    assert result["bytes"] == b"hello"
+    assert result["mime_type"] == "image/png"
 
 
 async def test_bound_client_applies_rate_limit_cooldown_and_auth_invalidation(monkeypatch):
