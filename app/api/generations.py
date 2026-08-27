@@ -328,6 +328,33 @@ def _should_auto_transfer_media(runtime, project_id: str | None, routing_scope: 
     )
 
 
+def _credit_exhaustion(result: dict) -> bool:
+    """Return true only for a deterministic no-credit/quota rejection."""
+    status = result.get("status") if isinstance(result, dict) else None
+    if status == 402:
+        return True
+    if status not in {400, 403, 429}:
+        return False
+    try:
+        text = json.dumps(result, ensure_ascii=False, default=str).lower()
+    except (TypeError, ValueError):
+        text = str(result).lower()
+    credit_failure = (
+        "insufficient credit" in text
+        or "not enough credit" in text
+        or "no credit" in text
+        or "out of credit" in text
+        or "credit exhausted" in text
+        or "credits exhausted" in text
+        or "insufficient_quota" in text
+        or "resource_exhausted" in text
+    )
+    quota_failure = "quota" in text and any(
+        marker in text for marker in ("exceed", "exhaust", "insufficient", "not enough", "unavailable")
+    )
+    return credit_failure or quota_failure
+
+
 def _ready_connection_for_account(runtime, account_key: str):
     return next(
         (
@@ -1220,6 +1247,7 @@ async def generate_video(
         if isinstance(payload, ImageToVideoGenerationRequest)
         else list(payload.reference_media_ids)
     )
+    requested_media_ids = list(media_ids)
     known_media = _known_media(runtime, media_ids)
     auto_transfer = _should_auto_transfer_media(
         runtime, payload.project_id, routing_scope, known_media,
@@ -1238,79 +1266,116 @@ async def generate_video(
             field="project_id",
         )
     effective_project_id = payload.project_id or (None if auto_transfer else stored_project_id)
-    connection, client = _connection(
-        request,
-        authorization,
-        routing_scope,
-        min_credits=credit_cost,
-        project_id=effective_project_id,
-        required_account_key=None if auto_transfer else stored_account_key,
+    can_failover = bool(
+        not routing_scope
+        and known_media
+        and all(media_id in known_media for media_id in requested_media_ids)
     )
+    preferred_account_key = (
+        runtime.projects.installation_for_project(payload.project_id)
+        if payload.project_id else stored_account_key
+    )
+    try:
+        connection, client = _connection(
+            request,
+            authorization,
+            routing_scope,
+            min_credits=credit_cost,
+            project_id=effective_project_id,
+            required_account_key=None if auto_transfer else stored_account_key,
+        )
+    except APIError as exc:
+        if not can_failover or exc.code not in {
+            "VIDEO_ACCOUNT_UNAVAILABLE",
+            "MEDIA_ACCOUNT_UNAVAILABLE",
+            "PROJECT_ACCOUNT_UNAVAILABLE",
+        }:
+            raise
+        connection, client = _connection(
+            request,
+            authorization,
+            min_credits=credit_cost,
+            excluded_account_keys={preferred_account_key} if preferred_account_key else None,
+        )
+        effective_project_id = None
+        auto_transfer = True
     if not auto_transfer and stored_account_key and _account_key(connection) != stored_account_key:
         raise APIError(
             409,
             "MEDIA_ACCOUNT_MISMATCH",
             "Referenced media do not belong to the selected Google Flow account.",
         )
-    resolved_project_id = effective_project_id or await _managed_project(runtime, connection, client)
-    media_ids = await _rehydrate_media_ids(
-        runtime,
-        connection,
-        client,
-        media_ids,
-        resolved_project_id,
-        known_media,
-    )
-    tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
-    ctx = client_context(resolved_project_id, tier)
-    if isinstance(payload, ImageToVideoGenerationRequest):
-        model = resolve_video_model(tier, payload.aspect_ratio, payload.quality)
-        if not model:
-            raise APIError(422, "INVALID_VIDEO_QUALITY", "Unsupported video quality for this account.")
-        body = {
-            "clientContext": ctx,
-            "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
-            "requests": [{
-                "aspectRatio": payload.aspect_ratio,
-                "textInput": {"prompt": payload.prompt},
-                "videoModelKey": model,
-                "startImage": {"mediaId": media_ids[0]},
-                "metadata": {"sceneId": str(uuid.uuid4())},
-            }],
-            "useV2ModelConfig": True,
-        }
-        result = await _api(client, url=VIDEO_I2V_URL, body=body, captcha_action=CAPTCHA_VIDEO)
+    failover_attempted = False
+    while True:
+        resolved_project_id = effective_project_id or await _managed_project(runtime, connection, client)
+        media_ids = await _rehydrate_media_ids(
+            runtime,
+            connection,
+            client,
+            requested_media_ids,
+            resolved_project_id,
+            known_media,
+        )
+        tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
+        ctx = client_context(resolved_project_id, tier)
+        if isinstance(payload, ImageToVideoGenerationRequest):
+            model = resolve_video_model(tier, payload.aspect_ratio, payload.quality)
+            if not model:
+                raise APIError(422, "INVALID_VIDEO_QUALITY", "Unsupported video quality for this account.")
+            body = {
+                "clientContext": ctx,
+                "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
+                "requests": [{
+                    "aspectRatio": payload.aspect_ratio,
+                    "textInput": {"prompt": payload.prompt},
+                    "videoModelKey": model,
+                    "startImage": {"mediaId": media_ids[0]},
+                    "metadata": {"sceneId": str(uuid.uuid4())},
+                }],
+                "useV2ModelConfig": True,
+            }
+            result = await _api(client, url=VIDEO_I2V_URL, body=body, captcha_action=CAPTCHA_VIDEO)
+        else:
+            body = {
+                "mediaGenerationContext": {
+                    "batchId": str(uuid.uuid4()),
+                    "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
+                },
+                "clientContext": ctx,
+                "requests": [{
+                    "aspectRatio": payload.aspect_ratio,
+                    "textInput": {"prompt": payload.prompt},
+                    "videoModelKey": payload.duration_model,
+                    "metadata": {},
+                    "referenceImages": [
+                        {"mediaId": media_id, "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"}
+                        for media_id in media_ids
+                    ],
+                }],
+                "useV2ModelConfig": True,
+            }
+            result = await _api(client, url=VIDEO_OMNI_URL, body=body, captcha_action=CAPTCHA_VIDEO)
         _refresh_paid_account(runtime, connection)
+        if _credit_exhaustion(result) and can_failover and not failover_attempted:
+            try:
+                connection, client = _connection(
+                    request,
+                    authorization,
+                    min_credits=credit_cost,
+                    excluded_account_keys={_account_key(connection)},
+                )
+            except APIError:
+                pass
+            else:
+                effective_project_id = None
+                auto_transfer = True
+                failover_attempted = True
+                continue
         _remember_project_on_success(runtime, connection, resolved_project_id, result)
         _remember_operations(runtime, connection, resolved_project_id, result)
         response = _paid_scoped_response(result, runtime.settings, connection)
         response.headers["X-Flow-Project-Id"] = resolved_project_id
         return response
-    body = {
-        "mediaGenerationContext": {
-            "batchId": str(uuid.uuid4()),
-            "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
-        },
-        "clientContext": ctx,
-        "requests": [{
-            "aspectRatio": payload.aspect_ratio,
-            "textInput": {"prompt": payload.prompt},
-            "videoModelKey": payload.duration_model,
-            "metadata": {},
-            "referenceImages": [
-                {"mediaId": media_id, "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"}
-                for media_id in media_ids
-            ],
-        }],
-        "useV2ModelConfig": True,
-    }
-    result = await _api(client, url=VIDEO_OMNI_URL, body=body, captcha_action=CAPTCHA_VIDEO)
-    _refresh_paid_account(runtime, connection)
-    _remember_project_on_success(runtime, connection, resolved_project_id, result)
-    _remember_operations(runtime, connection, resolved_project_id, result)
-    response = _paid_scoped_response(result, runtime.settings, connection)
-    response.headers["X-Flow-Project-Id"] = resolved_project_id
-    return response
 
 
 @router.post("/v1/videos/status", response_model=None)

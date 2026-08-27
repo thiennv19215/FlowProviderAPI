@@ -1626,6 +1626,124 @@ def test_omni_reserves_its_higher_known_credit_cost(monkeypatch):
     assert response.json()["error"]["code"] == "VIDEO_ACCOUNT_UNAVAILABLE"
 
 
+def test_video_generation_fails_over_from_explicit_project_when_account_is_underfunded(monkeypatch):
+    application = app()
+    owner = SimpleNamespace(
+        id="owner", installation_id="owner-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=19, connected_at=1,
+    )
+    target = SimpleNamespace(
+        id="target", installation_id="target-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=2,
+    )
+    application.state.runtime.projects.remember_project(
+        "owner-installation", "projects/owner", "Owner project"
+    )
+    target_key = "target-installation"
+    application.state.runtime.projects.put(target_key, "projects/target", "Target project")
+    application.state.runtime.mark_project_synced(target, target_key)
+    application.state.runtime.projects.put_media(
+        "owner-installation", "projects/owner", "source-sha",
+        "media/reference", "image/png", "reference.png",
+    )
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "ready_connections", lambda **_kwargs: [owner, target],
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    calls = []
+
+    async def fake_download(_connection_id, media_id):
+        assert media_id == "media/reference"
+        return {"bytes": b"reference", "mime_type": "image/png"}
+
+    async def fake_api(connection_id, **kwargs):
+        calls.append((connection_id, kwargs["url"], kwargs["body"]["clientContext"]["projectId"]))
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/copied"}}}
+        return {"status": 200, "data": {"operations": [{"operation": {"name": "operations/video"}}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "download_media", fake_download)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations", headers=headers(),
+            json={
+                "type": "image_to_video", "project_id": "projects/owner",
+                "prompt": "move", "start_media_id": "media/reference",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-project-id"] == "projects/target"
+    assert [call[0] for call in calls] == ["target", "target"]
+    assert calls[0][1].endswith("/v1/flow/uploadImage")
+
+
+def test_video_generation_retries_on_deterministic_credit_rejection(monkeypatch):
+    application = app()
+    owner = SimpleNamespace(
+        id="owner", installation_id="owner-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=1,
+    )
+    target = SimpleNamespace(
+        id="target", installation_id="target-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=2,
+    )
+    application.state.runtime.projects.remember_project(
+        "owner-installation", "projects/owner", "Owner project"
+    )
+    target_key = "target-installation"
+    application.state.runtime.projects.put(target_key, "projects/target", "Target project")
+    application.state.runtime.mark_project_synced(target, target_key)
+    application.state.runtime.projects.put_media(
+        "owner-installation", "projects/owner", "source-sha",
+        "media/reference", "image/png", "reference.png",
+    )
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "ready_connections", lambda **_kwargs: [owner, target],
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "schedule_account_refresh", lambda *_args, **_kwargs: None,
+    )
+    calls = []
+
+    async def fake_download(_connection_id, media_id):
+        assert media_id == "media/reference"
+        return {"bytes": b"reference", "mime_type": "image/png"}
+
+    async def fake_api(connection_id, **kwargs):
+        calls.append((connection_id, kwargs["url"], kwargs["body"]))
+        if connection_id == "owner":
+            return {
+                "status": 400,
+                "data": {"error": {"message": "Insufficient credits for video generation"}},
+            }
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/copied"}}}
+        return {"status": 200, "data": {"operations": [{"operation": {"name": "operations/video"}}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "download_media", fake_download)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations", headers=headers(),
+            json={
+                "type": "image_to_video", "project_id": "projects/owner",
+                "prompt": "move", "start_media_id": "media/reference",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-project-id"] == "projects/target"
+    assert [call[0] for call in calls] == ["owner", "target", "target"]
+    assert calls[1][2]["clientContext"]["projectId"] == "projects/target"
+    assert calls[2][2]["requests"][0]["startImage"]["mediaId"] == "media/copied"
+
+
 def test_optional_project_id_across_media_and_video(monkeypatch):
     application = app()
     connect(application, monkeypatch)

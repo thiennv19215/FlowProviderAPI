@@ -33,6 +33,7 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 - URL ảnh/video do Google Flow cấp có thể hết hạn hoặc bị thu hồi. Bên tích hợp nên tải và lưu kết quả ngay khi hoàn tất.
 - Provider ưu tiên tối đa 3 request đồng thời trên một extension rồi mới chuyển sang extension tiếp theo.
 - Mỗi video job reserve trước tối thiểu 20 credits, hoặc mức Omni cao hơn đã biết; các request đồng thời không thể dùng lặp cùng số dư. Sau mọi lần gọi video, kể cả timeout chưa rõ kết quả, Provider khóa paid routing cho account đó đến khi refresh credit thành công. Account vẫn có thể xử lý ảnh.
+- Với request video không gửi `X-Provider-Routing-Scope`, nếu project/account được chọn không đủ credit hoặc Flow trả lỗi xác định là hết credit/quota, Provider tự thử một account đủ điều kiện khác tối đa một lần và tự rehydrate các media đã biết sang project mới. Request có routing scope vẫn giữ nguyên account, không tự chuyển.
 - Provider lưu account/project và loại poll (`operation` hoặc `media`) của video operation/workflow; `/v1/videos/status` tự chia request theo đúng account, giữ thứ tự đầu vào và gộp kết quả, không cần routing scope đối với operation được tạo qua Provider.
 
 ## 2. Danh sách endpoint
