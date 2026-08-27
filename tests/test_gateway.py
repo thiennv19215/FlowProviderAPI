@@ -1313,7 +1313,7 @@ def test_video_reference_upload_excludes_failed_project_account(monkeypatch):
     assert calls == [("second", "projects/second")]
 
 
-def test_unscoped_video_routes_to_the_extension_that_uploaded_its_media(monkeypatch):
+def test_unscoped_video_transfers_media_to_the_selected_account(monkeypatch):
     application = app()
     other = SimpleNamespace(
         id="other", installation_id="other-installation", max_slots=3,
@@ -1326,6 +1326,10 @@ def test_unscoped_video_routes_to_the_extension_that_uploaded_its_media(monkeypa
     application.state.runtime.projects.remember_project(
         "owner-installation", "projects/owner", "Owner project"
     )
+    application.state.runtime.projects.put(
+        "other-installation", "projects/other", "Other project"
+    )
+    application.state.runtime.mark_project_synced(other, "other-installation")
     application.state.runtime.projects.put_media(
         "owner-installation",
         "projects/owner",
@@ -1340,10 +1344,17 @@ def test_unscoped_video_routes_to_the_extension_that_uploaded_its_media(monkeypa
     monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
     calls = []
 
+    async def fake_download(_connection_id, media_id):
+        assert media_id == "media/reference"
+        return {"bytes": b"hello", "mime_type": "image/png"}
+
     async def fake_api(connection_id, **kwargs):
         calls.append((connection_id, kwargs["body"]["clientContext"]["projectId"]))
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/copied"}}}
         return {"status": 200, "data": {"operations": []}}
 
+    monkeypatch.setattr(application.state.runtime.bridge, "download_media", fake_download)
     monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
     with TestClient(application) as client:
         response = client.post(
@@ -1357,11 +1368,11 @@ def test_unscoped_video_routes_to_the_extension_that_uploaded_its_media(monkeypa
         )
 
     assert response.status_code == 200
-    assert response.headers["x-flow-project-id"] == "projects/owner"
-    assert calls == [("owner", "projects/owner")]
+    assert response.headers["x-flow-project-id"] == "projects/other"
+    assert calls == [("other", "projects/other"), ("other", "projects/other")]
 
 
-def test_unscoped_image_routes_to_the_extension_that_owns_reference_media(monkeypatch):
+def test_unscoped_image_transfers_media_to_the_selected_account(monkeypatch):
     application = app()
     other = SimpleNamespace(
         id="other", installation_id="other-installation", account_email="other@example.com",
@@ -1382,16 +1393,29 @@ def test_unscoped_image_routes_to_the_extension_that_owns_reference_media(monkey
         "image/png",
         "reference.png",
     )
+    other_key = "other-installation\nother@example.com"
+    application.state.runtime.projects.put(
+        other_key, "projects/other", "Other project"
+    )
+    application.state.runtime.mark_project_synced(other, other_key)
     monkeypatch.setattr(
         application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [other, owner]
     )
     monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
     calls = []
 
+    async def fake_download(_connection_id, media_id):
+        assert media_id == "media/reference"
+        return {"bytes": b"hello", "mime_type": "image/png"}
+
     async def fake_api(connection_id, **kwargs):
         calls.append((connection_id, kwargs["body"]["clientContext"]["projectId"]))
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            assert kwargs["body"]["imageBytes"] == "aGVsbG8="
+            return {"status": 200, "data": {"media": {"name": "media/copied"}}}
         return {"status": 200, "data": {"media": [{"name": "media/generated"}]}}
 
+    monkeypatch.setattr(application.state.runtime.bridge, "download_media", fake_download)
     monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
     with TestClient(application) as client:
         response = client.post(
@@ -1404,11 +1428,70 @@ def test_unscoped_image_routes_to_the_extension_that_owns_reference_media(monkey
         )
 
     assert response.status_code == 200
-    assert response.headers["x-flow-project-id"] == "projects/owner"
-    assert calls == [("owner", "projects/owner")]
+    assert response.headers["x-flow-project-id"] == "projects/other"
+    assert calls == [("other", "projects/other"), ("other", "projects/other")]
     assert generated_route is not None
-    assert generated_route.installation_id == owner_key
-    assert generated_route.google_project_id == "projects/owner"
+    assert generated_route.installation_id == other_key
+    assert generated_route.google_project_id == "projects/other"
+
+
+def test_repeated_media_can_transfer_to_explicit_target_project(monkeypatch):
+    application = app()
+    source = SimpleNamespace(
+        id="source", installation_id="source-installation", account_email="source@example.com",
+        max_slots=3, paygate_tier="PAYGATE_TIER_ONE", credits=100,
+        connected_at=1, simulation_mode=False,
+    )
+    target = SimpleNamespace(
+        id="target", installation_id="target-installation", account_email="target@example.com",
+        max_slots=3, paygate_tier="PAYGATE_TIER_ONE", credits=100,
+        connected_at=2, simulation_mode=False,
+    )
+    source_key = "source-installation\nsource@example.com"
+    target_key = "target-installation\ntarget@example.com"
+    application.state.runtime.projects.put_media(
+        source_key,
+        "projects/source",
+        "content-sha",
+        "media/reference",
+        "image/png",
+        "reference.png",
+    )
+    application.state.runtime.projects.put(target_key, "projects/target", "Target project")
+    monkeypatch.setattr(
+        application.state.runtime.bridge, "ready_connections", lambda **_kwargs: [source, target]
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    downloads = []
+    uploads = []
+    generations = []
+
+    async def fake_download(_connection_id, media_id):
+        downloads.append(media_id)
+        return {"bytes": b"hello", "mime_type": "image/png"}
+
+    async def fake_api(connection_id, **kwargs):
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            uploads.append((connection_id, kwargs["body"]["imageBytes"]))
+            return {"status": 200, "data": {"media": {"name": "media/copied"}}}
+        generations.append((connection_id, kwargs["body"]["requests"][0]["imageInputs"][0]["name"]))
+        return {"status": 200, "data": {"media": [{"name": "media/generated"}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "download_media", fake_download)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    body = {
+        "project_id": "projects/target",
+        "prompt": "repeat the same reference",
+        "reference_media_ids": ["media/reference"],
+    }
+    with TestClient(application) as client:
+        first = client.post("/v1/images/generations", headers=headers(), json=body)
+        second = client.post("/v1/images/generations", headers=headers(), json=body)
+
+    assert first.status_code == second.status_code == 200
+    assert downloads == ["media/reference"]
+    assert uploads == [("target", "aGVsbG8=")]
+    assert generations == [("target", "media/copied"), ("target", "media/copied")]
 
 
 def test_failed_paid_attempt_still_invalidates_and_refreshes_credit(monkeypatch):

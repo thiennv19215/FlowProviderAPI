@@ -390,7 +390,7 @@ Response có `X-Flow-Project-Id`. Nếu chỉ nhận ảnh cuối thì backend k
 
 Với luồng tách riêng `POST /v1/media` rồi `POST /v1/videos/generations`, caller phải gửi `required_credits` khi upload và chuyển `X-Flow-Project-Id` từ response upload thành `project_id` của request video. Điều này giữ cả hai call trên cùng Chrome extension/account trong triển khai đa account.
 
-Nếu cùng nội dung ảnh đã được upload vào đúng account/project, Provider dùng thẳng media ID trong DB mà không thêm request kiểm tra. Nếu Google hiếm khi trả `404` vì media cũ, Provider xóa cache, upload lại và retry. Header `X-Flow-Media-Cache-Hits` cho biết số ảnh lấy từ cache trong request.
+Nếu cùng nội dung ảnh đã được upload vào đúng account/project, Provider dùng thẳng media ID trong DB mà không thêm request kiểm tra. Với request managed không truyền `project_id` hoặc routing scope, nếu media ID đã biết thuộc account khác thì Provider tự tải ảnh từ account gốc, upload sang project của account được chọn và thay media ID trước khi chạy job; bytes nguồn chỉ tồn tại trong bộ nhớ trong lúc xử lý. Nếu Google hiếm khi trả `404` vì media cũ, Provider xóa cache, upload lại và retry. Header `X-Flow-Media-Cache-Hits` cho biết số ảnh lấy từ cache trong request.
 
 ### Request không có ảnh tham chiếu
 
@@ -424,7 +424,7 @@ POST /v1/images/generations
 }
 ```
 
-Ảnh vừa sinh cũng có media ID và có thể tiếp tục làm tham chiếu cho lần tạo tiếp theo, miễn là vẫn dùng cùng project.
+Ảnh vừa sinh cũng có media ID và có thể tiếp tục làm tham chiếu cho lần tạo tiếp theo. Với routing scope, media vẫn phải thuộc đúng project/account. Nếu chỉ truyền `project_id` hoặc bỏ cả hai field route, media đã biết từ account khác có thể được tự rehydrate sang project/account được chọn; gọi lại cùng nội dung không bị báo conflict.
 
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|

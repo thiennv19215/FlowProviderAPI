@@ -304,6 +304,174 @@ def _stored_media_route(runtime, media_ids: list[str]) -> tuple[str, str] | None
     return next(iter(routes), None)
 
 
+def _known_media(runtime, media_ids: list[str]) -> dict[str, object]:
+    return {
+        media_id: media
+        for media_id in media_ids
+        if (media := runtime.projects.get_media_by_google_id(media_id)) is not None
+    }
+
+
+def _should_auto_transfer_media(runtime, project_id: str | None, routing_scope: str | None, known_media: dict[str, object]) -> bool:
+    if routing_scope or not known_media:
+        return False
+    if not project_id:
+        return True
+    target_account_key = runtime.projects.installation_for_project(project_id)
+    return bool(
+        target_account_key
+        and any(media.installation_id != target_account_key for media in known_media.values())
+    )
+
+
+def _ready_connection_for_account(runtime, account_key: str):
+    return next(
+        (
+            item
+            for item in runtime.bridge.ready_connections()
+            if not getattr(item, "simulation_mode", False)
+            and _account_key(item) == account_key
+        ),
+        None,
+    )
+
+
+def _transfer_mime_type(media, downloaded: dict) -> str:
+    downloaded_type = str(downloaded.get("mime_type") or "").split(";", 1)[0].strip().lower()
+    if downloaded_type.startswith("image/") and downloaded_type != "image/generated":
+        return downloaded_type
+    stored_type = str(getattr(media, "mime_type", "") or "").split(";", 1)[0].strip().lower()
+    if stored_type.startswith("image/") and stored_type != "image/generated":
+        return stored_type
+    return "image/png"
+
+
+async def _rehydrate_media_ids(
+    runtime,
+    connection,
+    target_client: BoundFlowClient,
+    media_ids: list[str],
+    project_id: str,
+    known_media: dict[str, object],
+) -> list[str]:
+    """Copy known image media into the selected account when managed routing changes."""
+    target_account_key = _account_key(connection)
+    source_clients: dict[str, BoundFlowClient] = {}
+    for media_id in media_ids:
+        media = known_media.get(media_id)
+        if media is None or media.installation_id == target_account_key:
+            continue
+        source_connection = _ready_connection_for_account(runtime, media.installation_id)
+        if source_connection is None:
+            raise APIError(
+                503,
+                "MEDIA_SOURCE_UNAVAILABLE",
+                "The account that owns a referenced media is not currently available for transfer.",
+                retryable=True,
+            )
+        # Resolving a signed URL is a read-only operation and does not consume a
+        # generation slot. The target job already owns the reservation.
+        source_clients.setdefault(
+            media.installation_id,
+            BoundFlowClient(runtime.bridge, source_connection.id),
+        )
+
+    transferred: dict[str, str] = {}
+    output: list[str] = []
+    for media_id in media_ids:
+        media = known_media.get(media_id)
+        if media is None or media.installation_id == target_account_key:
+            output.append(media_id)
+            continue
+        if media_id in transferred:
+            output.append(transferred[media_id])
+            continue
+
+        cached = runtime.projects.get_media(
+            target_account_key, project_id, media.content_sha256,
+        )
+        if cached:
+            transferred[media_id] = cached.google_media_id
+            output.append(cached.google_media_id)
+            continue
+
+        downloaded = await source_clients[media.installation_id].download_media(media_id)
+        if downloaded.get("error"):
+            raise APIError(
+                502,
+                "MEDIA_REHYDRATION_FAILED",
+                f"Referenced media could not be downloaded from its owning account: {downloaded['error']}",
+                retryable=True,
+            )
+        raw_bytes = downloaded.get("bytes")
+        if not isinstance(raw_bytes, (bytes, bytearray)) or not raw_bytes:
+            raise APIError(
+                502,
+                "MEDIA_REHYDRATION_FAILED",
+                "Referenced media download returned no image data.",
+                retryable=True,
+            )
+        raw_bytes = bytes(raw_bytes)
+        content_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+        cached = runtime.projects.get_media(target_account_key, project_id, content_sha256)
+        if cached:
+            transferred[media_id] = cached.google_media_id
+            output.append(cached.google_media_id)
+            continue
+
+        mime_type = _transfer_mime_type(media, downloaded)
+        upload_result = await _api(
+            target_client,
+            url=UPLOAD_IMAGE_URL,
+            body={
+                "clientContext": {"projectId": project_id, "tool": "PINHOLE"},
+                "fileName": media.file_name or "reference.png",
+                "imageBytes": base64.b64encode(raw_bytes).decode("ascii"),
+                "isHidden": False,
+                "isUserUploaded": True,
+                "mimeType": mime_type,
+            },
+        )
+        new_media_id = extract_upload_media_id(upload_result)
+        if not new_media_id:
+            raise _flow_failure(
+                upload_result,
+                "MEDIA_REHYDRATION_UPLOAD_FAILED",
+                "Referenced media could not be uploaded to the selected account.",
+            )
+        response_data = upload_result.get("data") if isinstance(upload_result.get("data"), dict) else None
+        response_status = upload_result.get("status") if isinstance(upload_result.get("status"), int) else None
+        response_headers = upload_result.get("headers") if isinstance(upload_result.get("headers"), dict) else None
+        runtime.projects.put_media(
+            target_account_key,
+            project_id,
+            content_sha256,
+            new_media_id,
+            mime_type,
+            media.file_name or "reference.png",
+            response_data,
+            response_status,
+            response_headers,
+        )
+        # Generated media uses a synthetic source key. Keep an alias so a
+        # repeated transfer can reuse the copied ID without downloading again.
+        if media.content_sha256 != content_sha256:
+            runtime.projects.put_media(
+                target_account_key,
+                project_id,
+                media.content_sha256,
+                new_media_id,
+                mime_type,
+                media.file_name or "reference.png",
+                response_data,
+                response_status,
+                response_headers,
+            )
+        transferred[media_id] = new_media_id
+        output.append(new_media_id)
+    return output
+
+
 def _flow_failure(result: dict, code: str, message: str) -> APIError:
     status = result.get("status")
     retryable = status in {408, 425, 429, 500, 502, 503, 504}
@@ -861,7 +1029,15 @@ async def generate_image(
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
-    stored_route = _stored_media_route(runtime, list(payload.reference_media_ids))
+    known_media = _known_media(runtime, list(payload.reference_media_ids))
+    auto_transfer = _should_auto_transfer_media(
+        runtime, payload.project_id, routing_scope, known_media,
+    )
+    stored_route = (
+        None
+        if auto_transfer
+        else _stored_media_route(runtime, list(payload.reference_media_ids))
+    )
     stored_account_key, stored_project_id = stored_route or (None, None)
     if payload.project_id and stored_project_id and payload.project_id != stored_project_id:
         raise APIError(
@@ -870,13 +1046,13 @@ async def generate_image(
             "Referenced media do not belong to the requested Google Flow project.",
             field="project_id",
         )
-    effective_project_id = payload.project_id or stored_project_id
+    effective_project_id = payload.project_id or (None if auto_transfer else stored_project_id)
     connection, client = _connection(
         request,
         authorization,
         routing_scope,
         project_id=effective_project_id,
-        required_account_key=stored_account_key,
+        required_account_key=None if auto_transfer else stored_account_key,
     )
     managed = effective_project_id is None
     account_key = _account_key(connection)
@@ -884,7 +1060,14 @@ async def generate_image(
     project_recovered = False
     for attempt in range(3):
         project_id = effective_project_id or await _managed_project(runtime, connection, client)
-        reference_media_ids = list(payload.reference_media_ids)
+        reference_media_ids = await _rehydrate_media_ids(
+            runtime,
+            connection,
+            client,
+            list(payload.reference_media_ids),
+            project_id,
+            known_media,
+        )
         cached_digests: list[str] = []
         cache_hits = 0
         stale_project = False
@@ -1007,7 +1190,15 @@ async def generate_video(
         if isinstance(payload, ImageToVideoGenerationRequest)
         else list(payload.reference_media_ids)
     )
-    stored_route = _stored_media_route(request.app.state.runtime, media_ids)
+    known_media = _known_media(runtime, media_ids)
+    auto_transfer = _should_auto_transfer_media(
+        runtime, payload.project_id, routing_scope, known_media,
+    )
+    stored_route = (
+        None
+        if auto_transfer
+        else _stored_media_route(request.app.state.runtime, media_ids)
+    )
     stored_account_key, stored_project_id = stored_route or (None, None)
     if payload.project_id and stored_project_id and payload.project_id != stored_project_id:
         raise APIError(
@@ -1016,22 +1207,30 @@ async def generate_video(
             "Referenced media do not belong to the requested Google Flow project.",
             field="project_id",
         )
-    effective_project_id = payload.project_id or stored_project_id
+    effective_project_id = payload.project_id or (None if auto_transfer else stored_project_id)
     connection, client = _connection(
         request,
         authorization,
         routing_scope,
         min_credits=credit_cost,
         project_id=effective_project_id,
-        required_account_key=stored_account_key,
+        required_account_key=None if auto_transfer else stored_account_key,
     )
-    if stored_account_key and _account_key(connection) != stored_account_key:
+    if not auto_transfer and stored_account_key and _account_key(connection) != stored_account_key:
         raise APIError(
             409,
             "MEDIA_ACCOUNT_MISMATCH",
             "Referenced media do not belong to the selected Google Flow account.",
         )
     resolved_project_id = effective_project_id or await _managed_project(runtime, connection, client)
+    media_ids = await _rehydrate_media_ids(
+        runtime,
+        connection,
+        client,
+        media_ids,
+        resolved_project_id,
+        known_media,
+    )
     tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
     ctx = client_context(resolved_project_id, tier)
     if isinstance(payload, ImageToVideoGenerationRequest):
@@ -1045,7 +1244,7 @@ async def generate_video(
                 "aspectRatio": payload.aspect_ratio,
                 "textInput": {"prompt": payload.prompt},
                 "videoModelKey": model,
-                "startImage": {"mediaId": payload.start_media_id},
+                "startImage": {"mediaId": media_ids[0]},
                 "metadata": {"sceneId": str(uuid.uuid4())},
             }],
             "useV2ModelConfig": True,
@@ -1070,7 +1269,7 @@ async def generate_video(
             "metadata": {},
             "referenceImages": [
                 {"mediaId": media_id, "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"}
-                for media_id in payload.reference_media_ids
+                for media_id in media_ids
             ],
         }],
         "useV2ModelConfig": True,

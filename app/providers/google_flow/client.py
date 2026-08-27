@@ -7,12 +7,16 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
+
+import httpx
 
 logger=logging.getLogger(__name__)
 RECAPTCHA_FALLBACK_KEY="6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV"
 FLOW_CREDITS_URL="https://aisandbox-pa.googleapis.com/v1/credits"
 SUPPORTED_PAYGATE_TIERS={"PAYGATE_TIER_ONE","PAYGATE_TIER_TWO"}
+MEDIA_DOWNLOAD_HOSTS=("flow-content.google","storage.googleapis.com")
+MAX_MEDIA_DOWNLOAD_BYTES=48*1024*1024
 
 
 def resolve_paygate_tier(payload:dict)->str|None:
@@ -320,6 +324,43 @@ class FlowBridge:
         if isinstance(status,int) and status>=400:return None
         return inner.get("finalUrl") if isinstance(inner.get("finalUrl"),str) else None
 
+    async def download_media(self,connection_id:str,media_id:str)->dict:
+        """Download an image through a signed Flow media URL for account transfer."""
+        url=await self.resolve_media_url(connection_id,media_id)
+        if not url:return {"error":"media_url_unavailable"}
+        try:
+            parsed=urlparse(url)
+        except Exception:
+            return {"error":"media_url_invalid"}
+        hostname=(parsed.hostname or "").lower()
+        if parsed.scheme!="https" or not any(hostname==host or hostname.endswith(f".{host}") for host in MEDIA_DOWNLOAD_HOSTS):
+            return {"error":"media_download_host_not_allowed"}
+        try:
+            async with httpx.AsyncClient(timeout=60,follow_redirects=True) as client:
+                async with client.stream("GET",url) as response:
+                    final_host=(response.url.host or "").lower()
+                    if response.url.scheme!="https" or not any(final_host==host or final_host.endswith(f".{host}") for host in MEDIA_DOWNLOAD_HOSTS):
+                        return {"error":"media_download_redirect_not_allowed"}
+                    if response.status_code>=400:
+                        return {"error":f"media_download_http_{response.status_code}","status":response.status_code}
+                    content_length=response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            if int(content_length)>MAX_MEDIA_DOWNLOAD_BYTES:
+                                return {"error":"media_download_too_large"}
+                        except ValueError:
+                            pass
+                    chunks=[];total=0
+                    async for chunk in response.aiter_bytes():
+                        total+=len(chunk)
+                        if total>MAX_MEDIA_DOWNLOAD_BYTES:
+                            return {"error":"media_download_too_large"}
+                        chunks.append(chunk)
+                    mime_type=response.headers.get("content-type","").split(";",1)[0].strip().lower()
+                    return {"status":response.status_code,"headers":dict(response.headers),"bytes":b"".join(chunks),"mime_type":mime_type}
+        except httpx.HTTPError as exc:
+            return {"error":f"media_download_failed:{type(exc).__name__}"}
+
     def mark_provider_failure(self,connection_id:str,error:str,*,status_code:int|None=None)->None:
         conn=self.get(connection_id)
         if not conn:return
@@ -352,3 +393,6 @@ class BoundFlowClient:
 
     async def resolve_media_url(self,media_id:str,*,thumbnail:bool=False)->str|None:
         return await self.bridge.resolve_media_url(self.connection_id,media_id,thumbnail=thumbnail)
+
+    async def download_media(self,media_id:str)->dict:
+        return await self.bridge.download_media(self.connection_id,media_id)

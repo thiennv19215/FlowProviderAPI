@@ -2,11 +2,11 @@
 
 FlowProviderAPI persists only managed project mappings and image-hash-to-media-ID mappings. It does not persist credentials, image bytes, jobs, or application workflow state.
 
-Google Flow projects and media are account-scoped. In a multi-account deployment, all requests that reuse one Flow `project_id`, `media_id`, or video operation must be routed back to the same Chrome installation/account that created them.
+Google Flow projects and media are account-scoped. In a multi-account deployment, explicitly scoped requests that reuse one Flow `project_id`, `media_id`, or video operation must be routed back to the same Chrome installation/account that created them.
 
-The Provider also records uploaded media ownership and uses a known `media_id` to recover its account/project route for video generation. Callers should still forward the returned project/scope explicitly. When media is uploaded specifically for a paid video, `required_credits` lets account selection exclude connectors that cannot submit that video. A bounded failover attempt can pass prior `project_id` values in `excluded_project_ids`; the Provider then selects a different account and uploads fresh media there.
+The Provider also records uploaded media ownership and uses a known `media_id` to recover its account/project route for video generation. Callers should forward the returned scope explicitly when they require a workflow to remain on one account. Without a routing scope, a known media ID may be copied into the managed account/project selected for a repeated request, including an explicitly selected managed `project_id`. When media is uploaded specifically for a paid video, `required_credits` lets account selection exclude connectors that cannot submit that video. A bounded failover attempt can pass prior `project_id` values in `excluded_project_ids`; the Provider then selects a different account and uploads fresh media there.
 
-Managed image-generation requests omit `project_id` and send optional Base64 references through `input_images`. For that flow, the Provider owns account selection and reuses the newest existing project on that Google account. It creates a `FlowProvider` project only when a complete lookup confirms that the account has no projects, so reconnects and concurrent requests do not spam projects. The caller does not need to store or return a routing scope. The scope contract below applies only to compatibility endpoints where callers explicitly reuse Google project or media IDs across requests.
+Managed image-generation requests omit `project_id` and send optional Base64 references through `input_images`. For that flow, the Provider owns account selection and reuses the newest existing project on that Google account. It creates a `FlowProvider` project only when a complete lookup confirms that the account has no projects, so reconnects and concurrent requests do not spam projects. If a managed request references a media ID previously recorded by the Provider and the scheduler selects another account, the Provider downloads the source image through the owning account, uploads it into the selected account's project, and substitutes the copied media ID. The source bytes are not persisted. The caller does not need to store or return a routing scope. The scope contract below applies only to compatibility endpoints where callers explicitly reuse Google project or media IDs across requests.
 
 ## Contract
 
@@ -64,7 +64,7 @@ If the bound Chrome installation/Google-account pair is offline, changed, unheal
 503 ROUTING_SCOPE_UNAVAILABLE
 ```
 
-A scoped request never falls back to another available Google account. The caller decides whether to retry later or create a new Flow project on another account and re-upload any required media.
+A scoped request never falls back to another available Google account and never performs an implicit cross-account media transfer. The caller decides whether to retry later or create a new Flow project on another account and re-upload any required media. An explicit `project_id` without a routing scope identifies the target project; known media from another account can be rehydrated into that project.
 
 ## Security and lifecycle
 
@@ -74,7 +74,7 @@ The extension `installationId` is stable across WebSocket reconnects, so reconne
 
 ## Responsibility boundary
 
-For managed image generation, FlowProviderAPI owns connection selection, project lookup, media-ID deduplication, browser authentication/captcha injection, and forwarding. The compatibility contract additionally supports caller-managed sticky routing.
+For managed image/video generation, FlowProviderAPI owns connection selection, project lookup, media-ID deduplication, known-media rehydration between managed accounts, browser authentication/captcha injection, and forwarding. The compatibility contract additionally supports caller-managed sticky routing.
 
 The integrating application owns durable state such as:
 
