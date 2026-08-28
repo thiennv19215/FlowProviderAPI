@@ -1,6 +1,6 @@
 # Tài liệu tích hợp FlowProviderAPI
 
-Tài liệu này mô tả contract HTTP hiện tại của FlowProviderAPI dành cho backend tích hợp service-to-service. Frontend không gọi trực tiếp API này và không được nhận API key. Provider chuyển request tới Google Flow qua Chrome extension đang đăng nhập và trả lại HTTP status cùng body gần như nguyên bản từ Google Flow.
+Tài liệu này mô tả contract HTTP hiện tại của FlowProviderAPI dành cho backend tích hợp service-to-service. Provider chuyển request tới Google Flow qua Chrome extension đang đăng nhập và trả lại HTTP status cùng body gần như nguyên bản từ Google Flow.
 
 ## 1. Thông tin chung
 
@@ -14,14 +14,13 @@ Swagger:  https://api.shopcongngheso5.io.vn/docs
 
 ### Xác thực
 
-Mọi endpoint nghiệp vụ yêu cầu API key:
+Các endpoint nghiệp vụ là public và không yêu cầu API key:
 
 ```http
-Authorization: Bearer <API_KEY>
 Content-Type: application/json
 ```
 
-Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi, server tự tạo request ID. Không đưa API key vào query string hoặc mã frontend công khai.
+Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi, server tự tạo request ID.
 
 ### Đặc điểm xử lý
 
@@ -343,13 +342,11 @@ media.name
 import { readFile } from "node:fs/promises";
 
 const API_URL = "https://api.shopcongngheso5.io.vn";
-const API_KEY = process.env.FLOW_PROVIDER_API_KEY;
 const bytes = await readFile("./product.jpg");
 
 const response = await fetch(`${API_URL}/v1/media`, {
   method: "POST",
   headers: {
-    Authorization: `Bearer ${API_KEY}`,
     "Content-Type": "application/json"
   },
   body: JSON.stringify({
@@ -800,7 +797,6 @@ trừ credit; backend nên lưu poll name, trạng thái cuối và `X-Request-I
 | HTTP | Code thường gặp | Ý nghĩa/Xử lý |
 |---:|---|---|
 | `400` | `INVALID_JSON`, `INVALID_CONTENT_LENGTH`, `ROUTING_SCOPE_INVALID` | Sửa request/header, không retry nguyên trạng. |
-| `401` | `INVALID_API_KEY` | Thiếu/sai API key. |
 | `403` | Upstream Flow | Tài khoản/quyền/captcha bị từ chối; trả lỗi cho người dùng. |
 | `404` | `ENDPOINT_NOT_FOUND` hoặc upstream | Sai endpoint/resource/media/operation. |
 | `409` | `PROJECT_ROUTE_UNKNOWN`, `OPERATION_ROUTE_UNKNOWN` | Provider chưa biết account sở hữu project/operation; list project hoặc dùng identifier do Provider vừa trả. |
@@ -821,14 +817,11 @@ không phân tích chuỗi `message` để điều khiển nghiệp vụ.
 
 ```js
 const API_URL = "https://api.shopcongngheso5.io.vn";
-const API_KEY = process.env.FLOW_PROVIDER_API_KEY;
-
 async function callFlow(path, payload) {
   const requestId = crypto.randomUUID();
   const response = await fetch(`${API_URL}${path}`, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${API_KEY}`,
       "Content-Type": "application/json",
       "X-Request-Id": requestId
     },

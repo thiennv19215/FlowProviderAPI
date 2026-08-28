@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import logging
 import uuid
 from contextlib import asynccontextmanager
@@ -30,7 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 
 class RequestGuardMiddleware:
-    """Authenticate business calls early and enforce the actual streamed body size."""
+    """Enforce the actual streamed body size for public business calls."""
 
     def __init__(self, app, *, settings: Settings, max_request_bytes: int):
         self.app = app
@@ -68,20 +67,6 @@ class RequestGuardMiddleware:
         headers = self._headers(scope)
         request_id = headers.get(b"x-request-id", b"").decode("latin-1") or f"req_{uuid.uuid4().hex}"
         scope.setdefault("state", {})["request_id"] = request_id
-        if str(scope.get("path") or "").startswith("/v1/"):
-            expected = self.settings.bootstrap_api_key
-            authorization = headers.get(b"authorization", b"").decode("latin-1")
-            supplied = authorization.removeprefix("Bearer ").strip()
-            if not expected:
-                await self._reject(
-                    scope, receive, send, 503, "API_AUTH_UNAVAILABLE", "Provider API key is not configured."
-                )
-                return
-            if not hmac.compare_digest(expected, supplied):
-                await self._reject(
-                    scope, receive, send, 401, "INVALID_API_KEY", "A valid Provider API key is required."
-                )
-                return
         content_length = headers.get(b"content-length")
         if content_length:
             try:

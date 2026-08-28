@@ -46,7 +46,6 @@ Tạo hoặc sửa file `.cursor/mcp.json` trong project của bạn:
       "cwd": "C:\\Users\\nguye\\Documents\\FlowProviderAPI",
       "env": {
         "FLOW_PROVIDER_MCP_BASE_URL": "https://api.shopcongngheso5.io.vn",
-        "FLOW_PROVIDER_MCP_API_KEY": "fpa_prod_YOUR_SECRET_KEY",
         "FLOW_PROVIDER_MCP_ALLOWED_ROOTS": "C:\\Users\\nguye\\Documents\\MyAgentProject"
       }
     }
@@ -66,7 +65,6 @@ Mở file cấu hình Claude Desktop (`%APPDATA%\Claude\claude_desktop_config.js
       "command": "flow-provider-mcp",
       "env": {
         "FLOW_PROVIDER_MCP_BASE_URL": "https://api.shopcongngheso5.io.vn",
-        "FLOW_PROVIDER_MCP_API_KEY": "fpa_prod_YOUR_SECRET_KEY",
         "FLOW_PROVIDER_MCP_ALLOWED_ROOTS": "C:\\images;C:\\projects"
       }
     }
@@ -98,10 +96,7 @@ import time
 import requests
 
 BASE_URL = os.getenv("FLOW_PROVIDER_BASE_URL", "https://api.shopcongngheso5.io.vn")
-API_KEY = os.getenv("FLOW_PROVIDER_API_KEY", "fpa_prod_YOUR_SECRET_KEY")
-
 headers = {
-    "Authorization": f"Bearer {API_KEY}",
     "Content-Type": "application/json"
 }
 
@@ -205,12 +200,9 @@ if __name__ == "__main__":
 import axios from 'axios';
 
 const BASE_URL = process.env.FLOW_PROVIDER_BASE_URL || 'https://api.shopcongngheso5.io.vn';
-const API_KEY = process.env.FLOW_PROVIDER_API_KEY || 'fpa_prod_YOUR_SECRET_KEY';
-
 const client = axios.create({
   baseURL: BASE_URL,
   headers: {
-    Authorization: `Bearer ${API_KEY}`,
     'Content-Type': 'application/json',
   },
 });

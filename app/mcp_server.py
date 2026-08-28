@@ -13,7 +13,7 @@ import httpx
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import AliasChoices, BaseModel, Field, SecretStr, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.api.schemas import MAX_BASE64_TOTAL_CHARS
@@ -66,13 +66,6 @@ class MCPSettings(BaseSettings):
         validation_alias=AliasChoices(
             "FLOW_PROVIDER_MCP_BASE_URL",
             "FLOW_PROVIDER_PUBLIC_BASE_URL",
-        ),
-    )
-    api_key: SecretStr = Field(
-        default=SecretStr("fpa_dev_local"),
-        validation_alias=AliasChoices(
-            "FLOW_PROVIDER_MCP_API_KEY",
-            "FLOW_PROVIDER_BOOTSTRAP_API_KEY",
         ),
     )
     timeout_seconds: float = Field(
@@ -139,7 +132,6 @@ class FlowProviderClient:
         self._client = httpx.AsyncClient(
             base_url=self.settings.base_url,
             headers={
-                "Authorization": f"Bearer {self.settings.api_key.get_secret_value()}",
                 "Accept": "application/json",
                 "User-Agent": "FlowProviderMCP/1.0",
             },

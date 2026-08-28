@@ -7,7 +7,8 @@ services:
     image: flowprovider-api:gateway-v1-e2e-20260813
     environment:
       FLOW_PROVIDER_ENV: production
-      FLOW_PROVIDER_BOOTSTRAP_API_KEY: ${FLOW_PROVIDER_BOOTSTRAP_API_KEY:?set gateway API key}
+      FLOW_PROVIDER_EXTENSION_API_KEY: ${FLOW_PROVIDER_EXTENSION_API_KEY:?set extension connector key}
+      FLOW_PROVIDER_ALLOW_SIMULATION_MODE: "false"
       FLOW_PROVIDER_PUBLIC_BASE_URL: ${FLOW_PROVIDER_PUBLIC_BASE_URL:-https://provider.staging.invalid}
       FLOW_PROVIDER_ACCOUNT_SLOT_CAPACITY: 3
       FLOW_PROVIDER_PROJECT_STORE_PATH: /data/projects.db

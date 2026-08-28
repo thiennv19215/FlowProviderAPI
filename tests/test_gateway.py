@@ -114,22 +114,21 @@ def test_streamed_body_limit_rejects_request_without_content_length(monkeypatch)
     assert response.json()["error"]["code"] == "PAYLOAD_TOO_LARGE"
 
 
-def test_business_auth_is_checked_before_json_body_parsing():
+def test_business_endpoints_are_public_but_still_validate_payloads():
     with TestClient(app()) as client:
         response = client.post(
             "/v1/images/generations",
             headers={"Content-Type": "application/json"},
             content=b"not-json",
         )
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "INVALID_API_KEY"
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_JSON"
 
 
-def test_generation_requires_auth_and_connection():
+def test_generation_requires_connection_without_authentication():
     request = {"project_id": "project-1", "prompt": "test"}
     with TestClient(app()) as client:
-        assert client.post("/v1/images/generations", json=request).status_code == 401
-        unavailable = client.post("/v1/images/generations", headers=headers(), json=request)
+        unavailable = client.post("/v1/images/generations", json=request)
     assert unavailable.status_code == 503
     assert unavailable.json()["error"]["code"] == "PROVIDER_ACCOUNT_UNAVAILABLE"
 

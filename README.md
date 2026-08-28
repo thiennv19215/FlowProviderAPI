@@ -19,7 +19,6 @@ Required production values:
 ```env
 FLOW_PROVIDER_ENV=production
 FLOW_PROVIDER_PUBLIC_BASE_URL=https://provider.example.com
-FLOW_PROVIDER_BOOTSTRAP_API_KEY=fpa_prod_<secret>
 FLOW_PROVIDER_EXTENSION_API_KEY=fpe_prod_<different-secret>
 FLOW_PROVIDER_ALLOW_SIMULATION_MODE=false
 ```

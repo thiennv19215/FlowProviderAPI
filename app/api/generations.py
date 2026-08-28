@@ -55,20 +55,10 @@ def _account_key(connection) -> str:
     return f"{connection.installation_id}\n{email}" if email else connection.installation_id
 
 
-def _authorize(settings, authorization: str | None) -> None:
-    expected = settings.bootstrap_api_key
-    supplied = authorization.removeprefix("Bearer ").strip() if authorization else ""
-    if not expected:
-        raise APIError(503, "API_AUTH_UNAVAILABLE", "Provider API key is not configured.")
-    if not hmac.compare_digest(expected, supplied):
-        raise APIError(401, "INVALID_API_KEY", "A valid Provider API key is required.")
-
-
 def _scope_secret(settings) -> bytes:
-    # The bootstrap key is already required for every business endpoint. Reuse it
-    # as the HMAC secret so routing scopes remain stateless and deployment needs no
-    # second secret. Rotating the API key intentionally invalidates old scopes.
-    return settings.bootstrap_api_key.encode("utf-8")
+    # Routing scopes are signed with the private connector credential; public
+    # business endpoints intentionally do not require an API key.
+    return (settings.extension_api_key or "flow-provider-development-scope-secret").encode("utf-8")
 
 
 def _encode_routing_scope(settings, account_key: str) -> str:
@@ -111,7 +101,6 @@ def _reserve(request: Request, connection, credit_cost: int = 0) -> bool:
 
 def _connection(
     request: Request,
-    authorization: str | None,
     routing_scope: str | None = None,
     *,
     min_credits: int = 0,
@@ -120,7 +109,6 @@ def _connection(
     excluded_account_keys: set[str] | None = None,
 ):
     runtime = request.app.state.runtime
-    _authorize(runtime.settings, authorization)
     available = runtime.bridge.ready_connections()
     # Never route a business request to a simulated connector.  Production only
     # serves responses produced by a real Google Flow account.
@@ -936,11 +924,10 @@ async def list_projects(
     request: Request,
     page_size: int = Query(default=10, ge=1, le=100),
     cursor: str | None = Query(default=None, min_length=1, max_length=2000),
-    authorization: str | None = Header(default=None),
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
-    connection, client = _connection(request, authorization, routing_scope)
+    connection, client = _connection(request, routing_scope)
     payload: dict = {
         "json": {"pageSize": page_size, "toolName": "PINHOLE", "cursor": cursor},
     }
@@ -982,10 +969,9 @@ async def list_projects(
 async def create_project(
     payload: CreateProjectRequest,
     request: Request,
-    authorization: str | None = Header(default=None),
 ) -> Response:
     runtime = request.app.state.runtime
-    connection, client = _connection(request, authorization)
+    connection, client = _connection(request)
     result = await client.trpc_request(
         url=TRPC_CREATE_PROJECT,
         method="POST",
@@ -1008,7 +994,6 @@ async def create_project(
 async def upload_image(
     payload: ImageUploadRequest,
     request: Request,
-    authorization: str | None = Header(default=None),
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
@@ -1019,7 +1004,6 @@ async def upload_image(
     }
     connection, client = _connection(
         request,
-        authorization,
         routing_scope,
         min_credits=payload.required_credits,
         project_id=payload.project_id,
@@ -1082,7 +1066,6 @@ async def upload_image(
 async def generate_image(
     payload: ImageGenerationRequest,
     request: Request,
-    authorization: str | None = Header(default=None),
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
@@ -1106,7 +1089,6 @@ async def generate_image(
     effective_project_id = payload.project_id or (None if auto_transfer else stored_project_id)
     connection, client = _connection(
         request,
-        authorization,
         routing_scope,
         project_id=effective_project_id,
         required_account_key=None if auto_transfer else stored_account_key,
@@ -1234,7 +1216,6 @@ async def generate_image(
 async def generate_video(
     payload: VideoGenerationRequest,
     request: Request,
-    authorization: str | None = Header(default=None),
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
@@ -1278,7 +1259,6 @@ async def generate_video(
     try:
         connection, client = _connection(
             request,
-            authorization,
             routing_scope,
             min_credits=credit_cost,
             project_id=effective_project_id,
@@ -1293,7 +1273,6 @@ async def generate_video(
             raise
         connection, client = _connection(
             request,
-            authorization,
             min_credits=credit_cost,
             excluded_account_keys={preferred_account_key} if preferred_account_key else None,
         )
@@ -1360,7 +1339,6 @@ async def generate_video(
             try:
                 connection, client = _connection(
                     request,
-                    authorization,
                     min_credits=credit_cost,
                     excluded_account_keys={_account_key(connection)},
                 )
@@ -1382,11 +1360,9 @@ async def generate_video(
 async def check_video_operations(
     payload: VideoStatusRequest,
     request: Request,
-    authorization: str | None = Header(default=None),
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
-    _authorize(runtime.settings, authorization)
     scoped_account_key = (
         _decode_routing_scope(runtime.settings, routing_scope)
         if routing_scope else None

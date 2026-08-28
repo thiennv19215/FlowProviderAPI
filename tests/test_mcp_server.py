@@ -12,7 +12,6 @@ from app.mcp_server import FlowProviderClient, MCPSettings, build_mcp_server
 def mock_client(handler, *, allowed_roots: str = "."):
     settings = MCPSettings(
         base_url="https://provider.test",
-        api_key="fpa_test",
         timeout_seconds=10,
         allowed_roots=allowed_roots,
     )
@@ -66,7 +65,7 @@ async def test_generate_image_encodes_local_reference_and_maps_agent_values():
         )
 
     assert result.is_error is False
-    assert captured["request"].headers["authorization"] == "Bearer fpa_test"
+    assert "authorization" not in captured["request"].headers
     assert captured["request"].url.path == "/v1/images/generations"
     assert captured["body"]["model"] == "NANO_BANANA_2"
     assert captured["body"]["aspect_ratio"] == "IMAGE_ASPECT_RATIO_LANDSCAPE"

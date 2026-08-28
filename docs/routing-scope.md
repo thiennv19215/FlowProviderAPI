@@ -70,7 +70,7 @@ A scoped request never falls back to another available Google account and never 
 
 The v2 routing scope is opaque to callers and contains no Google credential. It is HMAC-signed using the Provider bootstrap API key and encodes the extension installation identity plus normalized Google account email. No database is required.
 
-The extension `installationId` is stable across WebSocket reconnects, so reconnecting the same installation with the same Google account can continue serving existing routing scopes. Changing the signed-in Google account makes the old scope unavailable. Rotating `FLOW_PROVIDER_BOOTSTRAP_API_KEY` invalidates previously issued scopes. Installation-only v1 scopes are intentionally rejected.
+The extension `installationId` is stable across WebSocket reconnects, so reconnecting the same installation with the same Google account can continue serving existing routing scopes. Changing the signed-in Google account makes the old scope unavailable. Rotating `FLOW_PROVIDER_EXTENSION_API_KEY` invalidates previously issued scopes. Installation-only v1 scopes are intentionally rejected.
 
 ## Responsibility boundary
 

@@ -13,7 +13,6 @@ class Settings(BaseSettings):
 
     env: Literal["development", "test", "production"] = "development"
     public_base_url: str = "http://localhost:8000"
-    bootstrap_api_key: str | None = "fpa_dev_local"
     extension_api_key: str | None = None
     allow_simulation_mode: bool = True
     flow_api_key: str | None = None
@@ -26,10 +25,6 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_settings(self):
         if self.env == "production":
-            if not self.bootstrap_api_key:
-                raise ValueError("Production requires a gateway API key")
-            if self.bootstrap_api_key.startswith("fpa_dev_") or "change_me" in self.bootstrap_api_key.lower():
-                raise ValueError("Production requires a non-development API key")
             if not self.extension_api_key:
                 raise ValueError("Production requires a separate extension connector API key")
             if self.extension_api_key.startswith("fpe_dev_") or "change_me" in self.extension_api_key.lower():

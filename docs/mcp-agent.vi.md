@@ -13,7 +13,7 @@ pip install -e '.[dev]'
 uvicorn app.main:app --reload
 ```
 
-Load `extension/` vào Chrome profile đã đăng nhập Google Flow. MCP adapter mặc định đọc `.env`, dùng `FLOW_PROVIDER_PUBLIC_BASE_URL` và `FLOW_PROVIDER_BOOTSTRAP_API_KEY` hiện có.
+Load `extension/` vào Chrome profile đã đăng nhập Google Flow. MCP adapter mặc định đọc `.env` và dùng `FLOW_PROVIDER_PUBLIC_BASE_URL`; business API không yêu cầu API key.
 
 Agent local nên dùng transport `stdio`:
 
