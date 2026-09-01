@@ -694,9 +694,7 @@ def _remember_operations(runtime, connection, project_id: str, result: dict) -> 
         primary_media_id = metadata.get("primaryMediaId") or media_by_workflow.get(name)
         if isinstance(primary_media_id, str) and primary_media_id:
             runtime.projects.put_operation(name, account_key, project_id, "media", primary_media_id)
-        else:
-            runtime.projects.put_operation(name, account_key, project_id, "operation", name)
-        remembered.add(name)
+            remembered.add(name)
     if remembered:
         return
     for media in data.get("media") or []:
@@ -1326,13 +1324,10 @@ async def generate_video(
     effective_project_id = payload.project_id or (None if auto_transfer else stored_project_id)
     can_failover = bool(
         not routing_scope
-        and (
-            inline_images
-            or (
-                known_media
-                and all(media_id in known_media for media_id in requested_media_ids)
-            )
-        )
+        and (not requested_media_ids or all(
+            media_id in known_media for media_id in requested_media_ids
+        ))
+        and (inline_images or known_media)
     )
     preferred_account_key = (
         runtime.projects.installation_for_project(payload.project_id)

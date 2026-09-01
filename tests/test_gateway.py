@@ -988,6 +988,41 @@ def test_omni_workflow_without_metadata_is_pollable_without_routing_scope(monkey
     assert polled.status_code == 200, polled.json()
 
 
+def test_uncorrelated_omni_workflow_does_not_store_a_false_operation_route(monkeypatch):
+    application = app()
+    connection = connect(application, monkeypatch)
+    connection.credits = 1000
+
+    async def fake_api(_connection_id, **kwargs):
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/reference"}}}
+        assert kwargs["url"].endswith("video:batchAsyncGenerateVideoReferenceImages")
+        return {"status": 200, "data": {"workflows": [{"name": "workflow-unmapped"}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        generated = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "omni",
+                "project_id": "project-1",
+                "prompt": "move",
+                "input_images": [{"image_base64": "aGVsbG8="}],
+            },
+        )
+        polled = client.post(
+            "/v1/videos/status",
+            headers=headers(),
+            json={"operation_names": ["workflow-unmapped"]},
+        )
+
+    assert generated.status_code == 200
+    assert application.state.runtime.projects.get_operation("workflow-unmapped") is None
+    assert polled.status_code == 409
+    assert polled.json()["error"]["code"] == "OPERATION_ROUTE_UNKNOWN"
+
+
 def test_video_status_routes_and_merges_operations_across_accounts(monkeypatch):
     application = app()
     first = SimpleNamespace(
@@ -1810,6 +1845,49 @@ def test_video_generation_fails_over_from_explicit_project_when_account_is_under
     assert response.headers["x-flow-project-id"] == "projects/target"
     assert [call[0] for call in calls] == ["target", "target"]
     assert calls[0][1].endswith("/v1/flow/uploadImage")
+
+
+def test_mixed_inline_and_unknown_media_reference_does_not_fail_over(monkeypatch):
+    application = app()
+    owner = SimpleNamespace(
+        id="owner", installation_id="owner-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=19, connected_at=1,
+    )
+    target = SimpleNamespace(
+        id="target", installation_id="target-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=2,
+    )
+    application.state.runtime.projects.remember_project(
+        "owner-installation", "projects/owner", "Owner project"
+    )
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "ready_connections", lambda **_kwargs: [owner, target],
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    calls = []
+
+    async def fake_api(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("an unsafe mixed-reference request must not reach an extension")
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "omni",
+                "project_id": "projects/owner",
+                "prompt": "move",
+                "reference_media_ids": ["media/external-unknown"],
+                "input_images": [{"image_base64": "aGVsbG8="}],
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "VIDEO_ACCOUNT_UNAVAILABLE"
+    assert calls == []
 
 
 def test_video_generation_retries_on_deterministic_credit_rejection(monkeypatch):
