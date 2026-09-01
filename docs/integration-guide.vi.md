@@ -661,7 +661,7 @@ Omni/media polling có thể trả shape sau thay cho `operations[]`:
 
 ### Response hoàn tất
 
-Cấu trúc media chi tiết do Flow quyết định và có thể bổ sung field theo thời gian. Khi video hoàn tất, Provider dùng đúng extension/account đã route để đổi media ID thành signed URL. Response có cả `media[i].downloadUrl` và `media[i].video.generatedVideo.fifeUrl`; header `X-Flow-Video-Urls` cho biết số URL đã lấy được. Signed URL có thời hạn nên backend cần tải/lưu video ngay nếu muốn lưu trữ lâu dài. Nếu Flow chưa cấp URL kịp, poll lại cùng operation thay vì tạo lại video:
+Cấu trúc media chi tiết do Flow quyết định và có thể bổ sung field theo thời gian. Khi video hoàn tất, Provider dùng đúng extension/account đã route để đổi media ID thành signed URL video và thumbnail. Provider chỉ bổ sung hai field ở cấp media là `downloadUrl` và `thumbnailUrl`; các header `X-Flow-Video-Urls` và `X-Flow-Thumbnail-Urls` cho biết số URL đã lấy được. Field gốc mà Flow đã trả sẵn vẫn được giữ nguyên, nhưng Provider không tự tạo alias URL lặp trong `video.generatedVideo`. Signed URL có thời hạn nên backend cần tải/lưu video và thumbnail ngay nếu muốn lưu trữ lâu dài. Nếu Flow chưa cấp URL kịp, poll lại cùng operation thay vì tạo lại video:
 
 ```json
 {
@@ -675,10 +675,9 @@ Cấu trúc media chi tiết do Flow quyết định và có thể bổ sung fie
             {
               "name": "VIDEO_MEDIA_ID",
               "downloadUrl": "https://flow-content.google/video/...",
+              "thumbnailUrl": "https://flow-content.google/thumbnail/...",
               "video": {
-                "generatedVideo": {
-                  "fifeUrl": "https://flow-content.google/video/..."
-                }
+                "generatedVideo": {}
               }
             }
           ]
@@ -693,14 +692,12 @@ Nếu object operation có `error`, coi tác vụ thất bại và trả lỗi �
 
 Với response top-level `media[]`, hoàn tất khi
 `media[i].mediaMetadata.mediaStatus.mediaGenerationStatus` là
-`MEDIA_GENERATION_STATUS_SUCCESSFUL`. Khi đó đọc URL tại một trong hai path:
+`MEDIA_GENERATION_STATUS_SUCCESSFUL`. Khi đó đọc URL tại hai path chuẩn hóa:
 
 ```text
 media[i].downloadUrl
-media[i].video.generatedVideo.fifeUrl
+media[i].thumbnailUrl
 ```
-
-Hai path trên do Provider bổ sung và có cùng signed URL.
 
 ### Khuyến nghị polling
 

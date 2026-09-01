@@ -81,6 +81,28 @@ async def test_media_redirect_uses_browser_cookies_and_url_encodes_id(monkeypatc
     assert captured["params"]["spec"]["responseType"] == "none"
 
 
+async def test_thumbnail_redirect_requests_thumbnail_media_url(monkeypatch):
+    bridge = FlowBridge(flow_api_key="test-key")
+    captured = {}
+
+    async def fake_rpc(_connection_id, _rpc_type, params, **_kwargs):
+        captured.update(params["spec"])
+        return {
+            "data": {
+                "ok": True,
+                "status": 200,
+                "finalUrl": "https://flow-content.google/thumbnail/signed",
+            },
+        }
+
+    monkeypatch.setattr(bridge, "send_rpc", fake_rpc)
+    url = await bridge.resolve_media_url("account-1", "media/video-1", thumbnail=True)
+
+    assert url == "https://flow-content.google/thumbnail/signed"
+    assert "name=media%2Fvideo-1" in captured["url"]
+    assert "mediaUrlType=MEDIA_URL_TYPE_THUMBNAIL" in captured["url"]
+
+
 async def test_download_media_reads_only_an_allowed_signed_image_url(monkeypatch):
     bridge = FlowBridge(flow_api_key="test-key")
 

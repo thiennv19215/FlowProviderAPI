@@ -857,42 +857,60 @@ def _completed_video_media(node: object, completed: bool = False) -> list[dict]:
     return found
 
 
-async def _attach_video_urls(client: BoundFlowClient, result: dict) -> int:
-    """Resolve browser-session redirects only for completed video media."""
+async def _attach_video_urls(client: BoundFlowClient, result: dict) -> tuple[int, int]:
+    """Resolve video and thumbnail redirects only for completed video media."""
     data = result.get("data")
     if not isinstance(data, dict):
-        return 0
-    candidates: dict[str, list[tuple[dict, dict]]] = {}
-    available = 0
+        return 0, 0
+    video_candidates: dict[str, list[dict]] = {}
+    thumbnail_candidates: dict[str, list[dict]] = {}
+    available_videos = 0
+    available_thumbnails = 0
     for media in _completed_video_media(data):
         video = media.get("video")
         generated = video.get("generatedVideo") if isinstance(video, dict) else None
         if not isinstance(generated, dict):
             continue
-        existing = generated.get("fifeUrl") or media.get("downloadUrl")
-        if isinstance(existing, str) and existing.startswith("https://"):
-            generated["fifeUrl"] = existing
-            media["downloadUrl"] = existing
-            available += 1
-            continue
         media_id = media.get("name")
-        if isinstance(media_id, str) and media_id:
-            candidates.setdefault(media_id, []).append((media, generated))
-    if not candidates:
-        return available
-    media_ids = list(candidates)
+        existing_video = generated.get("fifeUrl") or media.get("downloadUrl")
+        if isinstance(existing_video, str) and existing_video.startswith("https://"):
+            media["downloadUrl"] = existing_video
+            available_videos += 1
+        elif isinstance(media_id, str) and media_id:
+            video_candidates.setdefault(media_id, []).append(media)
+
+        existing_thumbnail = generated.get("thumbnailUrl") or media.get("thumbnailUrl")
+        if isinstance(existing_thumbnail, str) and existing_thumbnail.startswith("https://"):
+            media["thumbnailUrl"] = existing_thumbnail
+            available_thumbnails += 1
+        elif isinstance(media_id, str) and media_id:
+            thumbnail_candidates.setdefault(media_id, []).append(media)
+
+    jobs = [
+        ("video", media_id, client.resolve_media_url(media_id))
+        for media_id in video_candidates
+    ] + [
+        ("thumbnail", media_id, client.resolve_media_url(media_id, thumbnail=True))
+        for media_id in thumbnail_candidates
+    ]
+    if not jobs:
+        return available_videos, available_thumbnails
     resolved = await asyncio.gather(
-        *(client.resolve_media_url(media_id) for media_id in media_ids),
+        *(job for _kind, _media_id, job in jobs),
         return_exceptions=True,
     )
-    for media_id, value in zip(media_ids, resolved, strict=True):
+    for (kind, media_id, _job), value in zip(jobs, resolved, strict=True):
         if not isinstance(value, str) or not value.startswith("https://"):
             continue
-        for media, generated in candidates[media_id]:
-            media["downloadUrl"] = value
-            generated["fifeUrl"] = value
-            available += 1
-    return available
+        candidates = video_candidates if kind == "video" else thumbnail_candidates
+        for media in candidates[media_id]:
+            if kind == "video":
+                media["downloadUrl"] = value
+                available_videos += 1
+            else:
+                media["thumbnailUrl"] = value
+                available_thumbnails += 1
+    return available_videos, available_thumbnails
 
 
 def _refresh_paid_account(runtime, connection) -> None:
@@ -1533,7 +1551,7 @@ async def check_video_operations(
             }
         grouped.setdefault(account_key, []).append(item)
 
-    group_results: list[tuple[object, dict, int]] = []
+    group_results: list[tuple[object, dict, tuple[int, int]]] = []
     poll_jobs: list[tuple[object, BoundFlowClient, dict]] = []
     order: dict[str, int] = {}
     for index, (operation_name, route) in enumerate(route_rows):
@@ -1591,19 +1609,20 @@ async def check_video_operations(
         _attach_video_urls(client, result)
         for (_connection, client, _body), result in zip(poll_jobs, results, strict=True)
     ))
-    for (connection, _client, _body), result, url_count in zip(
+    for (connection, _client, _body), result, url_counts_for_result in zip(
         poll_jobs, results, url_counts, strict=True,
     ):
-        group_results.append((connection, result, url_count))
+        group_results.append((connection, result, url_counts_for_result))
 
     if len(group_results) == 1:
-        connection, result, url_count = group_results[0]
+        connection, result, (video_url_count, thumbnail_url_count) = group_results[0]
         response = _scoped_response(result, runtime.settings, connection)
-        response.headers["X-Flow-Video-Urls"] = str(url_count)
+        response.headers["X-Flow-Video-Urls"] = str(video_url_count)
+        response.headers["X-Flow-Thumbnail-Urls"] = str(thumbnail_url_count)
         return response
 
     merged: dict = {}
-    for _connection_item, result, _url_count in group_results:
+    for _connection_item, result, _url_counts in group_results:
         data = result.get("data")
         if not isinstance(data, dict):
             continue
@@ -1623,5 +1642,6 @@ async def check_video_operations(
             value.sort(key=lambda item: order.get(result_name(item) or "", len(order)))
     response = _response({"status": 200, "data": merged})
     response.headers["X-Flow-Operation-Groups"] = str(len(grouped))
-    response.headers["X-Flow-Video-Urls"] = str(sum(item[2] for item in group_results))
+    response.headers["X-Flow-Video-Urls"] = str(sum(item[2][0] for item in group_results))
+    response.headers["X-Flow-Thumbnail-Urls"] = str(sum(item[2][1] for item in group_results))
     return response

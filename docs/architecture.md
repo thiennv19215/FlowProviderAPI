@@ -29,7 +29,7 @@ On the first managed request for each extension connection and Google account id
 
 The store persists project mappings plus SHA-256-to-Google-media-ID mappings scoped by installation ID, normalized Google account email, and project. Signing a different Google account into the same extension creates a separate namespace and cannot reuse the prior account's project/media IDs. The store never contains Google bearer tokens, cookies, captcha tokens, generated media bytes, or user asset bytes.
 
-Completed video polls resolve Flow's cookie-protected media redirect through the owning extension and attach the expiring URL as both `downloadUrl` and `video.generatedVideo.fifeUrl`. Signed URLs are not persisted.
+Completed video polls resolve Flow's cookie-protected media redirects through the owning extension. The Provider attaches the expiring video and thumbnail URLs once at the media level as `downloadUrl` and `thumbnailUrl`. Upstream fields already returned by Flow remain untouched, and signed URLs are not persisted.
 
 Video generation stores every returned operation name with its account and project. A status request groups operation names by account, polls owning extensions concurrently, and merges the upstream list results in caller order. Unknown operations require an account-bound routing scope rather than being sent to an arbitrary account.
 

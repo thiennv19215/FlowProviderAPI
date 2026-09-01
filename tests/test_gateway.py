@@ -1230,9 +1230,10 @@ def test_video_status_attaches_download_url_for_successful_media(monkeypatch):
 
     resolved = []
 
-    async def fake_resolve(connection_id, media_id, **_kwargs):
-        resolved.append((connection_id, media_id))
-        return "https://flow-content.google/video/signed"
+    async def fake_resolve(connection_id, media_id, *, thumbnail=False):
+        resolved.append((connection_id, media_id, thumbnail))
+        kind = "thumbnail" if thumbnail else "video"
+        return f"https://flow-content.google/{kind}/signed"
 
     monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
     monkeypatch.setattr(application.state.runtime.bridge, "resolve_media_url", fake_resolve)
@@ -1245,9 +1246,15 @@ def test_video_status_attaches_download_url_for_successful_media(monkeypatch):
     media = response.json()["media"][0]
     assert response.status_code == 200
     assert response.headers["x-flow-video-urls"] == "1"
+    assert response.headers["x-flow-thumbnail-urls"] == "1"
     assert media["downloadUrl"] == "https://flow-content.google/video/signed"
-    assert media["video"]["generatedVideo"]["fifeUrl"] == media["downloadUrl"]
-    assert resolved == [("account-1", "media/video-1")]
+    assert media["thumbnailUrl"] == "https://flow-content.google/thumbnail/signed"
+    assert "fifeUrl" not in media["video"]["generatedVideo"]
+    assert "thumbnailUrl" not in media["video"]["generatedVideo"]
+    assert resolved == [
+        ("account-1", "media/video-1", False),
+        ("account-1", "media/video-1", True),
+    ]
 
 
 def test_video_status_does_not_resolve_url_before_success(monkeypatch):
@@ -1282,7 +1289,89 @@ def test_video_status_does_not_resolve_url_before_success(monkeypatch):
 
     assert response.status_code == 200
     assert response.headers["x-flow-video-urls"] == "0"
+    assert response.headers["x-flow-thumbnail-urls"] == "0"
     assert "downloadUrl" not in response.json()["media"][0]
+    assert "thumbnailUrl" not in response.json()["media"][0]
+
+
+def test_video_status_keeps_video_when_thumbnail_is_unavailable(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    application.state.runtime.projects.put_operation(
+        "workflow-1", "installation-1", "project-1", "media", "media/video-1",
+    )
+
+    async def fake_api(_connection_id, **_kwargs):
+        return {
+            "status": 200,
+            "data": {"media": [{
+                "name": "media/video-1",
+                "mediaMetadata": {"mediaStatus": {
+                    "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SUCCESSFUL",
+                }},
+                "video": {"generatedVideo": {}},
+            }]},
+        }
+
+    async def fake_resolve(_connection_id, _media_id, *, thumbnail=False):
+        return None if thumbnail else "https://flow-content.google/video/signed"
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(application.state.runtime.bridge, "resolve_media_url", fake_resolve)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/status", headers=headers(),
+            json={"operation_names": ["workflow-1"]},
+        )
+
+    media = response.json()["media"][0]
+    assert response.status_code == 200
+    assert response.headers["x-flow-video-urls"] == "1"
+    assert response.headers["x-flow-thumbnail-urls"] == "0"
+    assert media["downloadUrl"] == "https://flow-content.google/video/signed"
+    assert "thumbnailUrl" not in media
+
+
+def test_video_status_reuses_existing_media_urls_without_resolving(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    application.state.runtime.projects.put_operation(
+        "workflow-1", "installation-1", "project-1", "media", "media/video-1",
+    )
+
+    async def fake_api(_connection_id, **_kwargs):
+        return {
+            "status": 200,
+            "data": {"media": [{
+                "name": "media/video-1",
+                "downloadUrl": "https://flow-content.google/video/existing",
+                "thumbnailUrl": "https://flow-content.google/thumbnail/existing",
+                "mediaMetadata": {"mediaStatus": {
+                    "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SUCCESSFUL",
+                }},
+                "video": {"generatedVideo": {"model": "veo"}},
+            }]},
+        }
+
+    async def unexpected_resolve(*_args, **_kwargs):
+        raise AssertionError("existing signed URLs must not be resolved again")
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(application.state.runtime.bridge, "resolve_media_url", unexpected_resolve)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/status", headers=headers(),
+            json={"operation_names": ["workflow-1"]},
+        )
+
+    media = response.json()["media"][0]
+    assert response.status_code == 200
+    assert response.headers["x-flow-video-urls"] == "1"
+    assert response.headers["x-flow-thumbnail-urls"] == "1"
+    assert media["downloadUrl"].endswith("/video/existing")
+    assert media["thumbnailUrl"].endswith("/thumbnail/existing")
+    assert "fifeUrl" not in media["video"]["generatedVideo"]
+    assert "thumbnailUrl" not in media["video"]["generatedVideo"]
 
 
 def test_video_status_does_not_treat_unsuccessful_as_success(monkeypatch):
@@ -1369,9 +1458,10 @@ def test_video_status_attaches_url_to_media_nested_in_completed_operation(monkey
             }}]},
         }
 
-    async def fake_resolve(_connection_id, media_id, **_kwargs):
+    async def fake_resolve(_connection_id, media_id, *, thumbnail=False):
         assert media_id == "media/video-1"
-        return "https://flow-content.google/video/nested"
+        kind = "thumbnail" if thumbnail else "video"
+        return f"https://flow-content.google/{kind}/nested"
 
     monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
     monkeypatch.setattr(application.state.runtime.bridge, "resolve_media_url", fake_resolve)
@@ -1383,8 +1473,11 @@ def test_video_status_attaches_url_to_media_nested_in_completed_operation(monkey
 
     nested = response.json()["operations"][0]["operation"]["response"]["media"][0]
     assert response.headers["x-flow-video-urls"] == "1"
+    assert response.headers["x-flow-thumbnail-urls"] == "1"
     assert nested["downloadUrl"] == "https://flow-content.google/video/nested"
-    assert nested["video"]["generatedVideo"]["fifeUrl"] == nested["downloadUrl"]
+    assert nested["thumbnailUrl"] == "https://flow-content.google/thumbnail/nested"
+    assert "fifeUrl" not in nested["video"]["generatedVideo"]
+    assert "thumbnailUrl" not in nested["video"]["generatedVideo"]
 
 
 def test_video_status_rejects_unknown_operation_without_scope(monkeypatch):
