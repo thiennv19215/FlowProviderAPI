@@ -4,7 +4,7 @@ import ipaddress
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MAX_BASE64_TOTAL_CHARS = 64 * 1024 * 1024
 
@@ -89,9 +89,16 @@ class ImageToVideoGenerationRequest(BaseModel):
     type: Literal["image_to_video"]
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
-    start_media_id: str = Field(min_length=1, max_length=500)
+    start_media_id: str | None = Field(default=None, min_length=1, max_length=500)
+    input_images: list[InlineImageInput] = Field(default_factory=list, max_length=1)
     aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_LANDSCAPE"
     quality: Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"] = "lite"
+
+    @model_validator(mode="after")
+    def validate_start_image(self):
+        if int(self.start_media_id is not None) + len(self.input_images) != 1:
+            raise ValueError("provide exactly one start_media_id or input_images item")
+        return self
 
 
 class OmniVideoGenerationRequest(BaseModel):
@@ -99,13 +106,23 @@ class OmniVideoGenerationRequest(BaseModel):
     type: Literal["omni"]
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
-    reference_media_ids: list[str] = Field(min_length=1, max_length=8)
+    reference_media_ids: list[str] = Field(default_factory=list, max_length=8)
+    input_images: list[InlineImageInput] = Field(default_factory=list, max_length=8)
     aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_PORTRAIT"
     duration_seconds: Literal[4, 6, 8, 10] = 8
 
     @property
     def duration_model(self) -> str:
         return {4: "abra_r2v_4s", 6: "abra_r2v_6s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}[self.duration_seconds]
+
+    @model_validator(mode="after")
+    def validate_references(self):
+        count = len(self.reference_media_ids) + len(self.input_images)
+        if not 1 <= count <= 8:
+            raise ValueError("reference_media_ids and input_images must contain 1 to 8 images in total")
+        if sum(len(image.image_base64) for image in self.input_images) > MAX_BASE64_TOTAL_CHARS:
+            raise ValueError("input_images may contain at most 64 MiB of Base64 data in total")
+        return self
 
 
 VideoGenerationRequest = Annotated[

@@ -18,6 +18,7 @@ from app.api.schemas import (
     ImageGenerationRequest,
     ImageToVideoGenerationRequest,
     ImageUploadRequest,
+    InlineImageInput,
     OmniVideoGenerationRequest,
     VideoGenerationRequest,
     VideoStatusRequest,
@@ -536,6 +537,72 @@ def _image_digest(image_base64: str) -> str:
     except (binascii.Error, ValueError, TypeError) as exc:
         raise APIError(422, "INVALID_IMAGE_BASE64", "input_images contains invalid Base64 data.") from exc
     return hashlib.sha256(image_bytes).hexdigest()
+
+
+async def _upload_inline_images(
+    runtime,
+    connection,
+    client,
+    project_id: str,
+    images: list[InlineImageInput],
+    *,
+    force_upload: set[str] | None = None,
+) -> tuple[list[str], list[str], int]:
+    """Resolve caller-owned image bytes to provider-owned, project-scoped media IDs."""
+    account_key = _account_key(connection)
+    forced = force_upload or set()
+    media_ids: list[str] = []
+    cached_digests: list[str] = []
+    cache_hits = 0
+    for image in images:
+        digest = _image_digest(image.image_base64)
+        cached = None if digest in forced else runtime.projects.get_media(
+            account_key, project_id, digest,
+        )
+        if cached:
+            media_ids.append(cached.google_media_id)
+            cached_digests.append(digest)
+            cache_hits += 1
+            continue
+        async with runtime.media_lock(account_key, project_id, digest):
+            cached = None if digest in forced else runtime.projects.get_media(
+                account_key, project_id, digest,
+            )
+            if cached:
+                media_ids.append(cached.google_media_id)
+                cached_digests.append(digest)
+                cache_hits += 1
+                continue
+            upload_result = await _api(
+                client,
+                url=UPLOAD_IMAGE_URL,
+                body={
+                    "clientContext": {"projectId": project_id, "tool": "PINHOLE"},
+                    "fileName": image.file_name,
+                    "imageBytes": image.image_base64,
+                    "isHidden": False,
+                    "isUserUploaded": True,
+                    "mimeType": image.mime_type,
+                },
+            )
+            media_id = extract_upload_media_id(upload_result)
+            if not media_id:
+                raise _flow_failure(
+                    upload_result, "IMAGE_UPLOAD_FAILED", "Reference image upload failed."
+                )
+            runtime.projects.put_media(
+                account_key,
+                project_id,
+                digest,
+                media_id,
+                image.mime_type,
+                image.file_name,
+                upload_result.get("data") if isinstance(upload_result.get("data"), dict) else None,
+                upload_result.get("status") if isinstance(upload_result.get("status"), int) else None,
+                upload_result.get("headers") if isinstance(upload_result.get("headers"), dict) else None,
+            )
+        media_ids.append(media_id)
+    return media_ids, cached_digests, cache_hits
 
 
 def _project_items(result: dict) -> list[dict]:
@@ -1223,11 +1290,11 @@ async def generate_video(
         max(20, OMNI_FLASH_CREDIT_COST[payload.duration_seconds])
         if isinstance(payload, OmniVideoGenerationRequest) else 20
     )
-    media_ids = (
-        [payload.start_media_id]
-        if isinstance(payload, ImageToVideoGenerationRequest)
-        else list(payload.reference_media_ids)
-    )
+    inline_images = list(payload.input_images)
+    if isinstance(payload, ImageToVideoGenerationRequest):
+        media_ids = [payload.start_media_id] if payload.start_media_id else []
+    else:
+        media_ids = list(payload.reference_media_ids)
     requested_media_ids = list(media_ids)
     known_media = _known_media(runtime, media_ids)
     auto_transfer = _should_auto_transfer_media(
@@ -1249,8 +1316,13 @@ async def generate_video(
     effective_project_id = payload.project_id or (None if auto_transfer else stored_project_id)
     can_failover = bool(
         not routing_scope
-        and known_media
-        and all(media_id in known_media for media_id in requested_media_ids)
+        and (
+            inline_images
+            or (
+                known_media
+                and all(media_id in known_media for media_id in requested_media_ids)
+            )
+        )
     )
     preferred_account_key = (
         runtime.projects.installation_for_project(payload.project_id)
@@ -1285,6 +1357,9 @@ async def generate_video(
             "Referenced media do not belong to the selected Google Flow account.",
         )
     failover_attempted = False
+    stale_inline_retried = False
+    project_recovered = False
+    force_upload: set[str] = set()
     while True:
         resolved_project_id = effective_project_id or await _managed_project(runtime, connection, client)
         media_ids = await _rehydrate_media_ids(
@@ -1295,6 +1370,23 @@ async def generate_video(
             resolved_project_id,
             known_media,
         )
+        try:
+            inline_media_ids, cached_digests, cache_hits = await _upload_inline_images(
+                runtime,
+                connection,
+                client,
+                resolved_project_id,
+                inline_images,
+                force_upload=force_upload,
+            )
+        except APIError as exc:
+            if effective_project_id is None and exc.status_code == 404 and not project_recovered:
+                runtime.projects.invalidate(_account_key(connection))
+                project_recovered = True
+                force_upload.clear()
+                continue
+            raise
+        media_ids.extend(inline_media_ids)
         tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
         ctx = client_context(resolved_project_id, tier)
         if isinstance(payload, ImageToVideoGenerationRequest):
@@ -1348,11 +1440,27 @@ async def generate_video(
                 effective_project_id = None
                 auto_transfer = True
                 failover_attempted = True
+                force_upload.clear()
+                stale_inline_retried = False
+                project_recovered = False
                 continue
+        if result.get("status") == 404 and cached_digests and not stale_inline_retried:
+            account_key = _account_key(connection)
+            for digest in cached_digests:
+                runtime.projects.invalidate_media(account_key, resolved_project_id, digest)
+            force_upload.update(cached_digests)
+            stale_inline_retried = True
+            continue
+        if result.get("status") == 404 and effective_project_id is None and not project_recovered:
+            runtime.projects.invalidate(_account_key(connection))
+            project_recovered = True
+            force_upload.clear()
+            continue
         _remember_project_on_success(runtime, connection, resolved_project_id, result)
         _remember_operations(runtime, connection, resolved_project_id, result)
         response = _paid_scoped_response(result, runtime.settings, connection)
         response.headers["X-Flow-Project-Id"] = resolved_project_id
+        response.headers["X-Flow-Media-Cache-Hits"] = str(cache_hits)
         return response
 
 

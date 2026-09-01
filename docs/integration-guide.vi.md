@@ -150,34 +150,30 @@ export function buildImageRequest(input: {
 }
 
 export function buildImageToVideoRequest(input: {
-  projectId?: string;
-  mediaId: string;
+  inputImage: { image_base64: string; mime_type: string; file_name: string };
   prompt: string;
   aspect?: Exclude<UiAspect, "1:1">;
   quality?: UiVideoQuality;
 }) {
   return {
     type: "image_to_video" as const,
-    ...(input.projectId ? { project_id: input.projectId } : {}),
     prompt: input.prompt,
-    start_media_id: input.mediaId,
+    input_images: [input.inputImage],
     aspect_ratio: VIDEO_ASPECT[input.aspect ?? "16:9"],
     quality: input.quality ?? "lite"
   };
 }
 
 export function buildOmniRequest(input: {
-  projectId?: string;
-  mediaIds: string[];
+  inputImages: Array<{ image_base64: string; mime_type: string; file_name: string }>;
   prompt: string;
   aspect?: Exclude<UiAspect, "1:1">;
   duration?: 4 | 6 | 8 | 10;
 }) {
   return {
     type: "omni" as const,
-    ...(input.projectId ? { project_id: input.projectId } : {}),
     prompt: input.prompt,
-    reference_media_ids: input.mediaIds,
+    input_images: input.inputImages,
     aspect_ratio: VIDEO_ASPECT[input.aspect ?? "9:16"],
     duration_seconds: input.duration ?? 8
   };
@@ -192,10 +188,10 @@ validate enum trước khi gọi Provider và không tự fallback âm thầm sa
 
 ```text
 Luồng chuẩn (Khuyến nghị - Không cần quản lý project):
-  1. Upload ảnh qua /v1/media (hoặc gửi thẳng Base64 qua input_images khi tạo ảnh).
+  1. Gửi thẳng Base64 qua input_images trong request tạo ảnh/video.
   2. Tạo ảnh qua /v1/images/generations hoặc tạo video qua /v1/videos/generations.
   3. Kiểm tra tiến độ video qua /v1/videos/status.
-  -> Provider tự động điều phối account, khởi tạo project, cache media và gộp kết quả.
+  -> Provider tự động điều phối account, khởi tạo project, upload/cache media và gộp kết quả.
 
 Chế độ tương thích (Tùy chọn):
   Gọi POST /v1/projects để tự tạo project riêng nếu muốn phân nhóm project theo nghiệp vụ.
@@ -503,7 +499,11 @@ POST /v1/videos/generations
 {
   "type": "image_to_video",
   "prompt": "Slow cinematic camera movement around the product",
-  "start_media_id": "b207ef8f-e3ce-44d3-9f2f-043dd0a61275",
+  "input_images": [{
+    "image_base64": "<base64>",
+    "mime_type": "image/jpeg",
+    "file_name": "start.jpg"
+  }],
   "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
   "quality": "lite"
 }
@@ -514,7 +514,8 @@ POST /v1/videos/generations
 | `type` | Có | Luôn là `image_to_video`. |
 | `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project. |
 | `prompt` | Có | 1–12.000 ký tự. |
-| `start_media_id` | Có | Media ID ảnh upload hoặc ảnh vừa sinh. |
+| `start_media_id` | Một trong hai | Media ID tương thích cho client cũ. Không gửi cùng `input_images`. |
+| `input_images` | Một trong hai | Đúng 1 ảnh Base64 để Provider tự upload/deduplicate. Không gửi cùng `start_media_id`. |
 | `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_LANDSCAPE` (mặc định), `VIDEO_ASPECT_RATIO_PORTRAIT`. |
 | `quality` | Không | `lite` (mặc định), `fast`, `quality`, `lite_relaxed`, `fast_relaxed`. Một số mức phụ thuộc gói Flow của tài khoản. |
 
@@ -526,9 +527,11 @@ POST /v1/videos/generations
 {
   "type": "omni",
   "prompt": "Create a vertical cinematic product advertisement",
-  "reference_media_ids": [
-    "b207ef8f-e3ce-44d3-9f2f-043dd0a61275"
-  ],
+  "input_images": [{
+    "image_base64": "<base64>",
+    "mime_type": "image/jpeg",
+    "file_name": "reference.jpg"
+  }],
   "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
   "duration_seconds": 4
 }
@@ -539,7 +542,8 @@ POST /v1/videos/generations
 | `type` | Có | Luôn là `omni`. |
 | `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project. |
 | `prompt` | Có | 1–12.000 ký tự. |
-| `reference_media_ids` | Có | Từ 1 đến 8 media ID. |
+| `reference_media_ids` | Không | Media ID tương thích cho client cũ. |
+| `input_images` | Không | Ảnh Base64 để Provider tự upload/deduplicate. Tổng hai field phải từ 1 đến 8 ảnh. |
 | `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_PORTRAIT` (mặc định), `VIDEO_ASPECT_RATIO_LANDSCAPE`. |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10`. |
 

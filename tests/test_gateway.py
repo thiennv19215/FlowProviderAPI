@@ -855,6 +855,89 @@ def test_video_generation_uses_the_type_to_select_the_fixed_flow_operation(monke
     assert urls[1].endswith("video:batchAsyncGenerateVideoReferenceImages")
 
 
+def test_video_generation_uploads_and_reuses_inline_images(monkeypatch):
+    application = app()
+    connection = connect(application, monkeypatch)
+    connection.credits = 1000
+    calls = []
+
+    async def fake_api(_connection_id, **kwargs):
+        calls.append(kwargs)
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/inline"}}}
+        return {
+            "status": 200,
+            "data": {"operations": [{"operation": {"name": f"operations/{len(calls)}"}}]},
+        }
+
+    async def fake_trpc(_connection_id, **_kwargs):
+        return {
+            "status": 200,
+            "data": {"result": {"data": {"json": {"result": {"projects": [{
+                "projectId": "projects/managed",
+                "projectInfo": {"projectTitle": "FlowProvider"},
+            }]}}}}},
+        }
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    image = {"image_base64": "aGVsbG8=", "mime_type": "image/png"}
+    with TestClient(application) as client:
+        image_to_video = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={"type": "image_to_video", "prompt": "move", "input_images": [image]},
+        )
+        connection.credits = 1000
+        omni = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={"type": "omni", "prompt": "move", "input_images": [image]},
+        )
+
+    assert image_to_video.status_code == omni.status_code == 200, (
+        image_to_video.json(), omni.json()
+    )
+    uploads = [call for call in calls if call["url"].endswith("/v1/flow/uploadImage")]
+    generations = [call for call in calls if not call["url"].endswith("/v1/flow/uploadImage")]
+    assert len(uploads) == 1
+    assert generations[0]["body"]["requests"][0]["startImage"] == {"mediaId": "media/inline"}
+    assert generations[1]["body"]["requests"][0]["referenceImages"] == [
+        {"mediaId": "media/inline", "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"}
+    ]
+    assert image_to_video.headers["x-flow-media-cache-hits"] == "0"
+    assert omni.headers["x-flow-media-cache-hits"] == "1"
+
+
+def test_video_inline_reference_validation():
+    application = app()
+    with TestClient(application) as client:
+        missing_start = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={"type": "image_to_video", "prompt": "move"},
+        )
+        duplicate_start = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "prompt": "move",
+                "start_media_id": "media/1",
+                "input_images": [{"image_base64": "aGVsbG8="}],
+            },
+        )
+        missing_omni_refs = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={"type": "omni", "prompt": "move"},
+        )
+
+    assert missing_start.status_code == 422
+    assert duplicate_start.status_code == 422
+    assert missing_omni_refs.status_code == 422
+
+
 def test_video_status_routes_and_merges_operations_across_accounts(monkeypatch):
     application = app()
     first = SimpleNamespace(
