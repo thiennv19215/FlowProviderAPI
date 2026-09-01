@@ -34,7 +34,22 @@ pip install "git+https://github.com/thiennv19215/FlowProviderAPI.git"
 
 ---
 
-### 2.2. Cấu hình cho Cursor IDE
+### 2.2. Cấu hình cho Codex Desktop/CLI
+
+Project này cung cấp MCP qua `stdio`, không phải Streamable HTTP. Sau khi cài package, chạy:
+
+```powershell
+codex mcp add flow-provider `
+  --env FLOW_PROVIDER_MCP_BASE_URL=https://api.shopcongngheso5.io.vn `
+  --env FLOW_PROVIDER_MCP_ALLOWED_ROOTS=C:\Users\nguye\Documents `
+  -- python -m app.mcp_server
+```
+
+Kiểm tra bằng `codex mcp list`, restart Codex Desktop, rồi dùng `/mcp` trong Codex CLI/TUI. Trong Codex Desktop có thể cấu hình tương đương tại **Settings → MCP servers → Add server**, chọn **STDIO**, command `python`, args `-m` và `app.mcp_server`.
+
+Không truyền `FLOW_PROVIDER_EXTENSION_API_KEY` cho agent. Secret đó chỉ thuộc kết nối riêng giữa FlowProviderAPI và Chrome extension. MCP adapter hiện không có biến `FLOW_PROVIDER_MCP_API_KEY`.
+
+### 2.3. Cấu hình cho Cursor IDE
 Tạo hoặc sửa file `.cursor/mcp.json` trong project của bạn:
 
 ```json
@@ -55,7 +70,7 @@ Tạo hoặc sửa file `.cursor/mcp.json` trong project của bạn:
 
 ---
 
-### 2.3. Cấu hình cho Claude Desktop
+### 2.4. Cấu hình cho Claude Desktop
 Mở file cấu hình Claude Desktop (`%APPDATA%\Claude\claude_desktop_config.json` trên Windows hoặc `~/Library/Application Support/Claude/claude_desktop_config.json` trên macOS):
 
 ```json
@@ -74,7 +89,7 @@ Mở file cấu hình Claude Desktop (`%APPDATA%\Claude\claude_desktop_config.js
 
 ---
 
-### 2.4. Mẫu Prompt thực tế ra lệnh cho Agent
+### 2.5. Mẫu Prompt thực tế ra lệnh cho Agent
 
 Khi MCP đã kết nối, bạn có thể chat tự nhiên với Agent:
 
@@ -99,6 +114,67 @@ BASE_URL = os.getenv("FLOW_PROVIDER_BASE_URL", "https://api.shopcongngheso5.io.v
 headers = {
     "Content-Type": "application/json"
 }
+
+def extract_video_poll_names(body):
+    """Hỗ trợ response dạng operations, workflows và media của Flow."""
+    names = []
+    for item in body.get("operations", []):
+        operation = item.get("operation") or item
+        if isinstance(operation, dict) and operation.get("name"):
+            names.append(operation["name"])
+    names.extend(
+        item["name"] for item in body.get("workflows", [])
+        if isinstance(item, dict) and item.get("name")
+    )
+    if not names:
+        names.extend(
+            item["name"] for item in body.get("media", [])
+            if isinstance(item, dict) and item.get("name")
+        )
+    return list(dict.fromkeys(names))
+
+def extract_first_media_id(body):
+    """Ưu tiên shape media[] hiện tại, giữ fallback images[] để tương thích."""
+    for item in body.get("media", []):
+        media_id = item.get("name") or item.get("image", {}).get("generatedImage", {}).get("mediaId")
+        if media_id:
+            return media_id
+    for item in body.get("images", []):
+        media_id = item.get("media_id") or item.get("name")
+        if media_id:
+            return media_id
+    return None
+
+def find_download_url(value):
+    """Tìm URL hoàn tất mà không phụ thuộc vị trí lồng trong upstream response."""
+    if isinstance(value, dict):
+        for key in ("downloadUrl", "videoUrl", "video_url", "download_url", "fifeUrl", "url"):
+            if isinstance(value.get(key), str):
+                return value[key]
+        for child in value.values():
+            url = find_download_url(child)
+            if url:
+                return url
+    elif isinstance(value, list):
+        for child in value:
+            url = find_download_url(child)
+            if url:
+                return url
+    return None
+
+def find_media_statuses(value):
+    statuses = []
+    if isinstance(value, dict):
+        for key in ("mediaGenerationStatus", "status"):
+            status = value.get(key)
+            if isinstance(status, str) and status.startswith("MEDIA_GENERATION_STATUS_"):
+                statuses.append(status)
+        for child in value.values():
+            statuses.extend(find_media_statuses(child))
+    elif isinstance(value, list):
+        for child in value:
+            statuses.extend(find_media_statuses(child))
+    return statuses
 
 def generate_full_flow():
     # 1. Kiểm tra trạng thái hệ thống
@@ -126,9 +202,10 @@ def generate_full_flow():
     routing_scope = img_resp.headers.get("X-Provider-Routing-Scope")
     project_id = img_resp.headers.get("X-Flow-Project-Id")
     
-    first_image = img_data["images"][0]
-    media_id = first_image.get("media_id") or first_image.get("name")
-    image_url = first_image.get("url")
+    media_id = extract_first_media_id(img_data)
+    if not media_id:
+        raise RuntimeError("Flow không trả về media ID của ảnh")
+    image_url = find_download_url(img_data)
     print(f"Ảnh đã tạo thành công! Media ID: {media_id}")
     print(f"URL ảnh: {image_url}")
 
@@ -152,8 +229,10 @@ def generate_full_flow():
     )
     vid_resp.raise_for_status()
     vid_data = vid_resp.json()
-    operation_name = vid_data["operations"][0]["name"]
-    print(f"Operation Video được khởi tạo: {operation_name}")
+    poll_names = extract_video_poll_names(vid_data)
+    if not poll_names:
+        raise RuntimeError("Flow không trả về operation/workflow/media name để polling")
+    print(f"Video poll identifiers: {poll_names}")
 
     # 4. Polling trạng thái Video
     print("\n--- [Bước 3] Đang polling trạng thái video (mỗi 10s) ---")
@@ -163,18 +242,40 @@ def generate_full_flow():
         status_resp = requests.post(
             f"{BASE_URL}/v1/videos/status",
             headers=vid_headers,
-            json={"operation_names": [operation_name]}
+            json={"operation_names": poll_names}
         )
         status_resp.raise_for_status()
         status_data = status_resp.json()
-        op_info = status_data["operations"][0]
-        
-        print(f"Poll #{attempt+1}: Status={op_info.get('status')}, Done={op_info.get('done')}")
-        
-        if op_info.get("done"):
-            if op_info.get("error"):
-                raise RuntimeError(f"Lỗi tạo video: {op_info['error']}")
-            download_url = op_info.get("video_url") or op_info.get("download_url")
+
+        operations = [item.get("operation") or item for item in status_data.get("operations", [])]
+        operation_error = next((item.get("error") for item in operations if item.get("error")), None)
+        if operation_error:
+            raise RuntimeError(f"Lỗi tạo video: {operation_error}")
+
+        media = status_data.get("media", [])
+        media_error = next((item.get("error") for item in media if item.get("error")), None)
+        if media_error:
+            raise RuntimeError(f"Lỗi tạo video: {media_error}")
+
+        operations_done = bool(operations) and all(item.get("done") is True for item in operations)
+        media_statuses = find_media_statuses(media)
+        failed_statuses = {
+            "MEDIA_GENERATION_STATUS_UNSUCCESSFUL",
+            "MEDIA_GENERATION_STATUS_FAILED",
+            "MEDIA_GENERATION_STATUS_CANCELLED",
+        }
+        if any(status in failed_statuses for status in media_statuses):
+            raise RuntimeError(f"Lỗi tạo video: {media_statuses}")
+        media_done = bool(media_statuses) and all(
+            status == "MEDIA_GENERATION_STATUS_SUCCESSFUL" for status in media_statuses
+        )
+        download_url = find_download_url(status_data)
+        print(f"Poll #{attempt+1}: done={operations_done or media_done}, url={bool(download_url)}")
+
+        if operations_done or media_done:
+            if not download_url:
+                # Signed URL đôi khi được cấp chậm; tiếp tục poll cùng identifier.
+                continue
             break
 
     if not download_url:
@@ -207,6 +308,63 @@ const client = axios.create({
   },
 });
 
+function extractFirstMediaId(body: any): string | undefined {
+  for (const item of body.media ?? []) {
+    const id = item?.name ?? item?.image?.generatedImage?.mediaId;
+    if (typeof id === 'string' && id.length > 0) return id;
+  }
+  for (const item of body.images ?? []) {
+    const id = item?.media_id ?? item?.name;
+    if (typeof id === 'string' && id.length > 0) return id;
+  }
+}
+
+function extractVideoPollNames(body: any): string[] {
+  const names = [
+    ...(body.operations ?? []).map((x: any) => x?.operation?.name ?? x?.name),
+    ...(body.workflows ?? []).map((x: any) => x?.name),
+  ].filter((x): x is string => typeof x === 'string' && x.length > 0);
+
+  if (names.length === 0) {
+    names.push(...(body.media ?? [])
+      .map((x: any) => x?.name)
+      .filter((x: any): x is string => typeof x === 'string' && x.length > 0));
+  }
+  return [...new Set(names)];
+}
+
+function findDownloadUrl(value: any): string | undefined {
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const url = findDownloadUrl(child);
+      if (url) return url;
+    }
+  } else if (value && typeof value === 'object') {
+    for (const key of ['downloadUrl', 'videoUrl', 'video_url', 'download_url']) {
+      if (typeof value[key] === 'string') return value[key];
+    }
+    for (const child of Object.values(value)) {
+      const url = findDownloadUrl(child);
+      if (url) return url;
+    }
+  }
+}
+
+function findMediaStatuses(value: any): string[] {
+  const statuses: string[] = [];
+  if (Array.isArray(value)) {
+    for (const child of value) statuses.push(...findMediaStatuses(child));
+  } else if (value && typeof value === 'object') {
+    for (const key of ['mediaGenerationStatus', 'status']) {
+      if (typeof value[key] === 'string' && value[key].startsWith('MEDIA_GENERATION_STATUS_')) {
+        statuses.push(value[key]);
+      }
+    }
+    for (const child of Object.values(value)) statuses.push(...findMediaStatuses(child));
+  }
+  return statuses;
+}
+
 async function runFlow() {
   // 1. Sinh ảnh
   const imgRes = await client.post('/v1/images/generations', {
@@ -218,7 +376,8 @@ async function runFlow() {
 
   const routingScope = imgRes.headers['x-provider-routing-scope'];
   const projectScope = imgRes.headers['x-flow-project-id'];
-  const mediaId = imgRes.data.images[0].media_id;
+  const mediaId = extractFirstMediaId(imgRes.data);
+  if (!mediaId) throw new Error('Flow không trả về media ID của ảnh');
   console.log(`Media ID: ${mediaId}`);
 
   // 2. Sinh video
@@ -237,18 +396,40 @@ async function runFlow() {
     }
   );
 
-  const operationName = vidRes.data.operations[0].name;
-  console.log(`Video Operation: ${operationName}`);
+  const pollNames = extractVideoPollNames(vidRes.data);
+  if (pollNames.length === 0) {
+    throw new Error('Flow không trả về operation/workflow/media name để polling');
+  }
+  console.log(`Video poll identifiers: ${pollNames.join(', ')}`);
 
   // 3. Poll
   while (true) {
     await new Promise((r) => setTimeout(r, 10000));
-    const statusRes = await client.post('/v1/videos/status', {
-      operation_names: [operationName],
-    });
-    const op = statusRes.data.operations[0];
-    if (op.done) {
-      console.log(`Video sẵn sàng: ${op.video_url}`);
+    const statusRes = await client.post(
+      '/v1/videos/status',
+      { operation_names: pollNames },
+      { headers: routingScope ? { 'X-Provider-Routing-Scope': routingScope } : {} },
+    );
+    const operations = (statusRes.data.operations ?? []).map((x: any) => x?.operation ?? x);
+    const operationError = operations.find((x: any) => x?.error)?.error;
+    const mediaError = (statusRes.data.media ?? []).find((x: any) => x?.error)?.error;
+    if (operationError || mediaError) throw new Error(JSON.stringify(operationError ?? mediaError));
+
+    const operationsDone = operations.length > 0 && operations.every((x: any) => x?.done === true);
+    const mediaStatuses = findMediaStatuses(statusRes.data.media ?? []);
+    const failedStatuses = new Set([
+      'MEDIA_GENERATION_STATUS_UNSUCCESSFUL',
+      'MEDIA_GENERATION_STATUS_FAILED',
+      'MEDIA_GENERATION_STATUS_CANCELLED',
+    ]);
+    if (mediaStatuses.some((status) => failedStatuses.has(status))) {
+      throw new Error(`Video failed: ${mediaStatuses.join(', ')}`);
+    }
+    const mediaDone = mediaStatuses.length > 0
+      && mediaStatuses.every((status) => status === 'MEDIA_GENERATION_STATUS_SUCCESSFUL');
+    const downloadUrl = findDownloadUrl(statusRes.data);
+    if ((operationsDone || mediaDone) && downloadUrl) {
+      console.log(`Video sẵn sàng: ${downloadUrl}`);
       break;
     }
     console.log('Đang xử lý video...');

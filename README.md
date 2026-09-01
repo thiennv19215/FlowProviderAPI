@@ -48,7 +48,7 @@ See [deployment](docs/deployment.md).
 
 Integration documentation: [Vietnamese API integration guide](docs/integration-guide.vi.md).
 
-AI agents can use the included MCP adapter over local `stdio`. See [Vietnamese MCP agent guide](docs/mcp-agent.vi.md) and [Vietnamese practical agent playbook](docs/thuc-chien-ket-noi-agent.vi.md).
+AI agents can use the included MCP adapter over local `stdio`. See [Vietnamese MCP agent guide](docs/mcp-agent.vi.md), [Vietnamese practical agent playbook](docs/thuc-chien-ket-noi-agent.vi.md), and the repository-level [agent instructions](AGENTS.md).
 
 ## Operational endpoints
 
