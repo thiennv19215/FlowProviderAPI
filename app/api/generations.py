@@ -554,13 +554,18 @@ async def _upload_inline_images(
     media_ids: list[str] = []
     cached_digests: list[str] = []
     cache_hits = 0
+    resolved_media_ids: dict[str, str] = {}
     for image in images:
         digest = _image_digest(image.image_base64)
+        if digest in resolved_media_ids:
+            media_ids.append(resolved_media_ids[digest])
+            continue
         cached = None if digest in forced else runtime.projects.get_media(
             account_key, project_id, digest,
         )
         if cached:
             media_ids.append(cached.google_media_id)
+            resolved_media_ids[digest] = cached.google_media_id
             cached_digests.append(digest)
             cache_hits += 1
             continue
@@ -570,6 +575,7 @@ async def _upload_inline_images(
             )
             if cached:
                 media_ids.append(cached.google_media_id)
+                resolved_media_ids[digest] = cached.google_media_id
                 cached_digests.append(digest)
                 cache_hits += 1
                 continue
@@ -601,6 +607,7 @@ async def _upload_inline_images(
                 upload_result.get("status") if isinstance(upload_result.get("status"), int) else None,
                 upload_result.get("headers") if isinstance(upload_result.get("headers"), dict) else None,
             )
+        resolved_media_ids[digest] = media_id
         media_ids.append(media_id)
     return media_ids, cached_digests, cache_hits
 

@@ -909,6 +909,62 @@ def test_video_generation_uploads_and_reuses_inline_images(monkeypatch):
     assert omni.headers["x-flow-media-cache-hits"] == "1"
 
 
+def test_video_stale_cache_retry_uploads_duplicate_inline_image_once(monkeypatch):
+    application = app()
+    connection = connect(application, monkeypatch)
+    connection.credits = 1000
+    image = {"image_base64": "aGVsbG8=", "mime_type": "image/png"}
+    digest = hashlib.sha256(b"hello").hexdigest()
+    application.state.runtime.projects.put_media(
+        "installation-1",
+        "project-1",
+        digest,
+        "media/stale",
+        "image/png",
+        "reference.png",
+    )
+    uploads = []
+    generations = []
+
+    async def fake_api(_connection_id, **kwargs):
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            uploads.append(kwargs)
+            return {"status": 200, "data": {"media": {"name": "media/fresh"}}}
+        generations.append(kwargs)
+        if len(generations) == 1:
+            return {"status": 404, "data": {"error": {"message": "stale media"}}}
+        return {
+            "status": 200,
+            "data": {"workflows": [{"name": "workflow/fresh"}]},
+        }
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "schedule_account_refresh",
+        lambda *_args, **_kwargs: None,
+    )
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "omni",
+                "project_id": "project-1",
+                "prompt": "move",
+                "input_images": [image, image],
+            },
+        )
+
+    assert response.status_code == 200, response.json()
+    assert len(uploads) == 1
+    assert len(generations) == 2
+    assert generations[1]["body"]["requests"][0]["referenceImages"] == [
+        {"mediaId": "media/fresh", "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"},
+        {"mediaId": "media/fresh", "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"},
+    ]
+
+
 def test_video_inline_reference_validation():
     application = app()
     with TestClient(application) as client:
