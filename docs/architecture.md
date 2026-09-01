@@ -32,3 +32,8 @@ The store persists project mappings plus SHA-256-to-Google-media-ID mappings sco
 Completed video polls resolve Flow's cookie-protected media redirect through the owning extension and attach the expiring URL as both `downloadUrl` and `video.generatedVideo.fifeUrl`. Signed URLs are not persisted.
 
 Video generation stores every returned operation name with its account and project. A status request groups operation names by account, polls owning extensions concurrently, and merges the upstream list results in caller order. Unknown operations require an account-bound routing scope rather than being sent to an arbitrary account.
+
+Omni responses may return `workflows[].name` separately from
+`media[].workflowId`. The Provider correlates those fields and stores the
+workflow name with the primary media poll ID, so managed callers can poll by the
+workflow name without preserving a routing scope.

@@ -670,6 +670,14 @@ def _remember_operations(runtime, connection, project_id: str, result: dict) -> 
     if not isinstance(data, dict):
         return
     remembered: set[str] = set()
+    media_by_workflow: dict[str, str] = {}
+    for media in data.get("media") or []:
+        if not isinstance(media, dict):
+            continue
+        media_name = media.get("name")
+        workflow_name = media.get("workflowId") or media.get("workflow_id")
+        if isinstance(media_name, str) and media_name and isinstance(workflow_name, str) and workflow_name:
+            media_by_workflow[workflow_name] = media_name
     for item in data.get("operations") or []:
         if not isinstance(item, dict):
             continue
@@ -683,10 +691,12 @@ def _remember_operations(runtime, connection, project_id: str, result: dict) -> 
             continue
         name = workflow["name"]
         metadata = workflow.get("metadata") if isinstance(workflow.get("metadata"), dict) else {}
-        primary_media_id = metadata.get("primaryMediaId")
+        primary_media_id = metadata.get("primaryMediaId") or media_by_workflow.get(name)
         if isinstance(primary_media_id, str) and primary_media_id:
             runtime.projects.put_operation(name, account_key, project_id, "media", primary_media_id)
-            remembered.add(name)
+        else:
+            runtime.projects.put_operation(name, account_key, project_id, "operation", name)
+        remembered.add(name)
     if remembered:
         return
     for media in data.get("media") or []:

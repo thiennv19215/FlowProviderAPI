@@ -938,6 +938,56 @@ def test_video_inline_reference_validation():
     assert missing_omni_refs.status_code == 422
 
 
+def test_omni_workflow_without_metadata_is_pollable_without_routing_scope(monkeypatch):
+    application = app()
+    connection = connect(application, monkeypatch)
+    connection.credits = 1000
+    calls = []
+
+    async def fake_api(_connection_id, **kwargs):
+        calls.append(kwargs)
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/reference"}}}
+        if kwargs["url"].endswith("video:batchAsyncGenerateVideoReferenceImages"):
+            return {
+                "status": 200,
+                "data": {
+                    "workflows": [{"name": "workflow-1"}],
+                    "media": [{"name": "media-output-1", "workflowId": "workflow-1"}],
+                },
+            }
+        assert kwargs["body"] == {
+            "media": [{"name": "media-output-1", "projectId": "project-1"}]
+        }
+        return {
+            "status": 200,
+            "data": {"media": [{"name": "media-output-1", "done": False}]},
+        }
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        generated = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "omni",
+                "project_id": "project-1",
+                "prompt": "move",
+                "input_images": [{"image_base64": "aGVsbG8="}],
+            },
+        )
+        route = application.state.runtime.projects.get_operation("workflow-1")
+        polled = client.post(
+            "/v1/videos/status",
+            headers=headers(),
+            json={"operation_names": ["workflow-1"]},
+        )
+
+    assert generated.status_code == 200
+    assert route is not None and route.poll_name == "media-output-1"
+    assert polled.status_code == 200, polled.json()
+
+
 def test_video_status_routes_and_merges_operations_across_accounts(monkeypatch):
     application = app()
     first = SimpleNamespace(
