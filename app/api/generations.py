@@ -1566,12 +1566,12 @@ async def check_video_operations(
         if routing_scope else None
     )
 
-    cached_jobs = [runtime.projects.get_job_by_operation(name) for name in payload.operation_names]
-    if all(j is not None and j.status == "completed" and j.result_data for j in cached_jobs):
-        if len(cached_jobs) == 1:
-            return _response({"status": 200, "data": cached_jobs[0].result_data})
+    db_jobs = [runtime.projects.get_job_by_operation(name) for name in payload.operation_names]
+    if all(j is not None and j.status == "completed" and j.result_data for j in db_jobs):
+        if len(db_jobs) == 1:
+            return _response({"status": 200, "data": db_jobs[0].result_data})
         merged: dict = {}
-        for j in cached_jobs:
+        for j in db_jobs:
             for k, v in (j.result_data or {}).items():
                 if isinstance(v, list):
                     merged.setdefault(k, []).extend(v)
@@ -1579,7 +1579,7 @@ async def check_video_operations(
                     merged[k] = v
         return _response({"status": 200, "data": merged})
 
-    failed_jobs = [j for j in cached_jobs if j is not None and j.status == "failed"]
+    failed_jobs = [j for j in db_jobs if j is not None and j.status == "failed"]
     if failed_jobs:
         first_failed = failed_jobs[0]
         return _response({
@@ -1597,8 +1597,8 @@ async def check_video_operations(
             }
         })
 
-    if all(j is not None and j.status in {"queued", "running"} for j in cached_jobs):
-        statuses = [j.status for j in cached_jobs if j is not None]
+    if all(j is not None and j.status in {"queued", "running"} for j in db_jobs):
+        statuses = [j.status for j in db_jobs if j is not None]
         overall = "running" if "running" in statuses else "queued"
         return _response({
             "status": 200,
@@ -1615,11 +1615,11 @@ async def check_video_operations(
                         "done": False,
                         "status": j.status,
                     }
-                    for j in cached_jobs if j is not None
+                    for j in db_jobs if j is not None
                 ],
                 "workflows": [
                     {"name": j.operation_name or j.job_id}
-                    for j in cached_jobs if j is not None
+                    for j in db_jobs if j is not None
                 ],
             }
         })

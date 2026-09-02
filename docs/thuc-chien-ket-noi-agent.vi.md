@@ -19,7 +19,7 @@ Custom AI Agent Code ---> [FlowProviderAPI + Job Queue] ---> [Background Worker]
 ### 1.1. Cơ chế Hàng Đợi (Job Queue) & Dispatcher Worker tự động
 - **Không lo nghẽn 503:** Khi nhiều Agent gọi đồng thời hoặc tài khoản extension đang bận (`slot_capacity = 3`), FlowProviderAPI tự động đẩy request vào hàng đợi SQLite (`provider_jobs`) với trạng thái `queued` và trả về `job_id`.
 - **Background Worker (`JobWorker`):** Chạy ngầm liên tục trên VPS, tự động dò tìm tài khoản có đủ credit (`>= 20-25 credits`) và điều phối tạo video ngay khi có slot trống.
-- **Cache kết quả siêu tốc (1ms):** Khi video render xong, worker tải trước các URL tải video và lưu vào cơ sở dữ liệu. Agent gọi `POST /v1/videos/status` sẽ nhận kết quả tức thì từ database local mà không gây quá tải hoặc treo kết nối tới Chrome Extension.
+- **Đọc trực tiếp từ Database SQLite (1ms):** Khi video render xong, worker tải trước các URL tải video và lưu vào bảng `provider_jobs`. Agent gọi `POST /v1/videos/status` sẽ nhận kết quả tức thì từ database local mà không gây quá tải hoặc chiếm dụng slot của Chrome Extension.
 
 ---
 
