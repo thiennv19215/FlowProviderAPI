@@ -1608,23 +1608,17 @@ async def check_video_operations(
             }
         })
 
-    if all(j is not None and j.status in {"queued", "running"} for j in db_jobs):
-        statuses = [j.status for j in db_jobs if j is not None]
-        overall = "running" if "running" in statuses else "queued"
+    if db_jobs and all(j is not None and j.status == "queued" for j in db_jobs):
         return _response({
             "status": 200,
             "data": {
-                "status": overall,
-                "message": (
-                    "Video is currently rendering on Google Flow."
-                    if overall == "running"
-                    else "Job is queued waiting for an available account slot."
-                ),
+                "status": "queued",
+                "message": "Job is queued waiting for an available account slot.",
                 "operations": [
                     {
                         "name": j.operation_name or j.poll_name or j.job_id,
                         "done": False,
-                        "status": j.status,
+                        "status": "queued",
                     }
                     for j in db_jobs if j is not None
                 ],

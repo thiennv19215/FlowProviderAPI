@@ -257,10 +257,21 @@ class JobWorker:
                 from app.api.generations import _api, _completed_video_media, _attach_video_urls
 
                 client = BoundFlowClient(self.runtime.bridge, conn.id)
-                body: dict[str, Any] = {
-                    "operations": [{"operation": {"name": job.poll_name}}]
-                }
-                # If poll_name is a media ID or UUID format, try media or operations
+                op_route = (
+                    self.runtime.projects.get_operation(job.poll_name)
+                    or self.runtime.projects.get_operation(job.operation_name)
+                )
+                if op_route and op_route.route_kind == "media":
+                    body: dict[str, Any] = {
+                        "media": [{
+                            "name": op_route.poll_name,
+                            "projectId": op_route.google_project_id or job.google_project_id,
+                        }]
+                    }
+                else:
+                    body = {
+                        "operations": [{"operation": {"name": job.poll_name}}]
+                    }
                 poll_result = await _api(client, url=VIDEO_POLL_URL, body=body)
 
                 data = poll_result.get("data") if isinstance(poll_result, dict) else None
