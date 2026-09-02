@@ -593,11 +593,36 @@ class ProjectStore:
 
     def get_job_by_operation(self, operation_name: str) -> ProviderJob | None:
         with self._lock:
+            # 1. Direct match by operation_name, poll_name, or job_id
             row = self._db().execute(
                 "SELECT * FROM provider_jobs WHERE operation_name = ? OR poll_name = ? OR job_id = ?",
                 (operation_name, operation_name, operation_name),
             ).fetchone()
-        return _row_to_job(row) if row is not None else None
+            if row is not None:
+                return _row_to_job(row)
+
+            # 2. Match via provider_operations mapping (e.g. if operation_name is a media ID or workflow alias)
+            op_row = self._db().execute(
+                "SELECT operation_name, poll_name FROM provider_operations WHERE operation_name = ? OR poll_name = ?",
+                (operation_name, operation_name),
+            ).fetchone()
+            if op_row is not None:
+                row = self._db().execute(
+                    "SELECT * FROM provider_jobs WHERE operation_name = ? OR poll_name = ? OR operation_name = ? OR poll_name = ?",
+                    (op_row["operation_name"], op_row["poll_name"], op_row["poll_name"], op_row["operation_name"]),
+                ).fetchone()
+                if row is not None:
+                    return _row_to_job(row)
+
+            # 3. Match completed media ID inside result_json
+            row = self._db().execute(
+                "SELECT * FROM provider_jobs WHERE status = 'completed' AND result_json LIKE ? ORDER BY created_at DESC LIMIT 1",
+                (f"%{operation_name}%",),
+            ).fetchone()
+            if row is not None:
+                return _row_to_job(row)
+
+        return None
 
     def claim_next_queued_job(self) -> ProviderJob | None:
         with self._lock:

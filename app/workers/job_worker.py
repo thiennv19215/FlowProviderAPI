@@ -173,6 +173,9 @@ class JobWorker:
                 operation_name = job.job_id
                 poll_name = job.job_id
 
+            _remember_project_on_success(self.runtime, connection, resolved_project_id, result)
+            _remember_operations(self.runtime, connection, resolved_project_id, result)
+
             self.runtime.projects.update_job_running(
                 job.job_id,
                 operation_name=operation_name,
@@ -239,7 +242,10 @@ class JobWorker:
                 if isinstance(data, dict):
                     completed = _completed_video_media(data)
                     if completed:
+                        from app.api.generations import _remember_operations, _remember_generated_media
                         await _attach_video_urls(client, poll_result)
+                        _remember_operations(self.runtime, conn, job.google_project_id, poll_result)
+                        _remember_generated_media(self.runtime, conn, job.google_project_id, poll_result)
                         self.runtime.projects.update_job_completed(job.job_id, data)
                         logger.info("Job %s completed successfully!", job.job_id)
                         continue
