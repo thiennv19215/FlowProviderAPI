@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     account_rate_limit_cooldown_seconds: int = Field(default=180, ge=10)
     extension_heartbeat_seconds: int = Field(default=60, ge=5, le=120)
     extension_heartbeat_grace_seconds: int = Field(default=15, ge=5, le=120)
+    worker_enabled: bool = True
+    worker_poll_seconds: float = Field(default=3.0, ge=0.5, le=30.0)
+    worker_concurrency: int = Field(default=4, ge=1, le=16)
 
     @model_validator(mode="after")
     def validate_settings(self):

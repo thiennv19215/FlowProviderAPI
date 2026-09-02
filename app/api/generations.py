@@ -1367,19 +1367,52 @@ async def generate_video(
             required_account_key=None if auto_transfer else stored_account_key,
         )
     except APIError as exc:
-        if not can_failover or exc.code not in {
+        recovered = False
+        if can_failover and exc.code in {
             "VIDEO_ACCOUNT_UNAVAILABLE",
             "MEDIA_ACCOUNT_UNAVAILABLE",
             "PROJECT_ACCOUNT_UNAVAILABLE",
         }:
+            try:
+                connection, client = _connection(
+                    request,
+                    min_credits=credit_cost,
+                    excluded_account_keys={preferred_account_key} if preferred_account_key else None,
+                )
+                effective_project_id = None
+                auto_transfer = True
+                recovered = True
+            except APIError:
+                pass
+        if not recovered:
+            if (
+                getattr(runtime.settings, "worker_enabled", True)
+                and payload.project_id is None
+                and exc.code in {
+                    "PROVIDER_ACCOUNT_UNAVAILABLE",
+                    "VIDEO_ACCOUNT_UNAVAILABLE",
+                }
+            ):
+                job_id = f"job_{uuid.uuid4().hex}"
+                runtime.projects.enqueue_job(
+                    job_id=job_id,
+                    job_type=payload.type,
+                    request_payload=payload.model_dump(mode="json"),
+                )
+                queued_resp = _response({
+                    "status": 200,
+                    "data": {
+                        "status": "queued",
+                        "job_id": job_id,
+                        "workflows": [{"name": job_id}],
+                        "message": "All provider accounts are currently busy. Request is queued and will execute automatically.",
+                        "remainingCredits": None,
+                    }
+                })
+                queued_resp.headers["X-Flow-Job-Id"] = job_id
+                queued_resp.headers["X-Flow-Job-Status"] = "queued"
+                return queued_resp
             raise
-        connection, client = _connection(
-            request,
-            min_credits=credit_cost,
-            excluded_account_keys={preferred_account_key} if preferred_account_key else None,
-        )
-        effective_project_id = None
-        auto_transfer = True
     if not auto_transfer and stored_account_key and _account_key(connection) != stored_account_key:
         raise APIError(
             409,
@@ -1488,6 +1521,33 @@ async def generate_video(
             continue
         _remember_project_on_success(runtime, connection, resolved_project_id, result)
         _remember_operations(runtime, connection, resolved_project_id, result)
+
+        job_id = f"job_{uuid.uuid4().hex}"
+        op_name = None
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        for wf in data.get("workflows") or []:
+            if isinstance(wf, dict) and wf.get("name"):
+                op_name = wf["name"]
+                break
+        if not op_name:
+            for op in data.get("operations") or []:
+                inner = op.get("operation") if isinstance(op, dict) and isinstance(op.get("operation"), dict) else op
+                if isinstance(inner, dict) and inner.get("name"):
+                    op_name = inner["name"]
+                    break
+        if op_name:
+            try:
+                runtime.projects.enqueue_job(job_id, payload.type, payload.model_dump(mode="json"))
+                runtime.projects.update_job_running(
+                    job_id,
+                    operation_name=op_name,
+                    installation_id=_account_key(connection),
+                    google_project_id=resolved_project_id,
+                    poll_name=op_name,
+                )
+            except Exception:
+                pass
+
         response = _paid_scoped_response(result, runtime.settings, connection)
         response.headers["X-Flow-Project-Id"] = resolved_project_id
         response.headers["X-Flow-Media-Cache-Hits"] = str(cache_hits)
@@ -1505,6 +1565,30 @@ async def check_video_operations(
         _decode_routing_scope(runtime.settings, routing_scope)
         if routing_scope else None
     )
+
+    cached_jobs = [runtime.projects.get_job_by_operation(name) for name in payload.operation_names]
+    if all(j is not None and j.status == "completed" and j.result_data for j in cached_jobs):
+        if len(cached_jobs) == 1:
+            return _response({"status": 200, "data": cached_jobs[0].result_data})
+        merged: dict = {}
+        for j in cached_jobs:
+            for k, v in (j.result_data or {}).items():
+                if isinstance(v, list):
+                    merged.setdefault(k, []).extend(v)
+                elif k not in merged:
+                    merged[k] = v
+        return _response({"status": 200, "data": merged})
+
+    if all(j is not None and j.status == "queued" for j in cached_jobs):
+        return _response({
+            "status": 200,
+            "data": {
+                "status": "queued",
+                "message": "Job is queued waiting for an available account slot.",
+                "operations": [{"name": j.job_id, "done": False, "status": "queued"} for j in cached_jobs],
+            }
+        })
+
     route_rows = [
         (operation_name, runtime.projects.get_operation(operation_name))
         for operation_name in payload.operation_names
@@ -1616,6 +1700,12 @@ async def check_video_operations(
 
     if len(group_results) == 1:
         connection, result, (video_url_count, thumbnail_url_count) = group_results[0]
+        data = result.get("data")
+        if isinstance(data, dict) and _completed_video_media(data):
+            for op_name in payload.operation_names:
+                existing_job = runtime.projects.get_job_by_operation(op_name)
+                if existing_job and existing_job.status != "completed":
+                    runtime.projects.update_job_completed(existing_job.job_id, data)
         response = _scoped_response(result, runtime.settings, connection)
         response.headers["X-Flow-Video-Urls"] = str(video_url_count)
         response.headers["X-Flow-Thumbnail-Urls"] = str(thumbnail_url_count)

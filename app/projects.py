@@ -36,6 +36,43 @@ class ProviderOperation:
     poll_name: str
 
 
+@dataclass(frozen=True)
+class ProviderJob:
+    job_id: str
+    job_type: str
+    status: str
+    request_payload: dict
+    operation_name: str | None = None
+    installation_id: str | None = None
+    google_project_id: str | None = None
+    poll_name: str | None = None
+    result_data: dict | None = None
+    error_message: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    completed_at: str | None = None
+
+
+def _row_to_job(row: sqlite3.Row) -> ProviderJob:
+    payload = json.loads(row["request_payload_json"]) if row["request_payload_json"] else {}
+    result = json.loads(row["result_json"]) if row["result_json"] else None
+    return ProviderJob(
+        job_id=row["job_id"],
+        job_type=row["job_type"],
+        status=row["status"],
+        request_payload=payload,
+        operation_name=row["operation_name"],
+        installation_id=row["installation_id"],
+        google_project_id=row["google_project_id"],
+        poll_name=row["poll_name"],
+        result_data=result,
+        error_message=row["error_message"],
+        created_at=str(row["created_at"]) if row["created_at"] else None,
+        updated_at=str(row["updated_at"]) if row["updated_at"] else None,
+        completed_at=str(row["completed_at"]) if row["completed_at"] else None,
+    )
+
+
 class ProjectStore:
     """Small durable mapping between a Chrome installation and its Flow project."""
 
@@ -162,6 +199,31 @@ class ProjectStore:
                 )
                 self._connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_operations_last_used ON provider_operations (last_used_at)"
+                )
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS provider_jobs (
+                        job_id TEXT PRIMARY KEY,
+                        job_type TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'queued',
+                        request_payload_json TEXT NOT NULL,
+                        operation_name TEXT,
+                        installation_id TEXT,
+                        google_project_id TEXT,
+                        poll_name TEXT,
+                        result_json TEXT,
+                        error_message TEXT,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        completed_at TEXT
+                    )
+                    """
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_jobs_status ON provider_jobs (status, created_at)"
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_jobs_operation ON provider_jobs (operation_name)"
                 )
                 self._connection.commit()
             return self._connection
@@ -505,6 +567,114 @@ class ProjectStore:
                 (f"-{media_days} days",),
             )
             self._db().commit()
+
+    def enqueue_job(self, job_id: str, job_type: str, request_payload: dict) -> ProviderJob:
+        payload_json = json.dumps(request_payload, ensure_ascii=False)
+        with self._lock:
+            self._db().execute(
+                """
+                INSERT INTO provider_jobs (job_id, job_type, status, request_payload_json)
+                VALUES (?, ?, 'queued', ?)
+                """,
+                (job_id, job_type, payload_json),
+            )
+            self._db().commit()
+        job = self.get_job(job_id)
+        if job is None:
+            raise RuntimeError(f"failed to enqueue job {job_id}")
+        return job
+
+    def get_job(self, job_id: str) -> ProviderJob | None:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT * FROM provider_jobs WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        return _row_to_job(row) if row is not None else None
+
+    def get_job_by_operation(self, operation_name: str) -> ProviderJob | None:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT * FROM provider_jobs WHERE operation_name = ? OR poll_name = ? OR job_id = ?",
+                (operation_name, operation_name, operation_name),
+            ).fetchone()
+        return _row_to_job(row) if row is not None else None
+
+    def claim_next_queued_job(self) -> ProviderJob | None:
+        with self._lock:
+            row = self._db().execute(
+                """
+                SELECT * FROM provider_jobs
+                WHERE status = 'queued'
+                ORDER BY created_at ASC LIMIT 1
+                """
+            ).fetchone()
+            if row is None:
+                return None
+            return _row_to_job(row)
+
+    def update_job_running(
+        self,
+        job_id: str,
+        *,
+        operation_name: str,
+        installation_id: str,
+        google_project_id: str,
+        poll_name: str | None = None,
+    ) -> None:
+        poll_name = poll_name or operation_name
+        with self._lock:
+            self._db().execute(
+                """
+                UPDATE provider_jobs
+                SET status = 'running',
+                    operation_name = ?,
+                    installation_id = ?,
+                    google_project_id = ?,
+                    poll_name = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE job_id = ?
+                """,
+                (operation_name, installation_id, google_project_id, poll_name, job_id),
+            )
+            self._db().commit()
+
+    def update_job_completed(self, job_id: str, result_data: dict) -> None:
+        result_json = json.dumps(result_data, ensure_ascii=False)
+        with self._lock:
+            self._db().execute(
+                """
+                UPDATE provider_jobs
+                SET status = 'completed',
+                    result_json = ?,
+                    updated_at = CURRENT_TIMESTAMP,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE job_id = ?
+                """,
+                (result_json, job_id),
+            )
+            self._db().commit()
+
+    def update_job_failed(self, job_id: str, error_message: str) -> None:
+        with self._lock:
+            self._db().execute(
+                """
+                UPDATE provider_jobs
+                SET status = 'failed',
+                    error_message = ?,
+                    updated_at = CURRENT_TIMESTAMP,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE job_id = ?
+                """,
+                (error_message[:1000], job_id),
+            )
+            self._db().commit()
+
+    def list_running_jobs(self) -> list[ProviderJob]:
+        with self._lock:
+            rows = self._db().execute(
+                "SELECT * FROM provider_jobs WHERE status = 'running' ORDER BY created_at ASC"
+            ).fetchall()
+        return [_row_to_job(r) for r in rows]
 
     def close(self) -> None:
         with self._lock:

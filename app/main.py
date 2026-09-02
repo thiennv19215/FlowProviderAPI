@@ -130,9 +130,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        if runtime.worker:
+            await runtime.worker.start()
         try:
             yield
         finally:
+            if runtime.worker:
+                await runtime.worker.stop()
             await runtime.bridge.close_background_tasks()
             runtime.projects.close()
 

@@ -107,3 +107,48 @@ def test_project_mapping_survives_store_reopen():
             candidate = Path(f"{path}{suffix}")
             if candidate.exists():
                 candidate.unlink()
+
+
+def test_job_lifecycle_in_project_store():
+    path = Path(f".test-run-jobs-{uuid4().hex}.db")
+    try:
+        store = ProjectStore(str(path))
+        job = store.enqueue_job("job-1", "omni", {"prompt": "hello", "duration_seconds": 8})
+        assert job.job_id == "job-1"
+        assert job.status == "queued"
+        assert job.request_payload == {"prompt": "hello", "duration_seconds": 8}
+
+        claimed = store.claim_next_queued_job()
+        assert claimed is not None
+        assert claimed.job_id == "job-1"
+
+        store.update_job_running(
+            "job-1",
+            operation_name="op-1",
+            installation_id="install-1",
+            google_project_id="proj-1",
+            poll_name="poll-1",
+        )
+        running = store.get_job("job-1")
+        assert running is not None
+        assert running.status == "running"
+        assert running.operation_name == "op-1"
+        assert running.poll_name == "poll-1"
+
+        # Search by operation name or poll name
+        assert store.get_job_by_operation("op-1") is not None
+        assert store.get_job_by_operation("poll-1") is not None
+
+        # Complete job
+        store.update_job_completed("job-1", {"downloadUrl": "https://flow-content.google/video/1"})
+        completed = store.get_job("job-1")
+        assert completed is not None
+        assert completed.status == "completed"
+        assert completed.result_data == {"downloadUrl": "https://flow-content.google/video/1"}
+
+        store.close()
+    finally:
+        for suffix in ("", "-wal", "-shm"):
+            candidate = Path(f"{path}{suffix}")
+            if candidate.exists():
+                candidate.unlink()

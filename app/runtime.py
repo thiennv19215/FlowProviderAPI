@@ -8,6 +8,7 @@ from dataclasses import field
 from app.extension.manager import ExtensionManager
 from app.projects import ProjectStore
 from app.providers.google_flow.browser_bridge import FlowBridge
+from app.workers.job_worker import JobWorker
 
 
 @dataclass
@@ -22,6 +23,7 @@ class Runtime:
     media_transfer_slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
     active_jobs: dict[str, int] = field(default_factory=dict)
     reserved_credits: dict[str, int] = field(default_factory=dict)
+    worker: JobWorker | None = None
 
     def connection_load(self, connection) -> int:
         return max(
@@ -105,9 +107,11 @@ def build_runtime(settings) -> Runtime:
     )
     projects = ProjectStore(settings.project_store_path)
     projects.prune()
-    return Runtime(
+    runtime = Runtime(
         settings,
         bridge,
         ExtensionManager(bridge),
         projects,
     )
+    runtime.worker = JobWorker(runtime)
+    return runtime
