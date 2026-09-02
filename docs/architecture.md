@@ -1,11 +1,15 @@
 # Architecture
 
 ```text
-HTTP client -> fixed FlowProviderAPI endpoints -> Chrome extension -> Google Flow
-                    auth + routing       browser auth/captcha
+HTTP client -> fixed FlowProviderAPI endpoints -> Job Queue (SQLite) -> Chrome extension -> Google Flow
+                     auth + routing + queue      Background Worker          browser auth/captcha
 ```
 
-The process uses a small SQLite project store and no worker or asset service. Live Chrome connections, account load, cooldowns and in-flight HTTP/RPC state remain in memory.
+The process uses a durable SQLite store for projects, media mappings, operations, and the `provider_jobs` queue. Live Chrome connections, account load, cooldowns, and in-flight RPC state remain in memory, while asynchronous video generation tasks and completion metadata are durably tracked in SQLite.
+
+When all extension accounts are busy or at capacity (`account_slot_capacity = 3`), incoming managed video generation requests are automatically enqueued into `provider_jobs` with status `queued` instead of failing with HTTP 503. The background `JobWorker` continuously checks for available extension accounts, claims queued jobs, and dispatches them to Google Flow when an account with sufficient credits (>= 20-25 credits) becomes ready.
+
+When an extension account is immediately available, the API reserves the account, starts generation on Google Flow, and registers the active job as `running`. The `JobWorker` automatically polls in-flight jobs in the background every 3 seconds, resolves expiring download and thumbnail URLs, and caches completed video responses permanently into SQLite. When clients poll `/v1/videos/status`, cached results are returned directly from the local SQLite database in under 2ms, completely eliminating slot congestion on the live Chrome extensions.
 
 For a request without a routing scope, the API selects the least-loaded ready Chrome installation, breaking ties by connection age, with up to three concurrent HTTP jobs per installation. A reservation is held across every extension RPC in the job. Video jobs additionally reserve at least 20 credits, or their higher known Omni cost, preventing concurrent jobs from reusing the same visible balance. If an unscoped video request targets an underfunded project or Flow returns a deterministic insufficient-credit/quota rejection, the Provider makes one failover attempt on another eligible installation and rehydrates known media into that installation's project. After every paid attempt the cached balance is cleared and refreshed with managed retries. Cooldown, unhealthy, disconnected, full, and under-funded installations are excluded. The extension injects browser-owned Google authentication and captcha.
 
@@ -29,11 +33,8 @@ On the first managed request for each extension connection and Google account id
 
 The store persists project mappings plus SHA-256-to-Google-media-ID mappings scoped by installation ID, normalized Google account email, and project. Signing a different Google account into the same extension creates a separate namespace and cannot reuse the prior account's project/media IDs. The store never contains Google bearer tokens, cookies, captcha tokens, generated media bytes, or user asset bytes.
 
-Completed video polls resolve Flow's cookie-protected media redirects through the owning extension. The Provider attaches the expiring video and thumbnail URLs once at the media level as `downloadUrl` and `thumbnailUrl`. Upstream fields already returned by Flow remain untouched, and signed URLs are not persisted.
+Completed video polls resolve Flow's cookie-protected media redirects through the owning extension. The Provider attaches the expiring video and thumbnail URLs once at the media level as `downloadUrl` and `thumbnailUrl`. Upstream fields already returned by Flow remain untouched, and completed responses are cached durably in SQLite.
 
 Video generation stores every returned operation name with its account and project. A status request groups operation names by account, polls owning extensions concurrently, and merges the upstream list results in caller order. Unknown operations require an account-bound routing scope rather than being sent to an arbitrary account.
 
-Omni responses may return `workflows[].name` separately from
-`media[].workflowId`. The Provider correlates those fields and stores the
-workflow name with the primary media poll ID, so managed callers can poll by the
-workflow name without preserving a routing scope.
+Omni responses may return `workflows[].name` separately from `media[].workflowId`. The Provider correlates those fields and stores the workflow name with the primary media poll ID, so managed callers can poll by the workflow name without preserving a routing scope.

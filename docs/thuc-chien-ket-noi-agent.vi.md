@@ -13,8 +13,13 @@ Tùy thuộc vào loại Agent của bạn, chọn 1 trong 2 mô hình sau:
 AI Agent (MCP Host) ---> [MCP Server: python -m app.mcp_server] ---> [FlowProviderAPI] ---> [Chrome Extension] ---> [Google Flow]
 
 [Mô hình B: Agent tùy biến bằng Code (LangChain, AutoGen, CrewAI, Fastify, v.v.)]
-Custom AI Agent Code ------------------------(HTTP REST API)-------------------------> [FlowProviderAPI] ---> [Chrome Extension] ---> [Google Flow]
+Custom AI Agent Code ---> [FlowProviderAPI + Job Queue] ---> [Background Worker] ---> [Chrome Extension] ---> [Google Flow]
 ```
+
+### 1.1. Cơ chế Hàng Đợi (Job Queue) & Dispatcher Worker tự động
+- **Không lo nghẽn 503:** Khi nhiều Agent gọi đồng thời hoặc tài khoản extension đang bận (`slot_capacity = 3`), FlowProviderAPI tự động đẩy request vào hàng đợi SQLite (`provider_jobs`) với trạng thái `queued` và trả về `job_id`.
+- **Background Worker (`JobWorker`):** Chạy ngầm liên tục trên VPS, tự động dò tìm tài khoản có đủ credit (`>= 20-25 credits`) và điều phối tạo video ngay khi có slot trống.
+- **Cache kết quả siêu tốc (1ms):** Khi video render xong, worker tải trước các URL tải video và lưu vào cơ sở dữ liệu. Agent gọi `POST /v1/videos/status` sẽ nhận kết quả tức thì từ database local mà không gây quá tải hoặc treo kết nối tới Chrome Extension.
 
 ---
 
