@@ -1535,7 +1535,7 @@ async def generate_video(
                 if isinstance(inner, dict) and inner.get("name"):
                     op_name = inner["name"]
                     break
-        if op_name:
+        if op_name and payload.project_id is None:
             try:
                 runtime.projects.enqueue_job(job_id, payload.type, payload.model_dump(mode="json"))
                 runtime.projects.update_job_running(
@@ -1579,13 +1579,48 @@ async def check_video_operations(
                     merged[k] = v
         return _response({"status": 200, "data": merged})
 
-    if all(j is not None and j.status == "queued" for j in cached_jobs):
+    failed_jobs = [j for j in cached_jobs if j is not None and j.status == "failed"]
+    if failed_jobs:
+        first_failed = failed_jobs[0]
         return _response({
             "status": 200,
             "data": {
-                "status": "queued",
-                "message": "Job is queued waiting for an available account slot.",
-                "operations": [{"name": j.job_id, "done": False, "status": "queued"} for j in cached_jobs],
+                "status": "failed",
+                "error": first_failed.error_message or "Video generation failed.",
+                "operations": [
+                    {
+                        "name": first_failed.operation_name or first_failed.job_id,
+                        "done": True,
+                        "error": first_failed.error_message or "Video generation failed.",
+                    }
+                ],
+            }
+        })
+
+    if all(j is not None and j.status in {"queued", "running"} for j in cached_jobs):
+        statuses = [j.status for j in cached_jobs if j is not None]
+        overall = "running" if "running" in statuses else "queued"
+        return _response({
+            "status": 200,
+            "data": {
+                "status": overall,
+                "message": (
+                    "Video is currently rendering on Google Flow."
+                    if overall == "running"
+                    else "Job is queued waiting for an available account slot."
+                ),
+                "operations": [
+                    {
+                        "name": j.operation_name or j.poll_name or j.job_id,
+                        "done": False,
+                        "status": j.status,
+                    }
+                    for j in cached_jobs if j is not None
+                ],
+                "workflows": [
+                    {"name": j.operation_name or j.job_id}
+                    for j in cached_jobs if j is not None
+                ],
             }
         })
 

@@ -183,10 +183,15 @@ class JobWorker:
                 google_project_id=resolved_project_id,
                 poll_name=poll_name or operation_name,
             )
+            # Also register job_id as operation alias so any lookup resolves
+            self.runtime.projects.put_operation(
+                job.job_id, account_key, resolved_project_id, "media", poll_name or operation_name
+            )
             logger.info("Job %s dispatched successfully, operation=%s", job.job_id, operation_name)
         except Exception as exc:
             logger.exception("Exception while dispatching job %s", job.job_id)
             self.runtime.projects.update_job_failed(job.job_id, str(exc))
+        finally:
             self.runtime.release_connection(connection.id, cost)
 
     async def poll_running_jobs(self) -> None:
@@ -212,6 +217,8 @@ class JobWorker:
                     c
                     for c in self.runtime.bridge.ready_connections()
                     if _account_key(c) == job.installation_id
+                    or c.installation_id == job.installation_id
+                    or str(job.installation_id).startswith(f"{c.installation_id}\n")
                 ),
                 None,
             )
@@ -247,6 +254,7 @@ class JobWorker:
                         _remember_operations(self.runtime, conn, job.google_project_id, poll_result)
                         _remember_generated_media(self.runtime, conn, job.google_project_id, poll_result)
                         self.runtime.projects.update_job_completed(job.job_id, data)
+                        self._last_poll_time.pop(job.job_id, None)
                         logger.info("Job %s completed successfully!", job.job_id)
                         continue
 
