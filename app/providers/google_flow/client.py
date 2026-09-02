@@ -203,7 +203,8 @@ class FlowBridge:
         if msg_type=="simulation_mode_changed" and conn:
             conn.simulation_mode=data.get("simulationMode") is True
             return
-        if msg_type=="pong":return
+        if msg_type in {"pong", "ping"}:
+            return
         req_id=data.get("id")
         if req_id and req_id in self._pending:
             future,cid=self._pending.pop(req_id)

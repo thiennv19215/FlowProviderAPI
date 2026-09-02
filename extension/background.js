@@ -434,6 +434,7 @@ async function handleRpc(msg, signal) {
   }
 }
 
+
 async function connectionState() {
   const config = await getConnectionConfig();
   return { serverUrl: config.serverUrl, connected: socket?.readyState === WebSocket.OPEN, account: accountState, activity: activityState, simulationMode: await getSimulationMode(), version: chrome.runtime.getManifest().version };
@@ -445,11 +446,15 @@ function scheduleReconnect() {
   reconnectAttempt += 1;
   appendActivity("Backend reconnect scheduled", "running", `${delay} ms`);
   reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+  try {
+    chrome.alarms.create("reconnect", { delayInMinutes: Math.max(0.05, delay / 60000) });
+  } catch (_) {}
 }
 
 function disconnect() {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
+  try { chrome.alarms.clear("reconnect"); } catch (_) {}
   const oldSocket = socket;
   socket = null;
   if (oldSocket) { try { oldSocket.close(); } catch (_) {} }
@@ -463,10 +468,14 @@ function disconnect() {
 async function connect() {
   if (socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.readyState)) return;
   try {
+    chrome.alarms.clear("reconnect");
+  } catch (_) {}
+  try {
     const config = await getConnectionConfig();
-    const [installationId, simulationMode, meta] = await Promise.all([
-      getInstallationId(), getSimulationMode(), getProfileMeta(),
-    ]);
+    const installationId = await getOrCreateInstallationId();
+    const profileId = await getOrCreateProfileId();
+    const simulationMode = await getSimulationMode();
+    const meta = await buildClientMeta();
     const connectorApiKey = String(CONFIG.connectorApiKey || "").trim();
     const server = new URL(config.serverUrl);
     server.protocol = server.protocol === "https:" ? "wss:" : "ws:";
@@ -541,6 +550,7 @@ async function connect() {
 
 async function keepAlive() {
   if (socket?.readyState === WebSocket.OPEN) {
+    try { socket.send(JSON.stringify({ type: "ping" })); } catch (_) {}
     if (Date.now() - lastAuthSyncAt >= AUTH_REFRESH_MS) await syncAuth(socket);
     return;
   }
@@ -565,7 +575,35 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   return false;
 });
 
-chrome.runtime.onInstalled.addListener(() => { setupDnr(); connect(); });
-chrome.runtime.onStartup.addListener(() => { setupDnr(); connect(); });
-setupDnr();
-connect();
+let initializationPromise = null;
+
+async function initialize() {
+  await setupDnr();
+  try {
+    chrome.alarms.create("keepAlive", { periodInMinutes: 0.4 });
+  } catch (_) {}
+  await connect();
+}
+
+function ensureInitialized() {
+  if (!initializationPromise) {
+    initializationPromise = initialize().catch((error) => {
+      initializationPromise = null;
+      extensionLog("error", "Initialization failed", error?.message || error);
+    });
+  }
+  return initializationPromise;
+}
+
+chrome.alarms?.onAlarm?.addListener(async (alarm) => {
+  await ensureInitialized();
+  if (alarm.name === "keepAlive") {
+    await keepAlive();
+  } else if (alarm.name === "reconnect") {
+    await connect();
+  }
+});
+
+chrome.runtime.onInstalled.addListener(() => { void ensureInitialized(); });
+chrome.runtime.onStartup.addListener(() => { void ensureInitialized(); });
+void ensureInitialized();

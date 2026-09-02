@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Flow Provider Connector",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "description": "Connects a signed-in Google Flow browser profile to FlowProviderAPI.",
   "background": {
     "service_worker": "background-loader.js"
@@ -12,6 +12,7 @@
   },
   "permissions": [
     "storage",
+    "alarms",
     "tabs",
     "scripting",
     "identity",
