@@ -72,7 +72,7 @@ là `IMAGE_ASPECT_RATIO_PORTRAIT`.
 
 ### 3.2. Mapping image-to-video
 
-Image-to-video không nhận field `model`. Backend gửi `quality`; Provider kết hợp
+Legacy `type: "image_to_video"` không nhận field `model`. Backend gửi `quality`; Provider kết hợp
 `quality + aspect_ratio + paygate tier` của account để chọn Veo model hợp lệ.
 
 | Chế độ backend | `quality` gửi Provider | Ý nghĩa |
@@ -89,7 +89,8 @@ Image-to-video không nhận field `model`. Backend gửi `quality`; Provider k�
 | `9:16`, `portrait` | `VIDEO_ASPECT_RATIO_PORTRAIT` |
 
 Nếu bỏ `quality`, mặc định là `lite`. Nếu bỏ `aspect_ratio`, mặc định là
-`VIDEO_ASPECT_RATIO_LANDSCAPE`.
+`VIDEO_ASPECT_RATIO_LANDSCAPE` cho legacy `image_to_video`; `i2v` và `omni_i2v`
+mặc định là `VIDEO_ASPECT_RATIO_PORTRAIT` và chọn model theo `duration_seconds`.
 
 ### 3.3. Mapping Omni video
 
@@ -489,7 +490,7 @@ Số phần tử `media[]` tương ứng với số biến thể Flow trả về
 
 ## 8. Tạo video từ khung hình (i2v / Image-to-Video)
 
-Sử dụng Gemini Omni Flash (`abra_i2v_*`) để sinh video từ ảnh đầu trong ~12 giây (thay vì Veo 3.1 cũ mất 60-90s). Hỗ trợ cả tùy chọn khung hình cuối (`end_media_id`) để nối cảnh liền mạch.
+`i2v` và `omni_i2v` sử dụng Gemini Omni Flash (`abra_i2v_*`), chọn model theo `duration_seconds` và mặc định khung hình dọc (`9:16`). Legacy `image_to_video` sử dụng Veo, chọn model theo `quality` và mặc định khung hình ngang (`16:9`). Hỗ trợ cả tùy chọn khung hình cuối (`end_media_id`) để nối cảnh liền mạch.
 
 ### Request
 
@@ -510,13 +511,13 @@ POST /v1/videos/generations
 
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
-| `type` | Có | `i2v` (khuyên dùng), `omni_i2v`, hoặc alias cũ `image_to_video`. |
+| `type` | Có | `i2v` (khuyên dùng), `omni_i2v`, hoặc chế độ legacy Veo `image_to_video`. |
 | `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project. |
 | `prompt` | Có | 1–12.000 ký tự mô tả chuyển động. |
 | `start_media_id` | Có | ID ảnh làm khung hình xuất phát (hoặc 1 ảnh trong `input_images`). |
 | `end_media_id` | Không | ID ảnh làm khung hình kết thúc (tùy chọn: dùng để chuyển cảnh First+Last frame mượt mà). |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
-| `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_PORTRAIT` (mặc định), `VIDEO_ASPECT_RATIO_LANDSCAPE`. |
+| `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_PORTRAIT` hoặc `VIDEO_ASPECT_RATIO_LANDSCAPE`. Mặc định: portrait (`9:16`) cho `i2v`/`omni_i2v`; landscape (`16:9`) cho legacy `image_to_video`. |
 
 ## 9. Tạo video từ ảnh tham chiếu (r2v / Reference-to-Video)
 

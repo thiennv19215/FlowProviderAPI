@@ -422,6 +422,8 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
                 "aspect_ratio": VIDEO_ASPECT[aspect_ratio or ("16:9" if type == "image_to_video" else "9:16")],
                 "duration_seconds": duration_seconds,
             }
+            if type == "image_to_video":
+                body["quality"] = quality
             if end_media_id:
                 body["end_media_id"] = end_media_id
         else:

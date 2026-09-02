@@ -38,6 +38,7 @@ class ExtensionConnection:
     connected_at: float=field(default_factory=time.time)
     last_seen_at: float=field(default_factory=time.time)
     flow_key: str|None=None
+    auth_generation: int = 0
     flow_api_key: str|None=None
     user_info: dict|None=None
     account_email: str|None=None
@@ -88,9 +89,16 @@ class FlowBridge:
                     if delay:await asyncio.sleep(delay)
                     conn=self.get(connection_id)
                     if not conn or not conn.flow_key:return
+                    refresh_task=asyncio.current_task()
+                    generation=conn.auth_generation
                     await self.refresh_account(connection_id)
+                    # An account switch may replace this refresh task while
+                    # the old request is still completing. Never let the old
+                    # runner continue or schedule another refresh for it.
+                    if self._refresh_tasks.get(connection_id) is not refresh_task:return
                     conn=self.get(connection_id)
                     if not conn or not conn.flow_key or isinstance(conn.credits,int):return
+                    if conn.auth_generation != generation:return
                     attempt+=1
             finally:
                 if self._refresh_tasks.get(connection_id) is asyncio.current_task():
@@ -259,6 +267,11 @@ class FlowBridge:
             try:await conn.ws.send(json.dumps({"type":"CANCEL_RPC","targetRequestId":req_id}))
             except Exception:pass
             conn.failed_count+=1;conn.last_error="timeout";return {"error":"timeout"}
+        except asyncio.CancelledError:
+            self._pending.pop(req_id,None)
+            try:await conn.ws.send(json.dumps({"type":"CANCEL_RPC","targetRequestId":req_id}))
+            except Exception:pass
+            raise
         except Exception as exc:
             self._pending.pop(req_id,None);conn.failed_count+=1;conn.last_error=str(exc)[:300];return {"error":str(exc)}
 

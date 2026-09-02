@@ -1391,33 +1391,11 @@ async def generate_video(
             except APIError:
                 pass
         if not recovered:
-            if (
-                getattr(runtime.settings, "worker_enabled", True)
-                and payload.project_id is None
-                and exc.code in {
-                    "PROVIDER_ACCOUNT_UNAVAILABLE",
-                    "VIDEO_ACCOUNT_UNAVAILABLE",
-                }
-            ):
-                job_id = f"job_{uuid.uuid4().hex}"
-                runtime.projects.enqueue_job(
-                    job_id=job_id,
-                    job_type=payload.type,
-                    request_payload=payload.model_dump(mode="json"),
-                )
-                queued_resp = _response({
-                    "status": 200,
-                    "data": {
-                        "status": "queued",
-                        "job_id": job_id,
-                        "workflows": [{"name": job_id}],
-                        "message": "All provider accounts are currently busy. Request is queued and will execute automatically.",
-                        "remainingCredits": None,
-                    }
-                })
-                queued_resp.headers["X-Flow-Job-Id"] = job_id
-                queued_resp.headers["X-Flow-Job-Status"] = "queued"
-                return queued_resp
+            # Video requests always carry provider-owned media IDs or inline
+            # image bytes.  Without an owning account/project, persisting the
+            # request for a later worker would either lose the media or risk
+            # submitting it to the wrong account.  Return the retryable
+            # routing error instead of claiming a queued-success response.
             raise
     if not auto_transfer and stored_account_key and _account_key(connection) != stored_account_key:
         raise APIError(
@@ -1459,16 +1437,28 @@ async def generate_video(
         tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
         ctx = client_context(resolved_project_id, tier)
         if isinstance(payload, ImageToVideoGenerationRequest):
-            model = payload.duration_model
+            if payload.type == "image_to_video":
+                model = resolve_video_model(tier, payload.aspect_ratio, payload.quality)
+                if not model:
+                    raise APIError(422, "INVALID_VIDEO_QUALITY", "Unsupported video quality for this account.")
+            else:
+                model = payload.duration_model
+            if payload.start_media_id:
+                start_id = media_ids[0]
+                end_id = media_ids[1] if payload.end_media_id else None
+            else:
+                start_id = inline_media_ids[0]
+                end_id = media_ids[0] if payload.end_media_id else (
+                    inline_media_ids[1] if len(inline_media_ids) > 1 else None
+                )
             req_item = {
                 "aspectRatio": payload.aspect_ratio,
                 "textInput": {"prompt": payload.prompt},
                 "videoModelKey": model,
-                "startImage": {"mediaId": media_ids[0]},
+                "startImage": {"mediaId": start_id},
                 "metadata": {"sceneId": str(uuid.uuid4())},
             }
             target_url = VIDEO_I2V_URL
-            end_id = payload.end_media_id or (media_ids[1] if len(media_ids) > 1 else None)
             if end_id:
                 req_item["endImage"] = {"mediaId": end_id}
                 target_url = VIDEO_I2V_FL_URL

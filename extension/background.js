@@ -16,10 +16,14 @@ const MAX_LOG_DETAIL_CHARS = 240;
 const SENSITIVE_LOG_KEY = /authorization|cookie|token|secret|api.?key|body|base64|image/i;
 
 let socket = null;
+let connectInFlight = null;
+let connectionEpoch = 0;
 let reconnectTimer = null;
 let reconnectAttempt = 0;
 let cachedBearer = null;
 let cachedBearerAt = 0;
+let authGeneration = 0;
+let authFetchSequence = 0;
 let lastAuthSyncAt = 0;
 let accountState = { email: null, credits: null, ready: false };
 let authSyncInFlight = null;
@@ -207,7 +211,9 @@ function allowedFetchUrl(value) {
   } catch (_) { return false; }
 }
 
-async function fetchLabsSession() {
+async function fetchLabsSession({ expectedGeneration = null } = {}) {
+  const requestGeneration = authGeneration;
+  const requestSequence = ++authFetchSequence;
   const resp = await fetch(LABS_SESSION_URL, { credentials: "include" });
   if (!resp.ok) throw new Error(`labs_session_http_${resp.status}`);
   const session = await resp.json();
@@ -216,14 +222,18 @@ async function fetchLabsSession() {
   try { profileEmail = (await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }))?.email || ""; } catch (_) {}
   const sessionEmail = session?.user?.email || "";
   if (profileEmail && sessionEmail && profileEmail.toLowerCase() !== sessionEmail.toLowerCase()) throw new Error("browser_profile_email_mismatch");
+  if (requestSequence !== authFetchSequence || (expectedGeneration != null && (requestGeneration !== authGeneration || expectedGeneration !== authGeneration))) return null;
   cachedBearer = session.access_token;
   cachedBearerAt = Date.now();
   return session;
 }
 
-async function getBearer({ force = false } = {}) {
+async function getBearer({ force = false, expectedGeneration = null } = {}) {
+  if (expectedGeneration != null && expectedGeneration !== authGeneration) throw new Error("auth_changed");
   if (!force && cachedBearer && Date.now() - cachedBearerAt < 120000) return cachedBearer;
-  return (await fetchLabsSession()).access_token;
+  const session = await fetchLabsSession({ expectedGeneration });
+  if (!session) throw new Error("auth_changed");
+  return session.access_token;
 }
 
 async function syncAuth(targetSocket = socket) {
@@ -234,6 +244,7 @@ async function syncAuth(targetSocket = socket) {
   entry.promise = (async () => {
     try {
       const session = await fetchLabsSession();
+      if (!session) return;
       if (targetSocket !== socket || targetSocket.readyState !== WebSocket.OPEN) return;
       lastAuthSyncAt = Date.now();
       targetSocket.send(JSON.stringify({ type: "token_captured", flowKey: session.access_token }));
@@ -452,6 +463,8 @@ function scheduleReconnect() {
 }
 
 function disconnect() {
+  connectionEpoch += 1;
+  connectInFlight = null;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
   try { chrome.alarms.clear("reconnect"); } catch (_) {}
@@ -465,20 +478,24 @@ function disconnect() {
   inflightRpcControllers.clear();
 }
 
-async function connect() {
+async function connectOnce(epoch) {
   if (socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.readyState)) return;
   try {
     chrome.alarms.clear("reconnect");
   } catch (_) {}
   try {
     const config = await getConnectionConfig();
-    const installationId = await getOrCreateInstallationId();
-    const profileId = await getOrCreateProfileId();
-    const simulationMode = await getSimulationMode();
-    const meta = await buildClientMeta();
+    if (epoch !== connectionEpoch) return;
+    const [installationId, simulationMode, meta] = await Promise.all([
+      getInstallationId(), getSimulationMode(), getProfileMeta(),
+    ]);
+    if (epoch !== connectionEpoch) return;
     const connectorApiKey = String(CONFIG.connectorApiKey || "").trim();
     const server = new URL(config.serverUrl);
     server.protocol = server.protocol === "https:" ? "wss:" : "ws:";
+    if (connectorApiKey && server.protocol !== "wss:") {
+      throw new Error("connector_api_key_requires_tls");
+    }
     server.pathname = `${server.pathname.replace(/\/$/, "")}/api/extensions/ws`;
     appendActivity("Backend connecting", "running", `WebSocket · protocol v${PROTOCOL_VERSION}`);
     const ws = new WebSocket(server.toString(), ["flow-provider-v7"]);
@@ -540,11 +557,32 @@ async function connect() {
         }
       } catch (error) { appendActivity("Backend message failed", "error", error?.message || error); }
     };
-    ws.onclose = (event) => { if (ws === socket) { socket = null; accountState.ready = false; appendActivity("Backend disconnected", "error", `code ${event?.code || 0}`); scheduleReconnect(); } };
+    ws.onclose = (event) => {
+      if (ws !== socket) return;
+      for (const controller of inflightRpcControllers.values()) controller.abort();
+      inflightRpcControllers.clear();
+      socket = null;
+      accountState.ready = false;
+      appendActivity("Backend disconnected", "error", `code ${event?.code || 0}`);
+      scheduleReconnect();
+    };
     ws.onerror = () => { extensionLog("warn", "Backend socket error"); };
   } catch (error) {
+    if (epoch !== connectionEpoch) return;
     appendActivity("Backend connection failed", "error", error?.message || error);
     scheduleReconnect();
+  }
+}
+
+async function connect() {
+  if (socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.readyState)) return;
+  if (connectInFlight) return await connectInFlight;
+  const pending = connectOnce(connectionEpoch);
+  connectInFlight = pending;
+  try {
+    return await pending;
+  } finally {
+    if (connectInFlight === pending) connectInFlight = null;
   }
 }
 

@@ -6,6 +6,7 @@ import vm from 'node:vm';
 const loader = fs.readFileSync(new URL('../background-loader.js', import.meta.url), 'utf8');
 const background = fs.readFileSync(new URL('../background.js', import.meta.url), 'utf8');
 const bridge = fs.readFileSync(new URL('../session-bridge.js', import.meta.url), 'utf8');
+const browserTransport = fs.readFileSync(new URL('../browser-transport.js', import.meta.url), 'utf8');
 const offscreen = fs.readFileSync(new URL('../offscreen.js', import.meta.url), 'utf8');
 const configContext = { self: {} };
 vm.runInNewContext(fs.readFileSync(new URL('../config.js', import.meta.url), 'utf8'), configContext);
@@ -53,4 +54,11 @@ test('offscreen owns the extension keepalive timer', () => {
 test('auth synchronization is single-flight for each active socket', () => {
   assert.match(background, /authSyncInFlight\?\.socket === targetSocket/);
   assert.match(background, /if \(authSyncInFlight === entry\) authSyncInFlight = null/);
+  assert.match(browserTransport, /authSyncInFlight\?\.socket === targetSocket/);
+  assert.match(browserTransport, /expectedGeneration: generation/);
+  assert.match(browserTransport, /cachedBearer = session\.access_token/);
+  assert.match(browserTransport, /cachedBearer = null/);
+  assert.match(browserTransport, /authGeneration \+= 1/);
+  assert.match(background, /authFetchSequence/);
+  assert.match(browserTransport, /fetchSequence === authFetchSequence/);
 });

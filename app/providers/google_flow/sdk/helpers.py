@@ -22,7 +22,8 @@ def resolve_image_model(key: str | None) -> str:
 
 def resolve_video_model(tier: str, aspect: str, quality: str | None) -> str | None:
     tier_map = VIDEO_MODEL_KEYS.get(tier) or VIDEO_MODEL_KEYS["PAYGATE_TIER_ONE"]
-    quality_map = tier_map.get((quality or "lite").lower()) or tier_map.get("lite") or {}
+    quality_key = quality.lower() if quality is not None else "lite"
+    quality_map = tier_map.get(quality_key) or {}
     return quality_map.get(aspect)
 
 

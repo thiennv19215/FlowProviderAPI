@@ -102,10 +102,16 @@ class ImageToVideoGenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_start_image(self):
-        if self.start_media_id is not None and self.input_images and self.end_media_id is None:
+        if self.type == "image_to_video" and "aspect_ratio" not in self.model_fields_set:
+            self.aspect_ratio = "VIDEO_ASPECT_RATIO_LANDSCAPE"
+        if self.type != "image_to_video" and self.quality is not None:
+            raise ValueError("quality is only valid for legacy image_to_video")
+        if self.start_media_id is not None and self.input_images:
             raise ValueError("provide exactly one start_media_id or input_images item")
         if not self.start_media_id and not self.input_images:
             raise ValueError("provide exactly one start_media_id or input_images item")
+        if self.end_media_id is not None and len(self.input_images) > 1:
+            raise ValueError("provide at most one inline start image when end_media_id is set")
         return self
 
 

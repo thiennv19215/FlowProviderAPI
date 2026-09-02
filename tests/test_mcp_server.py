@@ -143,6 +143,7 @@ async def test_video_tool_uses_type_specific_default_aspect_ratios():
                 "type": "image_to_video",
                 "prompt": "move slowly",
                 "start_media_id": "media/start",
+                "quality": "fast",
             },
         )
         omni = await client.call_tool(
@@ -157,7 +158,9 @@ async def test_video_tool_uses_type_specific_default_aspect_ratios():
     assert image_to_video.is_error is False
     assert omni.is_error is False
     assert bodies[0]["aspect_ratio"] == "VIDEO_ASPECT_RATIO_LANDSCAPE"
+    assert bodies[0]["quality"] == "fast"
     assert bodies[1]["aspect_ratio"] == "VIDEO_ASPECT_RATIO_PORTRAIT"
+    assert "quality" not in bodies[1]
 
 
 async def test_video_tool_supports_i2v_and_r2v():

@@ -4,11 +4,12 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../background.js', import.meta.url), 'utf8');
+const browserTransportSource = fs.readFileSync(new URL('../browser-transport.js', import.meta.url), 'utf8');
 const configContext = { self: {} };
 vm.runInNewContext(fs.readFileSync(new URL('../config.js', import.meta.url), 'utf8'), configContext);
 const productionConfig = JSON.parse(JSON.stringify(configContext.self.FLOW_PROVIDER_EXTENSION_CONFIG));
 
-function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig = null } = {}) {
+function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig = null, loadBrowserTransport = false } = {}) {
   const sockets = [];
   const fetchSignals = [];
   const consoleEvents = [];
@@ -60,6 +61,7 @@ function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig =
     },
     scripting: { executeScript: async () => [{ result: { ok: true, data: 'token' } }] },
     declarativeNetRequest: { updateDynamicRules: async () => {} },
+    webRequest: { onBeforeRequest: { addListener: () => {} } },
   };
 
   const context = {
@@ -86,6 +88,7 @@ function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig =
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(source, context, { filename: 'background.js' });
+  if (loadBrowserTransport) vm.runInContext(browserTransportSource, context, { filename: 'browser-transport.js' });
   return { context, sockets, fetchSignals, storage, consoleEvents };
 }
 
@@ -124,6 +127,64 @@ test('connector key is sent only inside the TLS websocket hello frame', async ()
   await flush();
   const hello = ws.sent.find((frame) => frame.type === 'extension_ready');
   assert.equal(hello.connectorApiKey, 'connector-secret');
+});
+
+test('connector key fails closed when the provider endpoint is not TLS', async () => {
+  const h = buildHarness({}, {
+    extensionConfig: {
+      ...productionConfig,
+      defaultServerUrl: 'http://provider.example.com',
+      connectorApiKey: 'connector-secret',
+    },
+  });
+  await flush();
+  assert.equal(h.sockets.length, 0);
+  assert.equal(
+    h.consoleEvents.some((event) => JSON.stringify(event).includes('connector-secret')),
+    false,
+  );
+  vm.runInContext('disconnect()', h.context);
+});
+
+test('concurrent connect calls create only one websocket', async () => {
+  const h = buildHarness();
+  await flush();
+  vm.runInContext('disconnect()', h.context);
+
+  await Promise.all([
+    vm.runInContext('connect()', h.context),
+    vm.runInContext('connect()', h.context),
+    vm.runInContext('connect()', h.context),
+  ]);
+
+  assert.equal(h.sockets.length, 2);
+});
+
+test('changing the endpoint invalidates a connection waiting for profile metadata', async () => {
+  const h = buildHarness({ 'flow-provider-server-url-v1': 'https://old.example.com' });
+  await flush();
+  vm.runInContext('disconnect()', h.context);
+  let release;
+  const barrier = new Promise((resolve) => { release = resolve; });
+  let entered;
+  const metadataStarted = new Promise((resolve) => { entered = resolve; });
+  h.context.chrome.identity.getProfileUserInfo = async () => {
+    entered();
+    await barrier;
+    return { email: '' };
+  };
+  const staleAttempt = vm.runInContext('connect()', h.context);
+  await metadataStarted;
+  h.context.chrome.identity.getProfileUserInfo = async () => ({ email: '' });
+  await vm.runInContext('setConnectionConfig("https://new.example.com")', h.context);
+  await vm.runInContext('connect()', h.context);
+  release();
+  await staleAttempt;
+
+  assert.equal(h.sockets.length, 2);
+  assert.equal(h.sockets[1].url, 'wss://new.example.com/api/extensions/ws');
+  assert.equal(vm.runInContext('socket', h.context), h.sockets[1]);
+  vm.runInContext('disconnect()', h.context);
 });
 
 test('legacy /ext/token server setting is sanitized without migrating its token', async () => {
@@ -215,6 +276,28 @@ test('CANCEL_RPC aborts an in-flight SW_FETCH', async () => {
   await rpcPromise;
   assert.equal(h.fetchSignals[0].aborted, true);
   assert.ok(ws.sent.some((frame) => frame.id === 'rpc-1' && typeof frame.error === 'string'));
+});
+
+test('unexpected websocket close aborts every in-flight RPC before reconnecting', async () => {
+  const h = buildHarness();
+  await flush();
+  const ws = h.sockets[0];
+  ws.readyState = h.context.WebSocket.OPEN;
+
+  const rpcPromise = ws.onmessage({ data: JSON.stringify({
+    id: 'rpc-close',
+    type: 'SW_FETCH',
+    spec: { url: 'https://aisandbox-pa.googleapis.com/v1/test', method: 'GET', timeoutMs: 60000 },
+  }) });
+  await flush();
+  assert.equal(h.fetchSignals.length, 1);
+  assert.equal(h.fetchSignals[0].aborted, false);
+
+  ws.close();
+  await rpcPromise;
+  assert.equal(h.fetchSignals[0].aborted, true);
+  assert.equal(vm.runInContext('inflightRpcControllers.size', h.context), 0);
+  vm.runInContext('disconnect()', h.context);
 });
 
 test('legacy unused RPC handlers are removed', () => {
@@ -426,6 +509,71 @@ test('concurrent auth synchronization shares one labs session request', async ()
   finishSessionFetch();
   await Promise.all([first, second]);
   assert.equal(ws.sent.filter((frame) => frame.type === 'token_captured').length, 1);
+});
+
+test('account switch invalidates a delayed session and authorizes later RPCs with token B', async () => {
+  let releaseSessionA;
+  const sessionA = new Promise((resolve) => { releaseSessionA = resolve; });
+  const requests = [];
+  const h = buildHarness({}, {
+    loadBrowserTransport: true,
+    fetchImpl: async (url, options = {}) => {
+      requests.push({ url, options });
+      if (url === 'https://labs.google/fx/api/auth/session') return sessionA;
+      return {
+        ok: true,
+        status: 200,
+        url,
+        headers: new Map([['content-type', 'text/plain']]),
+        text: async () => 'ok',
+      };
+    },
+  });
+  await flush();
+  const ws = h.sockets[0];
+  ws.readyState = h.context.WebSocket.OPEN;
+
+  const syncA = vm.runInContext('syncAuth()', h.context);
+  await flush();
+  assert.equal(requests.filter((request) => request.url === 'https://labs.google/fx/api/auth/session').length, 1);
+
+  vm.runInContext('publishCapturedSession("token-B", "b@example.com")', h.context);
+  const rpcResult = await vm.runInContext('handleRpc({ type: "SW_FETCH", spec: { authMode: "flow", url: "https://aisandbox-pa.googleapis.com/v1/test", method: "GET" } }, new AbortController().signal)', h.context);
+  const providerRequest = requests.find((request) => request.url === 'https://aisandbox-pa.googleapis.com/v1/test');
+  assert.equal(providerRequest.options.headers.authorization, 'Bearer token-B');
+  assert.equal(await vm.runInContext('getBearer()', h.context), 'token-B');
+
+  releaseSessionA({
+    ok: true,
+    json: async () => ({ access_token: 'token-A', user: { email: 'a@example.com' } }),
+  });
+  await syncA;
+  assert.equal(ws.sent.some((frame) => frame.type === 'user_info' && frame.userInfo?.email === 'a@example.com'), false);
+  assert.equal(rpcResult.ok, true);
+});
+
+test('out-of-order session fetches keep the newest bearer cache', async () => {
+  const pending = [];
+  const h = buildHarness({}, {
+    fetchImpl: async (url) => {
+      if (url !== 'https://labs.google/fx/api/auth/session') {
+        return { ok: true, status: 200, url, headers: new Map(), text: async () => 'ok' };
+      }
+      return new Promise((resolve) => pending.push(resolve));
+    },
+  });
+  await flush();
+
+  const first = vm.runInContext('getBearer({ force: true })', h.context);
+  const second = vm.runInContext('getBearer({ force: true })', h.context);
+  await flush();
+  assert.equal(pending.length, 2);
+
+  pending[1]({ ok: true, json: async () => ({ access_token: 'token-B', user: { email: 'b@example.com' } }) });
+  assert.equal(await second, 'token-B');
+  pending[0]({ ok: true, json: async () => ({ access_token: 'token-A', user: { email: 'a@example.com' } }) });
+  await assert.rejects(first, /auth_changed/);
+  assert.equal(await vm.runInContext('getBearer()', h.context), 'token-B');
 });
 
 test('local offscreen keepalive does not duplicate the backend websocket heartbeat', async () => {

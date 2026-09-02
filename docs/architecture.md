@@ -5,9 +5,9 @@ HTTP client -> fixed FlowProviderAPI endpoints -> Job Queue (SQLite) -> Chrome e
                      auth + routing + queue      Background Worker          browser auth/captcha
 ```
 
-The process uses a durable SQLite store for projects, media mappings, operations, and the `provider_jobs` queue. Live Chrome connections, account load, cooldowns, and in-flight RPC state remain in memory, while asynchronous video generation tasks and completion metadata are durably tracked in SQLite.
+The process uses a durable SQLite store for projects, media mappings, operations, and internally queued jobs. Live Chrome connections, account load, cooldowns, and in-flight RPC state remain in memory, while asynchronous video generation tasks and completion metadata are durably tracked in SQLite.
 
-When all extension accounts are busy or at capacity (`account_slot_capacity = 3`), incoming managed video generation requests are automatically enqueued into `provider_jobs` with status `queued` instead of failing with HTTP 503. The background `JobWorker` continuously checks for available extension accounts, claims queued jobs, and dispatches them to Google Flow when an account with sufficient credits (>= 20-25 credits) becomes ready.
+Incoming video generation requests carry account/project-bound media references, so they are not persisted into the worker queue when no safe owning route is available; the API returns a retryable HTTP 503 instead. `provider_jobs` remains available for internally enqueued work. The background `JobWorker` claims such jobs atomically, refreshes credit state after every paid attempt, and dispatches them to Google Flow when an account with sufficient credits (>= 20-25 credits) becomes ready.
 
 When an extension account is immediately available, the API reserves the account, starts generation on Google Flow, and registers the active job as `running`. The `JobWorker` automatically polls in-flight jobs in the background every 3 seconds, resolves expiring download and thumbnail URLs, and persists completed video responses permanently into SQLite. When clients poll `/v1/videos/status`, results are queried directly from the local SQLite database in under 1ms, completely eliminating slot congestion on the live Chrome extensions.
 

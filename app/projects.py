@@ -3,8 +3,15 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
+
+# A dispatch claim is held only during one worker attempt.  This lease is
+# longer than the bridge's maximum paid request timeout, so a live worker is
+# not normally reclaimed; a crashed worker can be retried eventually.
+JOB_CLAIM_LEASE_SECONDS = 15 * 60
 
 
 @dataclass(frozen=True)
@@ -51,6 +58,7 @@ class ProviderJob:
     created_at: str | None = None
     updated_at: str | None = None
     completed_at: str | None = None
+    claim_token: str | None = None
 
 
 def _row_to_job(row: sqlite3.Row) -> ProviderJob:
@@ -70,6 +78,7 @@ def _row_to_job(row: sqlite3.Row) -> ProviderJob:
         created_at=str(row["created_at"]) if row["created_at"] else None,
         updated_at=str(row["updated_at"]) if row["updated_at"] else None,
         completed_at=str(row["completed_at"]) if row["completed_at"] else None,
+        claim_token=row["claim_token"] if "claim_token" in row.keys() else None,
     )
 
 
@@ -207,6 +216,8 @@ class ProjectStore:
                         job_type TEXT NOT NULL,
                         status TEXT NOT NULL DEFAULT 'queued',
                         request_payload_json TEXT NOT NULL,
+                        claimed_at TEXT,
+                        claim_token TEXT,
                         operation_name TEXT,
                         installation_id TEXT,
                         google_project_id TEXT,
@@ -219,6 +230,18 @@ class ProjectStore:
                     )
                     """
                 )
+                job_columns = {
+                    row["name"]
+                    for row in self._connection.execute("PRAGMA table_info(provider_jobs)")
+                }
+                if "claimed_at" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN claimed_at TEXT"
+                    )
+                if "claim_token" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN claim_token TEXT"
+                    )
                 self._connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON provider_jobs (status, created_at)"
                 )
@@ -626,16 +649,65 @@ class ProjectStore:
 
     def claim_next_queued_job(self) -> ProviderJob | None:
         with self._lock:
-            row = self._db().execute(
+            db = self._db()
+            # Claiming must be one SQLite transaction.  The worker performs
+            # network I/O after this method returns, so a plain SELECT would
+            # let two worker processes dispatch the same paid job.
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
                 """
                 SELECT * FROM provider_jobs
                 WHERE status = 'queued'
+                  AND (
+                      claimed_at IS NULL
+                      OR claimed_at < datetime('now', ?)
+                  )
                 ORDER BY created_at ASC LIMIT 1
-                """
+                """,
+                (f"-{JOB_CLAIM_LEASE_SECONDS} seconds",),
             ).fetchone()
             if row is None:
+                db.commit()
                 return None
-            return _row_to_job(row)
+            claim_token = uuid.uuid4().hex
+            updated = db.execute(
+                """
+                UPDATE provider_jobs
+                SET claimed_at = CURRENT_TIMESTAMP,
+                    claim_token = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE job_id = ?
+                  AND status = 'queued'
+                  AND (
+                      claimed_at IS NULL
+                      OR claimed_at < datetime('now', ?)
+                  )
+                """,
+                (claim_token, row["job_id"], f"-{JOB_CLAIM_LEASE_SECONDS} seconds"),
+            ).rowcount
+            if updated != 1:
+                db.rollback()
+                return None
+            db.commit()
+            claimed_row = db.execute(
+                "SELECT * FROM provider_jobs WHERE job_id = ?",
+                (row["job_id"],),
+            ).fetchone()
+            return _row_to_job(claimed_row) if claimed_row is not None else None
+
+    def release_job_claim(self, job_id: str, claim_token: str) -> bool:
+        """Return a claimed queued job to the queue when no account was available."""
+        with self._lock:
+            updated = self._db().execute(
+                """
+                UPDATE provider_jobs
+                SET claimed_at = NULL, claim_token = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND status = 'queued' AND claim_token = ?
+                """,
+                (job_id, claim_token),
+            ).rowcount
+            self._db().commit()
+        return updated == 1
 
     def update_job_running(
         self,
@@ -645,54 +717,85 @@ class ProjectStore:
         installation_id: str,
         google_project_id: str,
         poll_name: str | None = None,
-    ) -> None:
+        claim_token: str | None = None,
+    ) -> bool:
         poll_name = poll_name or operation_name
         with self._lock:
-            self._db().execute(
-                """
+            db = self._db()
+            condition = "job_id = ? AND status = 'queued'"
+            params: list[object] = [operation_name, installation_id, google_project_id, poll_name, job_id]
+            if claim_token is not None:
+                condition += " AND claim_token = ?"
+                params.append(claim_token)
+            updated = db.execute(
+                f"""
                 UPDATE provider_jobs
                 SET status = 'running',
+                    claimed_at = NULL,
                     operation_name = ?,
                     installation_id = ?,
                     google_project_id = ?,
                     poll_name = ?,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE job_id = ?
+                WHERE {condition}
                 """,
-                (operation_name, installation_id, google_project_id, poll_name, job_id),
-            )
-            self._db().commit()
+                params,
+            ).rowcount
+            db.commit()
+        return updated == 1
 
-    def update_job_completed(self, job_id: str, result_data: dict) -> None:
+    def update_job_completed(
+        self, job_id: str, result_data: dict, claim_token: str | None = None,
+    ) -> bool:
         result_json = json.dumps(result_data, ensure_ascii=False)
         with self._lock:
-            self._db().execute(
-                """
+            db = self._db()
+            condition = "job_id = ? AND status = 'running'"
+            params: list[object] = [result_json, job_id]
+            if claim_token is not None:
+                condition += " AND claim_token = ?"
+                params.append(claim_token)
+            updated = db.execute(
+                f"""
                 UPDATE provider_jobs
                 SET status = 'completed',
+                    claimed_at = NULL,
+                    claim_token = NULL,
                     result_json = ?,
                     updated_at = CURRENT_TIMESTAMP,
                     completed_at = CURRENT_TIMESTAMP
-                WHERE job_id = ?
+                WHERE {condition}
                 """,
-                (result_json, job_id),
-            )
-            self._db().commit()
+                params,
+            ).rowcount
+            db.commit()
+        return updated == 1
 
-    def update_job_failed(self, job_id: str, error_message: str) -> None:
+    def update_job_failed(
+        self, job_id: str, error_message: str, claim_token: str | None = None,
+    ) -> bool:
         with self._lock:
-            self._db().execute(
-                """
+            db = self._db()
+            condition = "job_id = ? AND status IN ('queued', 'running')"
+            params: list[object] = [error_message[:1000], job_id]
+            if claim_token is not None:
+                condition += " AND claim_token = ?"
+                params.append(claim_token)
+            updated = db.execute(
+                f"""
                 UPDATE provider_jobs
                 SET status = 'failed',
+                    claimed_at = NULL,
+                    claim_token = NULL,
                     error_message = ?,
                     updated_at = CURRENT_TIMESTAMP,
                     completed_at = CURRENT_TIMESTAMP
-                WHERE job_id = ?
+                WHERE {condition}
                 """,
-                (error_message[:1000], job_id),
-            )
-            self._db().commit()
+                params,
+            ).rowcount
+            db.commit()
+        return updated == 1
 
     def list_running_jobs(self) -> list[ProviderJob]:
         with self._lock:

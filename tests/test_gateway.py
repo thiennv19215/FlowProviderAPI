@@ -855,6 +855,118 @@ def test_video_generation_uses_the_type_to_select_the_fixed_flow_operation(monke
     assert urls[1].endswith("video:batchAsyncGenerateVideoReferenceImages")
 
 
+def test_legacy_image_to_video_quality_selects_the_requested_model(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    requests = []
+
+    async def fake_api(_connection_id, **kwargs):
+        requests.append(kwargs)
+        return {"status": 200, "data": {"operations": [{"operation": {"name": "operations/quality"}}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "project_id": "project-1",
+                "prompt": "move",
+                "start_media_id": "media/1",
+                "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
+                "quality": "fast",
+            },
+        )
+
+    assert response.status_code == 200, response.json()
+    assert requests[0]["body"]["requests"][0]["videoModelKey"] == "veo_3_1_i2v_s_fast_portrait"
+
+
+def test_legacy_image_to_video_defaults_to_landscape(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    requests = []
+
+    async def fake_api(_connection_id, **kwargs):
+        requests.append(kwargs)
+        return {"status": 200, "data": {"operations": [{"operation": {"name": "operations/default"}}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "project_id": "project-1",
+                "prompt": "move",
+                "start_media_id": "media/1",
+            },
+        )
+
+    assert response.status_code == 200, response.json()
+    request_item = requests[0]["body"]["requests"][0]
+    assert request_item["aspectRatio"] == "VIDEO_ASPECT_RATIO_LANDSCAPE"
+    assert request_item["videoModelKey"] == "veo_3_1_i2v_lite"
+
+
+def test_legacy_image_to_video_rejects_quality_unsupported_by_tier(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    requests = []
+
+    async def fake_api(_connection_id, **kwargs):
+        requests.append(kwargs)
+        return {"status": 200, "data": {}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "project_id": "project-1",
+                "prompt": "move",
+                "start_media_id": "media/1",
+                "quality": "lite_relaxed",
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_VIDEO_QUALITY"
+    assert requests == []
+
+
+def test_managed_video_with_references_is_not_queued_without_an_account():
+    application = app()
+    with TestClient(application) as client:
+        media_response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "prompt": "move",
+                "start_media_id": "media/1",
+            },
+        )
+        inline_response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "prompt": "move",
+                "input_images": [{"image_base64": "aGVsbG8="}],
+            },
+        )
+
+    assert media_response.status_code == 503
+    assert inline_response.status_code == 503
+    assert "x-flow-job-id" not in media_response.headers
+    assert "x-flow-job-id" not in inline_response.headers
+
+
 def test_video_generation_uploads_and_reuses_inline_images(monkeypatch):
     application = app()
     connection = connect(application, monkeypatch)
@@ -983,6 +1095,17 @@ def test_video_inline_reference_validation():
                 "input_images": [{"image_base64": "aGVsbG8="}],
             },
         )
+        duplicate_start_with_end = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "prompt": "move",
+                "start_media_id": "media/1",
+                "end_media_id": "media/2",
+                "input_images": [{"image_base64": "aGVsbG8="}],
+            },
+        )
         missing_omni_refs = client.post(
             "/v1/videos/generations",
             headers=headers(),
@@ -991,7 +1114,69 @@ def test_video_inline_reference_validation():
 
     assert missing_start.status_code == 422
     assert duplicate_start.status_code == 422
+    assert duplicate_start_with_end.status_code == 422
     assert missing_omni_refs.status_code == 422
+
+
+def test_video_quality_is_only_valid_for_legacy_image_to_video():
+    application = app()
+    with TestClient(application) as client:
+        i2v = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "i2v",
+                "prompt": "move",
+                "start_media_id": "media/1",
+                "quality": "fast",
+            },
+        )
+        omni_i2v = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "omni_i2v",
+                "prompt": "move",
+                "start_media_id": "media/1",
+                "quality": "fast",
+            },
+        )
+
+    assert i2v.status_code == 422
+    assert omni_i2v.status_code == 422
+
+
+def test_video_inline_start_is_not_swapped_with_end_media(monkeypatch):
+    application = app()
+    connection = connect(application, monkeypatch)
+    connection.credits = 1000
+    generation_bodies = []
+
+    async def fake_api(_connection_id, **kwargs):
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/inline-start"}}}
+        generation_bodies.append(kwargs["body"])
+        return {"status": 200, "data": {"operations": [{"operation": {"name": "operations/inline-end"}}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    image = {"image_base64": "aGVsbG8=", "mime_type": "image/png"}
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "image_to_video",
+                "project_id": "project-1",
+                "prompt": "move",
+                "end_media_id": "media/end",
+                "input_images": [image],
+            },
+        )
+
+    assert response.status_code == 200, response.json()
+    request_item = generation_bodies[0]["requests"][0]
+    assert request_item["startImage"] == {"mediaId": "media/inline-start"}
+    assert request_item["endImage"] == {"mediaId": "media/end"}
 
 
 def test_omni_workflow_without_metadata_is_pollable_without_routing_scope(monkeypatch):
@@ -2482,7 +2667,7 @@ def test_omni_flash_i2v_and_r2v_models_and_endpoints(monkeypatch):
         assert captured_requests[-1]["body"]["requests"][0]["videoModelKey"] == "abra_r2v_4s"
 
 
-def test_job_worker_process_queued_job_success(monkeypatch):
+def test_job_worker_rejects_legacy_queued_media_job_without_dispatch(monkeypatch):
     from app.workers.job_worker import JobWorker
 
     application = app()
@@ -2503,13 +2688,11 @@ def test_job_worker_process_queued_job_success(monkeypatch):
         },
     )
 
+    calls = []
+
     async def fake_api(_conn_id, **kwargs):
-        return {
-            "status": 200,
-            "data": {
-                "operations": [{"name": "operations/worker-op-1"}],
-            },
-        }
+        calls.append(kwargs)
+        return {"status": 200, "data": {}}
 
     monkeypatch.setattr(runtime.bridge, "api_request", fake_api)
 
@@ -2519,5 +2702,109 @@ def test_job_worker_process_queued_job_success(monkeypatch):
 
     stored_job = runtime.projects.get_job("job_test_worker_1")
     assert stored_job is not None
-    assert stored_job.status == "running"
-    assert stored_job.operation_name == "operations/worker-op-1"
+    assert stored_job.status == "failed"
+    assert "cannot be dispatched safely" in stored_job.error_message
+    assert calls == []
+
+
+def test_job_worker_cost_and_omni_alias_classification():
+    from app.workers.job_worker import _is_omni_job_type, _job_aspect_ratio, _job_credit_cost
+
+    assert _job_credit_cost("image_to_video", 8) == 20
+    assert _job_credit_cost("omni_r2v", 8) == 25
+    assert _is_omni_job_type("omni_r2v") is True
+    assert _job_aspect_ratio("image_to_video", {}) == "VIDEO_ASPECT_RATIO_LANDSCAPE"
+    assert _job_aspect_ratio("i2v", {}) == "VIDEO_ASPECT_RATIO_PORTRAIT"
+    assert _job_aspect_ratio("image_to_video", {"aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT"}) == "VIDEO_ASPECT_RATIO_PORTRAIT"
+
+
+def test_job_worker_refreshes_credits_after_paid_dispatch(monkeypatch):
+    from app.workers.job_worker import JobWorker
+
+    application = app()
+    connection = connect(application, monkeypatch)
+    connection.credits = 100
+    runtime = application.state.runtime
+    runtime.projects.put("installation-1", "project-1", "FlowProvider")
+    runtime.mark_project_synced(connection, "installation-1")
+    runtime.projects.enqueue_job(
+        job_id="job_worker_refresh",
+        job_type="omni",
+        request_payload={"type": "omni", "prompt": "refresh credits"},
+    )
+    refreshes = []
+    monkeypatch.setattr(
+        runtime.bridge,
+        "schedule_account_refresh",
+        lambda connection_id, **kwargs: refreshes.append((connection_id, kwargs)),
+    )
+
+    async def fake_api(_connection_id, **kwargs):
+        return {"status": 200, "data": {"operations": [{"name": "operations/refresh"}]}}
+
+    monkeypatch.setattr(runtime.bridge, "api_request", fake_api)
+    asyncio.run(JobWorker(runtime).process_queued_jobs())
+
+    assert connection.credits is None
+    assert refreshes == [(connection.id, {"initial_delay": 2})]
+    assert runtime.active_jobs == {}
+
+
+def test_job_worker_fails_paid_job_without_poll_identifier(monkeypatch):
+    from app.workers.job_worker import JobWorker
+
+    application = app()
+    connection = connect(application, monkeypatch)
+    connection.credits = 100
+    runtime = application.state.runtime
+    runtime.projects.put("installation-1", "project-1", "FlowProvider")
+    runtime.mark_project_synced(connection, "installation-1")
+    runtime.projects.enqueue_job(
+        job_id="job_worker_missing_poll",
+        job_type="omni",
+        request_payload={"type": "omni", "prompt": "missing poll"},
+    )
+    monkeypatch.setattr(runtime.bridge, "schedule_account_refresh", lambda *_args, **_kwargs: None)
+
+    async def fake_api(_connection_id, **kwargs):
+        return {"status": 200, "data": {}}
+
+    monkeypatch.setattr(runtime.bridge, "api_request", fake_api)
+    asyncio.run(JobWorker(runtime).process_queued_jobs())
+
+    stored_job = runtime.projects.get_job("job_worker_missing_poll")
+    assert stored_job is not None
+    assert stored_job.status == "failed"
+    assert stored_job.operation_name is None
+    assert "no poll identifier" in stored_job.error_message
+    assert runtime.active_jobs == {}
+
+
+def test_job_worker_unsupported_quality_releases_once(monkeypatch):
+    from app.workers.job_worker import JobWorker
+
+    application = app()
+    connection = connect(application, monkeypatch)
+    runtime = application.state.runtime
+    runtime.projects.put("installation-1", "project-1", "FlowProvider")
+    runtime.mark_project_synced(connection, "installation-1")
+    runtime.projects.enqueue_job(
+        job_id="job_worker_bad_quality",
+        job_type="image_to_video",
+        request_payload={
+            "type": "image_to_video",
+            "prompt": "bad quality",
+            "quality": "lite_relaxed",
+        },
+    )
+
+    async def fail_if_called(_connection_id, **kwargs):
+        raise AssertionError(f"paid dispatch should not run: {kwargs}")
+
+    monkeypatch.setattr(runtime.bridge, "api_request", fail_if_called)
+    asyncio.run(JobWorker(runtime).process_queued_jobs())
+
+    stored_job = runtime.projects.get_job("job_worker_bad_quality")
+    assert stored_job is not None
+    assert stored_job.status == "failed"
+    assert runtime.active_jobs == {}

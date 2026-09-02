@@ -18,7 +18,7 @@ def test_backend_never_receives_google_bearer():
 
 def test_extension_injects_authorization_inside_browser():
     source = (ROOT / "extension/browser-transport.js").read_text(encoding="utf-8")
-    assert "const token = await getBearer();" in source
+    assert "const token = await getBearer({ expectedGeneration: generation });" in source
     assert "authorization: `Bearer ${token}`" in source
     assert 'type: "auth_available"' in source
     assert 'type: "token_captured"' not in source

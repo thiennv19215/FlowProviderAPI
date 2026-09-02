@@ -1,3 +1,4 @@
+import asyncio
 import httpx
 import app.providers.google_flow.client as flow_client_module
 
@@ -38,6 +39,57 @@ async def test_auth_available_clears_previous_google_account_state(monkeypatch):
     assert connection.paygate_tier is None
     assert connection.credits is None
     assert not connection.ready
+    await bridge.close_background_tasks()
+
+
+async def test_account_refresh_ignores_delayed_previous_account_after_switch(monkeypatch):
+    bridge = FlowBridge(flow_api_key="test-key")
+    socket = FakeSocket()
+    connection = bridge.register(socket, {"installationId": "install-switch", "profileId": "profile"})
+    connection.flow_key = "browser_owned"
+    connection.account_email = "old@example.com"
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    calls = 0
+
+    async def fake_rpc(_connection_id, _rpc_type, _params, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_started.set()
+            try:
+                await release_first.wait()
+            except asyncio.CancelledError:
+                # Simulate a response that was already accepted by Flow when
+                # the account switch arrived.
+                await release_first.wait()
+            return {"data": {"ok": True, "status": 200, "data": {
+                "userPaygateTier": "PAYGATE_TIER_ONE", "credits": 111, "sku": "old",
+            }}}
+        return {"data": {"ok": True, "status": 200, "data": {
+            "userPaygateTier": "PAYGATE_TIER_ONE", "credits": 222, "sku": "new",
+        }}}
+
+    monkeypatch.setattr(bridge, "send_rpc", fake_rpc)
+    bridge.schedule_account_refresh(connection.id)
+    await first_started.wait()
+
+    switched = asyncio.create_task(bridge.handle_message({"type": "auth_available"}, socket))
+    await asyncio.sleep(0)
+    release_first.set()
+    await switched
+    await bridge.handle_message({"type": "user_info", "userInfo": {"email": "new@example.com"}}, socket)
+
+    for _ in range(20):
+        if calls >= 2 and connection.credits == 222:
+            break
+        await asyncio.sleep(0)
+
+    assert calls == 2
+    assert connection.account_email == "new@example.com"
+    assert connection.credits == 222
+    assert connection.sku == "new"
+    assert connection.auth_generation == 1
     await bridge.close_background_tasks()
 
 

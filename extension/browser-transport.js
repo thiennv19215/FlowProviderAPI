@@ -66,7 +66,9 @@ async function withBrowserOwnedFlowAuth(spec) {
   const next = { ...(spec || {}) };
   if (next.authMode !== FLOW_AUTH_MODE) return next;
   delete next.authMode;
-  const token = await getBearer();
+  const generation = authGeneration;
+  const token = await getBearer({ expectedGeneration: generation });
+  if (generation !== authGeneration) throw new Error("auth_changed");
   next.headers = { ...(next.headers || {}), authorization: `Bearer ${token}` };
   return next;
 }
@@ -81,35 +83,60 @@ handleRpc = async function browserOwnedHandleRpc(msg, signal) {
 
 syncAuth = async function browserOwnedSyncAuth(targetSocket = socket) {
   if (!targetSocket || targetSocket.readyState !== WebSocket.OPEN || targetSocket !== socket) return;
+  if (authSyncInFlight?.socket === targetSocket) return authSyncInFlight.promise;
+  const generation = authGeneration;
+  const entry = { socket: targetSocket, promise: null };
+  entry.promise = (async () => {
+    let fetchSequence = authFetchSequence + 1;
+    try {
+      const session = await fetchLabsSession({ expectedGeneration: generation });
+      fetchSequence = authFetchSequence;
+      if (!session || generation !== authGeneration || fetchSequence !== authFetchSequence || targetSocket !== socket || targetSocket.readyState !== WebSocket.OPEN) return;
+      // fetchLabsSession may be supplied by a browser integration shim. Keep
+      // the cache update here as part of the same generation check so an old
+      // session can never become the bearer used by the active account.
+      cachedBearer = session.access_token;
+      cachedBearerAt = Date.now();
+      lastAuthSyncAt = Date.now();
+      targetSocket.send(JSON.stringify({ type: "auth_available" }));
+      const apiKey = capturedFlowApiKey || await discoverFlowApiKeyFromOpenTabs();
+      if (generation !== authGeneration || fetchSequence !== authFetchSequence || targetSocket !== socket || targetSocket.readyState !== WebSocket.OPEN) return;
+      if (apiKey) publishFlowApiKey(apiKey, targetSocket, true);
+      if (session.user) {
+        accountState.email = session.user.email || null;
+        targetSocket.send(JSON.stringify({
+          type: "user_info",
+          userInfo: {
+            email: session.user.email || "",
+            name: session.user.name || "",
+            picture: session.user.image || "",
+            verified_email: true,
+          },
+        }));
+      }
+    } catch (error) {
+      if (targetSocket === socket && targetSocket.readyState === WebSocket.OPEN && generation === authGeneration && fetchSequence === authFetchSequence) {
+        cachedBearer = null;
+        cachedBearerAt = 0;
+        targetSocket.send(JSON.stringify({ type: "auth_sync_status", status: "needs_labs_sign_in", reason: error?.message || String(error) }));
+      }
+    }
+  })();
+  authSyncInFlight = entry;
   try {
-    const session = await fetchLabsSession();
-    if (targetSocket !== socket || targetSocket.readyState !== WebSocket.OPEN) return;
-    lastAuthSyncAt = Date.now();
-    targetSocket.send(JSON.stringify({ type: "auth_available" }));
-    const apiKey = capturedFlowApiKey || await discoverFlowApiKeyFromOpenTabs();
-    if (apiKey) publishFlowApiKey(apiKey, targetSocket, true);
-    if (session.user) {
-      accountState.email = session.user.email || null;
-      targetSocket.send(JSON.stringify({
-        type: "user_info",
-        userInfo: {
-          email: session.user.email || "",
-          name: session.user.name || "",
-          picture: session.user.image || "",
-          verified_email: true,
-        },
-      }));
-    }
-  } catch (error) {
-    if (targetSocket === socket && targetSocket.readyState === WebSocket.OPEN) {
-      targetSocket.send(JSON.stringify({ type: "auth_sync_status", status: "needs_labs_sign_in", reason: error?.message || String(error) }));
-    }
+    return await entry.promise;
+  } finally {
+    if (authSyncInFlight === entry) authSyncInFlight = null;
   }
 };
 
 publishCapturedSession = function browserOwnedPublishCapturedSession(token, email = "") {
   const normalizedToken = typeof token === "string" ? token.trim() : "";
   if (!normalizedToken) return false;
+  authGeneration += 1;
+  authFetchSequence += 1;
+  cachedBearer = null;
+  cachedBearerAt = 0;
   cachedBearer = normalizedToken;
   cachedBearerAt = Date.now();
   if (email) accountState.email = String(email);

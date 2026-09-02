@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 from typing import Any
@@ -15,6 +16,13 @@ from app.providers.google_flow.client import (
 class FlowBridge(BaseFlowBridge):
     """Backend orchestration bridge with browser-owned Flow authentication."""
 
+    async def _restart_account_refresh(self, connection_id: str) -> None:
+        current = self._refresh_tasks.pop(connection_id, None)
+        if current and not current.done():
+            current.cancel()
+            await asyncio.gather(current, return_exceptions=True)
+        self.schedule_account_refresh(connection_id)
+
     async def handle_message(self, data: dict, ws: Any) -> None:
         conn_id = self._ws_to_id.get(id(ws))
         conn = self._connections.get(conn_id) if conn_id else None
@@ -24,12 +32,14 @@ class FlowBridge(BaseFlowBridge):
             # A Chrome profile can switch Google accounts without reconnecting
             # the websocket. Never expose the previous identity/balance during
             # the auth_available -> user_info/credits synchronization window.
+            conn.auth_generation += 1
             conn.account_email = None
             conn.paygate_tier = None
             conn.credits = None
+            conn.sku = None
             conn.flow_key = "browser_owned"
             await self._send_auth_ack(conn)
-            self.schedule_account_refresh(conn.id)
+            await self._restart_account_refresh(conn.id)
             return
         await super().handle_message(data, ws)
 
@@ -37,6 +47,7 @@ class FlowBridge(BaseFlowBridge):
         conn = self.get(connection_id)
         if not conn or not conn.flow_key:
             return
+        generation = conn.auth_generation
         conn.credits = None
         api_key = conn.flow_api_key or self.flow_api_key
         if not api_key:
@@ -55,6 +66,9 @@ class FlowBridge(BaseFlowBridge):
             "timeoutMs": 30000,
         }
         response = await self.send_rpc(connection_id, "SW_FETCH", {"spec": spec}, timeout=35)
+        conn = self.get(connection_id)
+        if not conn or conn.auth_generation != generation:
+            return
         if response.get("error"):
             conn.last_error = str(response["error"])[:300]
             await self._send_auth_ack(conn)

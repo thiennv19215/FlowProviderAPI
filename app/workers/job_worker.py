@@ -15,8 +15,24 @@ from app.providers.google_flow.sdk.constants import (
     VIDEO_OMNI_URL,
     VIDEO_POLL_URL,
 )
+from app.providers.google_flow.sdk.helpers import resolve_video_model
 
 logger = logging.getLogger(__name__)
+
+
+def _job_credit_cost(job_type: str, duration_seconds: int) -> int:
+    if job_type == "image_to_video":
+        return 20
+    return max(15, OMNI_FLASH_CREDIT_COST.get(duration_seconds, 20))
+
+
+def _is_omni_job_type(job_type: str) -> bool:
+    return job_type in {"omni", "r2v", "omni_r2v"}
+
+
+def _job_aspect_ratio(job_type: str, payload: dict) -> str:
+    default = "VIDEO_ASPECT_RATIO_LANDSCAPE" if job_type == "image_to_video" else "VIDEO_ASPECT_RATIO_PORTRAIT"
+    return payload.get("aspect_ratio", default)
 
 
 def _account_key(connection: Any) -> str:
@@ -71,9 +87,28 @@ class JobWorker:
         job = self.runtime.projects.claim_next_queued_job()
         if not job or job.status != "queued":
             return
+        claim_token = job.claim_token
+        if not claim_token:
+            logger.error("Queued job %s was claimed without an ownership token", job.job_id)
+            return
+
+        payload = job.request_payload
+        has_media_references = bool(
+            payload.get("start_media_id")
+            or payload.get("end_media_id")
+            or payload.get("reference_media_ids")
+            or payload.get("input_images")
+        )
+        if has_media_references:
+            self.runtime.projects.update_job_failed(
+                job.job_id,
+                "Queued video requests with media references cannot be dispatched safely; retry the request when its owning account is available.",
+                claim_token,
+            )
+            return
 
         duration = job.request_payload.get("duration_seconds", 8)
-        cost = max(15, OMNI_FLASH_CREDIT_COST.get(duration, 25))
+        cost = _job_credit_cost(job.job_type, duration)
 
         available = [
             conn
@@ -83,15 +118,18 @@ class JobWorker:
         ]
         if not available:
             # All accounts are currently busy or lacking credits; leave in queue
+            self.runtime.projects.release_job_claim(job.job_id, claim_token)
             return
 
         connection = self.runtime.select_connection(available)
         if not self.runtime.reserve_connection(connection, cost):
+            self.runtime.projects.release_job_claim(job.job_id, claim_token)
             return
 
         client = BoundFlowClient(self.runtime.bridge, connection.id)
         account_key = _account_key(connection)
 
+        paid_attempted = False
         try:
             from app.api.generations import (
                 _managed_project,
@@ -103,11 +141,10 @@ class JobWorker:
             from app.providers.google_flow.sdk.helpers import client_context
 
             resolved_project_id = await _managed_project(self.runtime, connection, client)
-            payload = job.request_payload
             tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
             ctx = client_context(resolved_project_id, tier)
 
-            if job.job_type in {"omni", "r2v"}:
+            if _is_omni_job_type(job.job_type):
                 duration_seconds = payload.get("duration_seconds", 8)
                 model_key = {4: "abra_r2v_4s", 6: "abra_r2v_6s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}.get(
                     duration_seconds, "abra_r2v_8s"
@@ -120,7 +157,7 @@ class JobWorker:
                     },
                     "clientContext": ctx,
                     "requests": [{
-                        "aspectRatio": payload.get("aspect_ratio", "VIDEO_ASPECT_RATIO_PORTRAIT"),
+                        "aspectRatio": _job_aspect_ratio(job.job_type, payload),
                         "textInput": {"prompt": payload.get("prompt", "")},
                         "videoModelKey": model_key,
                         "metadata": {},
@@ -131,14 +168,27 @@ class JobWorker:
                     }],
                     "useV2ModelConfig": True,
                 }
+                paid_attempted = True
                 result = await _api(client, url=VIDEO_OMNI_URL, body=body, captcha_action=CAPTCHA_VIDEO)
             else:
                 duration_seconds = payload.get("duration_seconds", 8)
-                model_key = {4: "abra_i2v_4s", 6: "abra_i2v_6s", 8: "abra_i2v_8s", 10: "abra_i2v_10s"}.get(
-                    duration_seconds, "abra_i2v_8s"
-                )
+                if job.job_type == "image_to_video":
+                    model_key = resolve_video_model(
+                        connection.paygate_tier or "PAYGATE_TIER_ONE",
+                        _job_aspect_ratio(job.job_type, payload),
+                        payload.get("quality"),
+                    )
+                    if not model_key:
+                        self.runtime.projects.update_job_failed(
+                            job.job_id, "Unsupported video quality for this account", claim_token,
+                        )
+                        return
+                else:
+                    model_key = {4: "abra_i2v_4s", 6: "abra_i2v_6s", 8: "abra_i2v_8s", 10: "abra_i2v_10s"}.get(
+                        duration_seconds, "abra_i2v_8s"
+                    )
                 req_item = {
-                    "aspectRatio": payload.get("aspect_ratio", "VIDEO_ASPECT_RATIO_PORTRAIT"),
+                    "aspectRatio": _job_aspect_ratio(job.job_type, payload),
                     "textInput": {"prompt": payload.get("prompt", "")},
                     "videoModelKey": model_key,
                     "startImage": {"mediaId": payload.get("start_media_id")},
@@ -156,14 +206,14 @@ class JobWorker:
                     "requests": [req_item],
                     "useV2ModelConfig": True,
                 }
+                paid_attempted = True
                 result = await _api(client, url=target_url, body=body, captcha_action=CAPTCHA_VIDEO)
 
             status = result.get("status") if isinstance(result, dict) else None
             if not isinstance(status, int) or status >= 400 or result.get("error"):
                 error_msg = str(result.get("error") or f"HTTP {status}")
                 logger.warning("Job %s dispatch failed: %s", job.job_id, error_msg)
-                self.runtime.projects.update_job_failed(job.job_id, error_msg)
-                self.runtime.release_connection(connection.id, cost)
+                self.runtime.projects.update_job_failed(job.job_id, error_msg, claim_token)
                 return
 
             data = result.get("data") if isinstance(result.get("data"), dict) else {}
@@ -193,19 +243,32 @@ class JobWorker:
                         break
 
             if not operation_name:
-                operation_name = job.job_id
-                poll_name = job.job_id
+                # A job id is local to this provider and is not a Flow poll
+                # identifier. Never persist it as an operation: that would
+                # leave the paid job running forever because Flow cannot poll
+                # the fabricated name. Keep the outcome explicit so callers
+                # can reconcile it instead of blindly retrying a paid request.
+                self.runtime.projects.update_job_failed(
+                    job.job_id,
+                    "Provider accepted a paid request but returned no poll identifier; the outcome is unknown. Reconcile before retrying.",
+                    claim_token,
+                )
+                return
 
             _remember_project_on_success(self.runtime, connection, resolved_project_id, result)
             _remember_operations(self.runtime, connection, resolved_project_id, result)
 
-            self.runtime.projects.update_job_running(
+            claimed_running = self.runtime.projects.update_job_running(
                 job.job_id,
                 operation_name=operation_name,
                 installation_id=account_key,
                 google_project_id=resolved_project_id,
                 poll_name=poll_name or operation_name,
+                claim_token=claim_token,
             )
+            if not claimed_running:
+                logger.warning("Job %s claim was superseded before dispatch completion", job.job_id)
+                return
             # Also register job_id as operation alias so any lookup resolves
             self.runtime.projects.put_operation(
                 job.job_id, account_key, resolved_project_id, "media", poll_name or operation_name
@@ -213,8 +276,17 @@ class JobWorker:
             logger.info("Job %s dispatched successfully, operation=%s", job.job_id, operation_name)
         except Exception as exc:
             logger.exception("Exception while dispatching job %s", job.job_id)
-            self.runtime.projects.update_job_failed(job.job_id, str(exc))
+            self.runtime.projects.update_job_failed(job.job_id, str(exc), claim_token)
         finally:
+            if paid_attempted:
+                # A paid request can be accepted even when the bridge reports
+                # a timeout/error.  Invalidate the captured balance and
+                # refresh it before another queued paid job can use it.
+                try:
+                    from app.api.generations import _refresh_paid_account
+                    _refresh_paid_account(self.runtime, connection)
+                except Exception:
+                    logger.exception("Failed to schedule credit refresh for job %s", job.job_id)
             self.runtime.release_connection(connection.id, cost)
 
     async def poll_running_jobs(self) -> None:
