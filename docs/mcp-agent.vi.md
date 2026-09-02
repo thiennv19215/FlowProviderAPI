@@ -109,12 +109,12 @@ Các giá trị MCP được rút gọn cho agent:
 
 - Model ảnh: `pro`, `v2`.
 - Tỷ lệ ảnh: `1:1`, `16:9`, `9:16`; mặc định `9:16`.
-- Loại video: `image_to_video`, `omni`.
-- Tỷ lệ video: `16:9`, `9:16`; mặc định theo loại video.
-- Chất lượng image-to-video: `lite`, `fast`, `quality`, `lite_relaxed`, `fast_relaxed`.
-- Thời lượng Omni: `4`, `6`, `8`, `10` giây; mặc định `8`.
+- Loại video: `i2v` (khung hình xuất phát, hỗ trợ `end_media_id`), `r2v` (ảnh tham chiếu), hoặc alias cũ `image_to_video`, `omni`.
+- Tỷ lệ video: `9:16` (mặc định), `16:9`.
+- Thời lượng video Omni Flash: `4`, `6`, `8` (mặc định), `10` giây (chi phí tương ứng 15, 20, 25, 30 credits).
+- Xem chi tiết tại [Hướng dẫn Gemini Omni Flash](gemini-omni-flash.vi.md).
 
-Adapter tự map các giá trị ngắn sang enum của FlowProviderAPI. Tổng số file ảnh và media ID tham chiếu cho image generation tối đa là 8; Omni cũng nhận tối đa 8 media ID.
+Adapter tự map các giá trị ngắn sang enum của FlowProviderAPI. Tổng số file ảnh và media ID tham chiếu cho image generation tối đa là 8; `r2v` nhận từ 1 đến 8 media ID.
 
 Mọi kết quả thành công có dạng:
 
