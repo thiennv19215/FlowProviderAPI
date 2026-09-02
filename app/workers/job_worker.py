@@ -50,7 +50,7 @@ class JobWorker:
         logger.info("JobWorker stopped.")
 
     async def _run_loop(self) -> None:
-        poll_interval = float(getattr(self.runtime.settings, "worker_poll_seconds", 3.0))
+        poll_interval = float(getattr(self.runtime.settings, "worker_poll_seconds", 10.0))
         while self._running:
             try:
                 await self.process_queued_jobs()
@@ -201,10 +201,11 @@ class JobWorker:
             return
 
         now = time.time()
+        poll_interval = float(getattr(self.runtime.settings, "worker_poll_seconds", 10.0))
         for job in running:
-            # Poll each running job at most once every 3 seconds
+            # Poll each running job at most once every poll_interval seconds (default 10s)
             last_poll = self._last_poll_time.get(job.job_id, 0)
-            if now - last_poll < 3.0:
+            if now - last_poll < poll_interval:
                 continue
             self._last_poll_time[job.job_id] = now
 
