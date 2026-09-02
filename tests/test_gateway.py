@@ -2153,6 +2153,201 @@ def test_optional_project_id_across_media_and_video(monkeypatch):
         assert gen_img_resp.status_code == 200
         assert gen_img_resp.headers["X-Flow-Project-Id"] == "projects/managed-auto"
 
+    application.state.runtime.projects.put_media(
+        "owner-installation", "projects/owner", "source-sha",
+        "media/reference", "image/png", "reference.png",
+    )
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "ready_connections", lambda **_kwargs: [owner, target],
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    calls = []
+
+    async def fake_download(_connection_id, media_id):
+        assert media_id == "media/reference"
+        return {"bytes": b"reference", "mime_type": "image/png"}
+
+    async def fake_api(connection_id, **kwargs):
+        calls.append((connection_id, kwargs["url"], kwargs["body"]["clientContext"]["projectId"]))
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/copied"}}}
+        return {"status": 200, "data": {"operations": [{"operation": {"name": "operations/video"}}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "download_media", fake_download)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations", headers=headers(),
+            json={
+                "type": "image_to_video", "project_id": "projects/owner",
+                "prompt": "move", "start_media_id": "media/reference",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-project-id"] == "projects/target"
+    assert [call[0] for call in calls] == ["target", "target"]
+    assert calls[0][1].endswith("/v1/flow/uploadImage")
+
+
+def test_mixed_inline_and_unknown_media_reference_does_not_fail_over(monkeypatch):
+    application = app()
+    owner = SimpleNamespace(
+        id="owner", installation_id="owner-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=19, connected_at=1,
+    )
+    target = SimpleNamespace(
+        id="target", installation_id="target-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=2,
+    )
+    application.state.runtime.projects.remember_project(
+        "owner-installation", "projects/owner", "Owner project"
+    )
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "ready_connections", lambda **_kwargs: [owner, target],
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    calls = []
+
+    async def fake_api(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("an unsafe mixed-reference request must not reach an extension")
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "omni",
+                "project_id": "projects/owner",
+                "prompt": "move",
+                "reference_media_ids": ["media/external-unknown"],
+                "input_images": [{"image_base64": "aGVsbG8="}],
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "VIDEO_ACCOUNT_UNAVAILABLE"
+    assert calls == []
+
+
+def test_video_generation_retries_on_deterministic_credit_rejection(monkeypatch):
+    application = app()
+    owner = SimpleNamespace(
+        id="owner", installation_id="owner-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=1,
+    )
+    target = SimpleNamespace(
+        id="target", installation_id="target-installation", max_slots=3,
+        paygate_tier="PAYGATE_TIER_ONE", credits=100, connected_at=2,
+    )
+    application.state.runtime.projects.remember_project(
+        "owner-installation", "projects/owner", "Owner project"
+    )
+    target_key = "target-installation"
+    application.state.runtime.projects.put(target_key, "projects/target", "Target project")
+    application.state.runtime.mark_project_synced(target, target_key)
+    application.state.runtime.projects.put_media(
+        "owner-installation", "projects/owner", "source-sha",
+        "media/reference", "image/png", "reference.png",
+    )
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "ready_connections", lambda **_kwargs: [owner, target],
+    )
+    monkeypatch.setattr(application.state.runtime.bridge, "pending_count", lambda _id: 0)
+    monkeypatch.setattr(
+        application.state.runtime.bridge,
+        "schedule_account_refresh", lambda *_args, **_kwargs: None,
+    )
+    calls = []
+
+    async def fake_download(_connection_id, media_id):
+        assert media_id == "media/reference"
+        return {"bytes": b"reference", "mime_type": "image/png"}
+
+    async def fake_api(connection_id, **kwargs):
+        calls.append((connection_id, kwargs["url"], kwargs["body"]))
+        if connection_id == "owner":
+            return {
+                "status": 400,
+                "data": {"error": {"message": "Insufficient credits for video generation"}},
+            }
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/copied"}}}
+        return {"status": 200, "data": {"operations": [{"operation": {"name": "operations/video"}}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "download_media", fake_download)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/videos/generations", headers=headers(),
+            json={
+                "type": "image_to_video", "project_id": "projects/owner",
+                "prompt": "move", "start_media_id": "media/reference",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["x-flow-project-id"] == "projects/target"
+    assert [call[0] for call in calls] == ["owner", "target", "target"]
+    assert calls[1][2]["clientContext"]["projectId"] == "projects/target"
+    assert calls[2][2]["requests"][0]["startImage"]["mediaId"] == "media/copied"
+
+
+def test_optional_project_id_across_media_and_video(monkeypatch):
+    application = app()
+    connect(application, monkeypatch)
+    trpc_calls = []
+    api_calls = []
+
+    async def fake_trpc(_connection_id, **kwargs):
+        trpc_calls.append(kwargs)
+        return {
+            "status": 200,
+            "data": {"result": {"data": {"json": {"result": {"projects": [{
+                "projectId": "projects/managed-auto",
+                "projectInfo": {"projectTitle": "FlowProvider"},
+            }]}}}}},
+        }
+
+    async def fake_api(_connection_id, **kwargs):
+        api_calls.append(kwargs)
+        if kwargs["url"].endswith("/v1/flow/uploadImage"):
+            return {"status": 200, "data": {"media": {"name": "media/uploaded-auto"}}}
+        return {
+            "status": 200,
+            "data": {"operations": [{"operation": {"name": "operations/video-1"}}]},
+        }
+
+    monkeypatch.setattr(application.state.runtime.bridge, "trpc_request", fake_trpc)
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+
+    with TestClient(application) as client:
+        # 1. Media upload without project_id
+        upload_resp = client.post(
+            "/v1/media",
+            headers=headers(),
+            json={"image_base64": "aGVsbG8=", "mime_type": "image/png"},
+        )
+        assert upload_resp.status_code == 200
+        assert upload_resp.headers["X-Flow-Project-Id"] == "projects/managed-auto"
+
+        # 2. Image generation with reference_media_ids without project_id
+        gen_img_resp = client.post(
+            "/v1/images/generations",
+            headers=headers(),
+            json={
+                "prompt": "test prompt",
+                "reference_media_ids": ["media/uploaded-auto"],
+            },
+        )
+        assert gen_img_resp.status_code == 200
+        assert gen_img_resp.headers["X-Flow-Project-Id"] == "projects/managed-auto"
+
         # 3. Video generation (image_to_video) without project_id
         connection = application.state.runtime.bridge.ready_connections()[0]
         connection.credits = 100
@@ -2181,3 +2376,148 @@ def test_optional_project_id_across_media_and_video(monkeypatch):
         )
         assert omni_resp.status_code == 200
         assert omni_resp.headers["X-Flow-Project-Id"] == "projects/managed-auto"
+
+
+def test_omni_flash_i2v_and_r2v_models_and_endpoints(monkeypatch):
+    application = app()
+    connection = connect(application, monkeypatch)
+
+    captured_requests = []
+
+    async def fake_api(_conn_id, **kwargs):
+        captured_requests.append(kwargs)
+        return {"status": 200, "data": {"operations": [{"name": "operations/op-flash-1"}]}}
+
+    monkeypatch.setattr(application.state.runtime.bridge, "api_request", fake_api)
+
+    with TestClient(application) as client:
+        # 1. Test i2v (Start Image -> Video) with duration 6s -> abra_i2v_6s
+        connection.credits = 100
+        r1 = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "i2v",
+                "project_id": "project-1",
+                "prompt": "camera zoom in",
+                "start_media_id": "media/start-1",
+                "duration_seconds": 6,
+            },
+        )
+        assert r1.status_code == 200
+        req1 = captured_requests[-1]
+        assert "batchAsyncGenerateVideoStartImage" in req1["url"]
+        assert req1["body"]["requests"][0]["videoModelKey"] == "abra_i2v_6s"
+        assert req1["body"]["requests"][0]["startImage"]["mediaId"] == "media/start-1"
+
+        # 2. Test i2v with First + Last Frame (end_media_id) -> batchAsyncGenerateVideoStartAndEndImage
+        connection.credits = 100
+        r2 = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "i2v",
+                "project_id": "project-1",
+                "prompt": "smooth transition",
+                "start_media_id": "media/start-1",
+                "end_media_id": "media/end-1",
+                "duration_seconds": 8,
+            },
+        )
+        assert r2.status_code == 200
+        req2 = captured_requests[-1]
+        assert "batchAsyncGenerateVideoStartAndEndImage" in req2["url"]
+        assert req2["body"]["requests"][0]["videoModelKey"] == "abra_i2v_8s"
+        assert req2["body"]["requests"][0]["startImage"]["mediaId"] == "media/start-1"
+        assert req2["body"]["requests"][0]["endImage"]["mediaId"] == "media/end-1"
+
+        # 3. Test r2v (Reference to Video) with duration 10s -> abra_r2v_10s
+        connection.credits = 100
+        r3 = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "r2v",
+                "project_id": "project-1",
+                "prompt": "product commercial",
+                "reference_media_ids": ["media/ref-1", "media/ref-2"],
+                "duration_seconds": 10,
+            },
+        )
+        assert r3.status_code == 200
+        req3 = captured_requests[-1]
+        assert "batchAsyncGenerateVideoReferenceImages" in req3["url"]
+        assert req3["body"]["requests"][0]["videoModelKey"] == "abra_r2v_10s"
+        assert len(req3["body"]["requests"][0]["referenceImages"]) == 2
+
+        # 4. Test aliases omni_i2v and omni_r2v
+        connection.credits = 100
+        r4 = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "omni_i2v",
+                "project_id": "project-1",
+                "prompt": "alias test i2v",
+                "start_media_id": "media/start-2",
+                "duration_seconds": 4,
+            },
+        )
+        assert r4.status_code == 200
+        assert captured_requests[-1]["body"]["requests"][0]["videoModelKey"] == "abra_i2v_4s"
+
+        connection.credits = 100
+        r5 = client.post(
+            "/v1/videos/generations",
+            headers=headers(),
+            json={
+                "type": "omni_r2v",
+                "project_id": "project-1",
+                "prompt": "alias test r2v",
+                "reference_media_ids": ["media/ref-3"],
+                "duration_seconds": 4,
+            },
+        )
+        assert r5.status_code == 200
+        assert captured_requests[-1]["body"]["requests"][0]["videoModelKey"] == "abra_r2v_4s"
+
+
+def test_job_worker_process_queued_job_success(monkeypatch):
+    from app.workers.job_worker import JobWorker
+
+    application = app()
+    connection = connect(application, monkeypatch)
+    connection.credits = 100
+
+    runtime = application.state.runtime
+    runtime.projects.put("installation-1", "projects/project-1", "FlowProvider")
+    runtime.mark_project_synced(connection, "installation-1")
+    runtime.projects.enqueue_job(
+        job_id="job_test_worker_1",
+        job_type="i2v",
+        request_payload={
+            "type": "i2v",
+            "prompt": "worker animate",
+            "start_media_id": "media/start-worker",
+            "duration_seconds": 8,
+        },
+    )
+
+    async def fake_api(_conn_id, **kwargs):
+        return {
+            "status": 200,
+            "data": {
+                "operations": [{"name": "operations/worker-op-1"}],
+            },
+        }
+
+    monkeypatch.setattr(runtime.bridge, "api_request", fake_api)
+
+    worker = JobWorker(runtime)
+    import asyncio
+    asyncio.run(worker.process_queued_jobs())
+
+    stored_job = runtime.projects.get_job("job_test_worker_1")
+    assert stored_job is not None
+    assert stored_job.status == "running"
+    assert stored_job.operation_name == "operations/worker-op-1"

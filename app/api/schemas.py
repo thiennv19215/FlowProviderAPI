@@ -86,24 +86,35 @@ class ImageGenerationRequest(BaseModel):
 
 class ImageToVideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: Literal["image_to_video"]
+    type: Literal["i2v", "omni_i2v", "image_to_video"]
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     start_media_id: str | None = Field(default=None, min_length=1, max_length=500)
-    input_images: list[InlineImageInput] = Field(default_factory=list, max_length=1)
-    aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_LANDSCAPE"
-    quality: Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"] = "lite"
+    end_media_id: str | None = Field(default=None, min_length=1, max_length=500)
+    input_images: list[InlineImageInput] = Field(default_factory=list, max_length=2)
+    aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_PORTRAIT"
+    duration_seconds: Literal[4, 6, 8, 10] = 8
+    quality: Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"] | None = None
+
+    @property
+    def duration_model(self) -> str:
+        return {4: "abra_i2v_4s", 6: "abra_i2v_6s", 8: "abra_i2v_8s", 10: "abra_i2v_10s"}[self.duration_seconds]
 
     @model_validator(mode="after")
     def validate_start_image(self):
-        if int(self.start_media_id is not None) + len(self.input_images) != 1:
+        if self.start_media_id is not None and self.input_images and self.end_media_id is None:
+            raise ValueError("provide exactly one start_media_id or input_images item")
+        if not self.start_media_id and not self.input_images:
             raise ValueError("provide exactly one start_media_id or input_images item")
         return self
 
 
+I2VGenerationRequest = ImageToVideoGenerationRequest
+
+
 class OmniVideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: Literal["omni"]
+    type: Literal["r2v", "omni_r2v", "omni"]
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     reference_media_ids: list[str] = Field(default_factory=list, max_length=8)
@@ -123,6 +134,9 @@ class OmniVideoGenerationRequest(BaseModel):
         if sum(len(image.image_base64) for image in self.input_images) > MAX_BASE64_TOTAL_CHARS:
             raise ValueError("input_images may contain at most 64 MiB of Base64 data in total")
         return self
+
+
+R2VGenerationRequest = OmniVideoGenerationRequest
 
 
 VideoGenerationRequest = Annotated[

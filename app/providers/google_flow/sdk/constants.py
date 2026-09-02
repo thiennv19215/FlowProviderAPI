@@ -7,11 +7,14 @@ FLOW_API_BASE = "https://aisandbox-pa.googleapis.com"
 TRPC_CREATE_PROJECT = "https://labs.google/fx/api/trpc/project.createProject"
 TRPC_SEARCH_PROJECTS = "https://labs.google/fx/api/trpc/project.searchUserProjects"
 VIDEO_I2V_URL = f"{FLOW_API_BASE}/v1/video:batchAsyncGenerateVideoStartImage"
+VIDEO_I2V_FL_URL = f"{FLOW_API_BASE}/v1/video:batchAsyncGenerateVideoStartAndEndImage"
 VIDEO_OMNI_URL = f"{FLOW_API_BASE}/v1/video:batchAsyncGenerateVideoReferenceImages"
 VIDEO_POLL_URL = f"{FLOW_API_BASE}/v1/video:batchCheckAsyncVideoGenerationStatus"
 UPLOAD_IMAGE_URL = f"{FLOW_API_BASE}/v1/flow/uploadImage"
 
-OMNI_FLASH_DURATION_KEYS = {4: "abra_r2v_4s", 6: "abra_r2v_6s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}
+OMNI_I2V_DURATION_KEYS = {4: "abra_i2v_4s", 6: "abra_i2v_6s", 8: "abra_i2v_8s", 10: "abra_i2v_10s"}
+OMNI_R2V_DURATION_KEYS = {4: "abra_r2v_4s", 6: "abra_r2v_6s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}
+OMNI_FLASH_DURATION_KEYS = OMNI_R2V_DURATION_KEYS
 OMNI_FLASH_CREDIT_COST = {4: 15, 6: 20, 8: 25, 10: 30}
 IMAGE_MODELS = {"NANO_BANANA_PRO": "GEM_PIX_2", "NANO_BANANA_2": "NARWHAL"}
 DEFAULT_IMAGE_MODEL_KEY = "NANO_BANANA_PRO"

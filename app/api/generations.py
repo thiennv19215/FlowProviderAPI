@@ -35,6 +35,7 @@ from app.providers.google_flow.sdk.constants import (
     TRPC_SEARCH_PROJECTS,
     UPLOAD_IMAGE_URL,
     VIDEO_I2V_URL,
+    VIDEO_I2V_FL_URL,
     VIDEO_OMNI_URL,
     VIDEO_POLL_URL,
 )
@@ -1319,13 +1320,18 @@ async def generate_video(
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
-    credit_cost = (
-        max(20, OMNI_FLASH_CREDIT_COST[payload.duration_seconds])
-        if isinstance(payload, OmniVideoGenerationRequest) else 20
-    )
+    if isinstance(payload, OmniVideoGenerationRequest):
+        credit_cost = max(15, OMNI_FLASH_CREDIT_COST.get(payload.duration_seconds, 25))
+    else:
+        credit_cost = (
+            20 if payload.type == "image_to_video"
+            else OMNI_FLASH_CREDIT_COST.get(payload.duration_seconds, 20)
+        )
     inline_images = list(payload.input_images)
     if isinstance(payload, ImageToVideoGenerationRequest):
         media_ids = [payload.start_media_id] if payload.start_media_id else []
+        if payload.end_media_id:
+            media_ids.append(payload.end_media_id)
     else:
         media_ids = list(payload.reference_media_ids)
     requested_media_ids = list(media_ids)
@@ -1453,22 +1459,27 @@ async def generate_video(
         tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
         ctx = client_context(resolved_project_id, tier)
         if isinstance(payload, ImageToVideoGenerationRequest):
-            model = resolve_video_model(tier, payload.aspect_ratio, payload.quality)
-            if not model:
-                raise APIError(422, "INVALID_VIDEO_QUALITY", "Unsupported video quality for this account.")
+            model = payload.duration_model
+            req_item = {
+                "aspectRatio": payload.aspect_ratio,
+                "textInput": {"prompt": payload.prompt},
+                "videoModelKey": model,
+                "startImage": {"mediaId": media_ids[0]},
+                "metadata": {"sceneId": str(uuid.uuid4())},
+            }
+            target_url = VIDEO_I2V_URL
+            end_id = payload.end_media_id or (media_ids[1] if len(media_ids) > 1 else None)
+            if end_id:
+                req_item["endImage"] = {"mediaId": end_id}
+                target_url = VIDEO_I2V_FL_URL
+
             body = {
                 "clientContext": ctx,
                 "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
-                "requests": [{
-                    "aspectRatio": payload.aspect_ratio,
-                    "textInput": {"prompt": payload.prompt},
-                    "videoModelKey": model,
-                    "startImage": {"mediaId": media_ids[0]},
-                    "metadata": {"sceneId": str(uuid.uuid4())},
-                }],
+                "requests": [req_item],
                 "useV2ModelConfig": True,
             }
-            result = await _api(client, url=VIDEO_I2V_URL, body=body, captcha_action=CAPTCHA_VIDEO)
+            result = await _api(client, url=target_url, body=body, captcha_action=CAPTCHA_VIDEO)
         else:
             body = {
                 "mediaGenerationContext": {

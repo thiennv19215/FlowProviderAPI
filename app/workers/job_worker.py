@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from typing import Any
 
 from app.providers.google_flow.client import BoundFlowClient
@@ -10,6 +11,7 @@ from app.providers.google_flow.sdk.constants import (
     CAPTCHA_VIDEO,
     OMNI_FLASH_CREDIT_COST,
     VIDEO_I2V_URL,
+    VIDEO_I2V_FL_URL,
     VIDEO_OMNI_URL,
     VIDEO_POLL_URL,
 )
@@ -70,10 +72,8 @@ class JobWorker:
         if not job or job.status != "queued":
             return
 
-        cost = 20
-        if job.job_type == "omni":
-            duration = job.request_payload.get("duration_seconds", 8)
-            cost = max(20, OMNI_FLASH_CREDIT_COST.get(duration, 25))
+        duration = job.request_payload.get("duration_seconds", 8)
+        cost = max(15, OMNI_FLASH_CREDIT_COST.get(duration, 25))
 
         available = [
             conn
@@ -93,25 +93,36 @@ class JobWorker:
         account_key = _account_key(connection)
 
         try:
-            from app.api.generations import _managed_project, _api
+            from app.api.generations import (
+                _managed_project,
+                _api,
+                _remember_project_on_success,
+                _remember_operations,
+            )
+
+            from app.providers.google_flow.sdk.helpers import client_context
 
             resolved_project_id = await _managed_project(self.runtime, connection, client)
             payload = job.request_payload
+            tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
+            ctx = client_context(resolved_project_id, tier)
 
-            if job.job_type == "omni":
+            if job.job_type in {"omni", "r2v"}:
                 duration_seconds = payload.get("duration_seconds", 8)
-                model_name = {4: "abra_r2v_4s", 6: "abra_r2v_6s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}.get(
+                model_key = {4: "abra_r2v_4s", 6: "abra_r2v_6s", 8: "abra_r2v_8s", 10: "abra_r2v_10s"}.get(
                     duration_seconds, "abra_r2v_8s"
                 )
                 ref_media_ids = payload.get("reference_media_ids", [])
-                tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
                 body = {
-                    "clientContext": {"projectId": resolved_project_id, "tool": "PINHOLE"},
-                    "userPaygateTier": tier,
+                    "mediaGenerationContext": {
+                        "batchId": str(uuid.uuid4()),
+                        "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
+                    },
+                    "clientContext": ctx,
                     "requests": [{
                         "aspectRatio": payload.get("aspect_ratio", "VIDEO_ASPECT_RATIO_PORTRAIT"),
-                        "videoModelName": model_name,
-                        "prompt": payload.get("prompt", ""),
+                        "textInput": {"prompt": payload.get("prompt", "")},
+                        "videoModelKey": model_key,
                         "metadata": {},
                         "referenceImages": [
                             {"mediaId": mid, "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"}
@@ -122,18 +133,30 @@ class JobWorker:
                 }
                 result = await _api(client, url=VIDEO_OMNI_URL, body=body, captcha_action=CAPTCHA_VIDEO)
             else:
-                body = {
-                    "clientContext": {"projectId": resolved_project_id, "tool": "PINHOLE"},
-                    "userPaygateTier": connection.paygate_tier or "PAYGATE_TIER_ONE",
-                    "requests": [{
-                        "aspectRatio": payload.get("aspect_ratio", "VIDEO_ASPECT_RATIO_LANDSCAPE"),
-                        "videoModelName": payload.get("video_model", "veo_2_relaxed"),
-                        "prompt": payload.get("prompt", ""),
-                        "startImageMediaId": payload.get("start_media_id"),
-                        "metadata": {},
-                    }],
+                duration_seconds = payload.get("duration_seconds", 8)
+                model_key = {4: "abra_i2v_4s", 6: "abra_i2v_6s", 8: "abra_i2v_8s", 10: "abra_i2v_10s"}.get(
+                    duration_seconds, "abra_i2v_8s"
+                )
+                req_item = {
+                    "aspectRatio": payload.get("aspect_ratio", "VIDEO_ASPECT_RATIO_PORTRAIT"),
+                    "textInput": {"prompt": payload.get("prompt", "")},
+                    "videoModelKey": model_key,
+                    "startImage": {"mediaId": payload.get("start_media_id")},
+                    "metadata": {"sceneId": str(uuid.uuid4())},
                 }
-                result = await _api(client, url=VIDEO_I2V_URL, body=body, captcha_action=CAPTCHA_VIDEO)
+                target_url = VIDEO_I2V_URL
+                end_media_id = payload.get("end_media_id")
+                if end_media_id:
+                    req_item["endImage"] = {"mediaId": end_media_id}
+                    target_url = VIDEO_I2V_FL_URL
+
+                body = {
+                    "clientContext": ctx,
+                    "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
+                    "requests": [req_item],
+                    "useV2ModelConfig": True,
+                }
+                result = await _api(client, url=target_url, body=body, captcha_action=CAPTCHA_VIDEO)
 
             status = result.get("status") if isinstance(result, dict) else None
             if not isinstance(status, int) or status >= 400 or result.get("error"):

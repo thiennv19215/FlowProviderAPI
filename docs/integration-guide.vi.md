@@ -487,7 +487,9 @@ Với mỗi phần tử trong `media[]`, lấy:
 
 Số phần tử `media[]` tương ứng với số biến thể Flow trả về. Không giả định luôn chỉ có một ảnh.
 
-## 8. Tạo image-to-video
+## 8. Tạo video từ khung hình (i2v / Image-to-Video)
+
+Sử dụng Gemini Omni Flash (`abra_i2v_*`) để sinh video từ ảnh đầu trong ~12 giây (thay vì Veo 3.1 cũ mất 60-90s). Hỗ trợ cả tùy chọn khung hình cuối (`end_media_id`) để nối cảnh liền mạch.
 
 ### Request
 
@@ -497,55 +499,49 @@ POST /v1/videos/generations
 
 ```json
 {
-  "type": "image_to_video",
+  "type": "i2v",
   "prompt": "Slow cinematic camera movement around the product",
-  "input_images": [{
-    "image_base64": "<base64>",
-    "mime_type": "image/jpeg",
-    "file_name": "start.jpg"
-  }],
+  "start_media_id": "media-id-khung-dau",
+  "end_media_id": "media-id-khung-cuoi-tuy-chon",
   "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
-  "quality": "lite"
+  "duration_seconds": 8
 }
 ```
 
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
-| `type` | Có | Luôn là `image_to_video`. |
+| `type` | Có | `i2v` (khuyên dùng), `omni_i2v`, hoặc alias cũ `image_to_video`. |
 | `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project. |
-| `prompt` | Có | 1–12.000 ký tự. |
-| `start_media_id` | Một trong hai | Media ID tương thích cho client cũ. Không gửi cùng `input_images`. |
-| `input_images` | Một trong hai | Đúng 1 ảnh Base64 để Provider tự upload/deduplicate. Không gửi cùng `start_media_id`. |
-| `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_LANDSCAPE` (mặc định), `VIDEO_ASPECT_RATIO_PORTRAIT`. |
-| `quality` | Không | `lite` (mặc định), `fast`, `quality`, `lite_relaxed`, `fast_relaxed`. Một số mức phụ thuộc gói Flow của tài khoản. |
+| `prompt` | Có | 1–12.000 ký tự mô tả chuyển động. |
+| `start_media_id` | Có | ID ảnh làm khung hình xuất phát (hoặc 1 ảnh trong `input_images`). |
+| `end_media_id` | Không | ID ảnh làm khung hình kết thúc (tùy chọn: dùng để chuyển cảnh First+Last frame mượt mà). |
+| `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
+| `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_PORTRAIT` (mặc định), `VIDEO_ASPECT_RATIO_LANDSCAPE`. |
 
-## 9. Tạo Omni video
+## 9. Tạo video từ ảnh tham chiếu (r2v / Reference-to-Video)
+
+Sử dụng Gemini Omni Flash (`abra_r2v_*`) nhận diện nhân vật / phong cách từ 1 đến 8 ảnh tham chiếu để tạo video mới.
 
 ### Request
 
 ```json
 {
-  "type": "omni",
+  "type": "r2v",
   "prompt": "Create a vertical cinematic product advertisement",
-  "input_images": [{
-    "image_base64": "<base64>",
-    "mime_type": "image/jpeg",
-    "file_name": "reference.jpg"
-  }],
+  "reference_media_ids": ["media-id-1", "media-id-2"],
   "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
-  "duration_seconds": 4
+  "duration_seconds": 8
 }
 ```
 
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
-| `type` | Có | Luôn là `omni`. |
-| `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project. |
+| `type` | Có | `r2v` (khuyên dùng), `omni_r2v`, hoặc alias cũ `omni`. |
+| `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định. |
 | `prompt` | Có | 1–12.000 ký tự. |
-| `reference_media_ids` | Không | Media ID tương thích cho client cũ. |
-| `input_images` | Không | Ảnh Base64 để Provider tự upload/deduplicate. Tổng hai field phải từ 1 đến 8 ảnh. |
+| `reference_media_ids` | Có | Danh sách 1 đến 8 ID ảnh tham chiếu (hoặc truyền qua `input_images`). |
+| `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
 | `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_PORTRAIT` (mặc định), `VIDEO_ASPECT_RATIO_LANDSCAPE`. |
-| `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10`. |
 
 ### Response bắt đầu tạo video
 

@@ -160,6 +160,45 @@ async def test_video_tool_uses_type_specific_default_aspect_ratios():
     assert bodies[1]["aspect_ratio"] == "VIDEO_ASPECT_RATIO_PORTRAIT"
 
 
+async def test_video_tool_supports_i2v_and_r2v():
+    bodies = []
+
+    def handler(request: httpx.Request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"operations": []})
+
+    server = build_mcp_server(mock_client(handler))
+    async with Client(server) as client:
+        i2v_res = await client.call_tool(
+            "flow_generate_video",
+            {
+                "type": "i2v",
+                "prompt": "move slowly",
+                "start_media_id": "media/start",
+                "end_media_id": "media/end",
+                "duration_seconds": 6,
+            },
+        )
+        r2v_res = await client.call_tool(
+            "flow_generate_video",
+            {
+                "type": "r2v",
+                "prompt": "combine references",
+                "reference_media_ids": ["media/ref-1", "media/ref-2"],
+                "duration_seconds": 10,
+            },
+        )
+
+    assert i2v_res.is_error is False
+    assert r2v_res.is_error is False
+    assert bodies[0]["type"] == "i2v"
+    assert bodies[0]["end_media_id"] == "media/end"
+    assert bodies[0]["duration_seconds"] == 6
+    assert bodies[1]["type"] == "r2v"
+    assert bodies[1]["reference_media_ids"] == ["media/ref-1", "media/ref-2"]
+    assert bodies[1]["duration_seconds"] == 10
+
+
 async def test_image_tools_reject_paths_outside_allowed_roots():
     called = False
 
