@@ -31,23 +31,36 @@ const inflightRpcControllers = new Map();
 const STATS_KEY = "flow_provider_job_stats";
 let activityState = { activeCount: 0, current: null, completedCount: 0, errorCount: 0, logs: [] };
 
-async function loadStats() {
+function getStatsKey(email = accountState?.email) {
+  const clean = String(email || "").trim().toLowerCase();
+  return clean ? `flow_provider_stats_${clean}` : STATS_KEY;
+}
+
+async function loadStats(email = accountState?.email) {
   try {
-    const stored = await chrome.storage.local.get(STATS_KEY);
-    if (stored?.[STATS_KEY]) {
-      activityState.completedCount = Number(stored[STATS_KEY].completedCount) || 0;
-      activityState.errorCount = Number(stored[STATS_KEY].errorCount) || 0;
+    const key = getStatsKey(email);
+    const stored = await chrome.storage.local.get([key, STATS_KEY]);
+    const data = stored?.[key] || (key === STATS_KEY ? stored?.[STATS_KEY] : null);
+    if (data) {
+      activityState.completedCount = Number(data.completedCount) || 0;
+      activityState.errorCount = Number(data.errorCount) || 0;
+    } else {
+      activityState.completedCount = 0;
+      activityState.errorCount = 0;
     }
   } catch (_) { }
 }
 
-function saveStats() {
+function saveStats(email = accountState?.email) {
   try {
+    const key = getStatsKey(email);
+    const payload = {
+      completedCount: activityState.completedCount || 0,
+      errorCount: activityState.errorCount || 0,
+    };
     chrome.storage.local.set({
-      [STATS_KEY]: {
-        completedCount: activityState.completedCount || 0,
-        errorCount: activityState.errorCount || 0,
-      }
+      [key]: payload,
+      [STATS_KEY]: payload,
     }).catch?.(() => { });
   } catch (_) { }
 }
@@ -102,14 +115,43 @@ function extensionLog(level, event, details = null) {
   else writer.call(console, prefix, safeDetails);
 }
 
+function isGenerationJob(message) {
+  if (!message || typeof message !== "object") return false;
+  if (["PING", "GET_BEARER", "OPEN_FLOW_TAB", "INJECT_RECAPTCHA"].includes(message.type)) {
+    return false;
+  }
+  if (message.type === "SW_FETCH" || message.type === "INJECT_PAGE_FETCH") {
+    const url = String(message.spec?.url || "");
+    if (url.includes("/credits") || url.includes("batchGetAsyncGenerateVideoOperation")) {
+      return false;
+    }
+    if (url) {
+      return (
+        url.includes("batchGenerateImages") ||
+        url.includes("batchAsyncGenerateVideo") ||
+        url.includes("generateVideo")
+      );
+    }
+    return true;
+  }
+  return false;
+}
+
 function activityLabel(message) {
-  if (message.type === "OPEN_FLOW_TAB") return "Preparing Flow";
-  if (message.type === "INJECT_RECAPTCHA") return "Solving captcha";
-  if (message.type === "INJECT_PAGE_FETCH") return "Calling Flow";
-  if (message.type === "GET_BEARER") return "Refreshing session";
-  if (message.type === "SW_FETCH" && String(message.spec?.url || "").includes("/credits")) return "Refreshing credits";
-  if (message.type === "SW_FETCH") return "Calling provider";
-  return String(message.type || "Provider request").replaceAll("_", " ").toLowerCase();
+  if (message.type === "PING") return "ping";
+  if (message.type === "OPEN_FLOW_TAB") return "Chuẩn bị tab Flow";
+  if (message.type === "INJECT_RECAPTCHA") return "Giải Captcha";
+  if (message.type === "INJECT_PAGE_FETCH" || message.type === "SW_FETCH") {
+    const url = String(message.spec?.url || "");
+    if (url.includes("/credits")) return "Đồng bộ credit";
+    if (url.includes("batchGenerateImages")) return "Tạo ảnh";
+    if (url.includes("batchAsyncGenerateVideo") || url.includes("generateVideo")) return "Tạo video";
+    if (url.includes("uploadImage") || url.includes("flowMedia:upload")) return "Tải ảnh tham chiếu";
+    if (url.includes("batchGetAsyncGenerateVideoOperation")) return "Kiểm tra tiến độ video";
+    return "Gọi Google Flow";
+  }
+  if (message.type === "GET_BEARER") return "Làm mới phiên đăng nhập";
+  return String(message.type || "Tác vụ hệ thống").replaceAll("_", " ").toLowerCase();
 }
 
 function appendActivity(label, status, detail = null) {
@@ -120,24 +162,33 @@ function appendActivity(label, status, detail = null) {
 }
 
 function beginActivity(message) {
-  const activity = { label: activityLabel(message), startedAt: Date.now() };
-  activityState.activeCount += 1;
-  activityState.current = activity;
-  appendActivity(activity.label, "running");
+  const isJob = isGenerationJob(message);
+  const activity = { label: activityLabel(message), isJob, startedAt: Date.now() };
+  if (isJob) {
+    activityState.activeCount += 1;
+    activityState.current = activity;
+  }
+  if (activity.label !== "ping") {
+    appendActivity(activity.label, "running");
+  }
   return activity;
 }
 
 function finishActivity(activity, error = null) {
-  activityState.activeCount = Math.max(0, activityState.activeCount - 1);
-  if (!activityState.activeCount) activityState.current = null;
-  if (error) {
-    activityState.errorCount = (activityState.errorCount || 0) + 1;
-  } else {
-    activityState.completedCount = (activityState.completedCount || 0) + 1;
+  if (activity.isJob) {
+    activityState.activeCount = Math.max(0, activityState.activeCount - 1);
+    if (!activityState.activeCount) activityState.current = null;
+    if (error) {
+      activityState.errorCount = (activityState.errorCount || 0) + 1;
+    } else {
+      activityState.completedCount = (activityState.completedCount || 0) + 1;
+    }
+    saveStats();
   }
-  saveStats();
   const durationMs = Math.max(0, Date.now() - activity.startedAt);
-  appendActivity(activity.label, error ? "error" : "done", error ? String(error).slice(0, 160) : `${durationMs} ms`);
+  if (activity.label !== "ping") {
+    appendActivity(activity.label, error ? "error" : "done", error ? String(error).slice(0, 160) : `${durationMs} ms`);
+  }
 }
 
 function id(prefix = "id") {
@@ -594,12 +645,16 @@ async function connectOnce(epoch) {
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "auth_sync_ack") {
-          accountState = { email: msg.email || accountState.email, credits: Number.isFinite(msg.credits) ? msg.credits : accountState.credits, ready: msg.status === "synced" };
+          const isReady = msg.status === "synced" || Number.isFinite(msg.credits);
+          accountState = { email: msg.email || accountState.email, credits: Number.isFinite(msg.credits) ? msg.credits : accountState.credits, ready: isReady };
           appendActivity(
             "Account synchronized",
-            accountState.ready ? "done" : "error",
+            isReady ? "done" : "info",
             Number.isFinite(accountState.credits) ? `${accountState.credits} credits` : "account ready",
           );
+          if (accountState.email) {
+            void loadStats(accountState.email);
+          }
           return;
         }
         if (msg.type === "please_resend_userinfo") { await syncAuth(ws); return; }
@@ -678,11 +733,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "FLOW_PROVIDER_GET_STATE") { connectionState().then(sendResponse); return true; }
   if (msg?.type === "FLOW_PROVIDER_CLEAR_LOGS") {
     activityState.logs = [];
-    if (msg.resetStats) {
-      activityState.completedCount = 0;
-      activityState.errorCount = 0;
-      saveStats();
-    }
+    activityState.completedCount = 0;
+    activityState.errorCount = 0;
+    saveStats();
     sendResponse({ ok: true });
     return true;
   }

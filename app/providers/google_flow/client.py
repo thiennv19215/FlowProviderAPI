@@ -27,6 +27,8 @@ def resolve_paygate_tier(payload: dict) -> str | None:
     # Current freemium accounts omit the legacy tier while using tier-one models.
     if payload.get("sku") == "G1_FREEMIUM":
         return "PAYGATE_TIER_ONE"
+    if payload.get("credits") is not None:
+        return "PAYGATE_TIER_ONE"
     return None
 
 
@@ -65,7 +67,7 @@ class ExtensionConnection:
         return bool(
             self.flow_key
             and self.account_email
-            and self.paygate_tier
+            and (self.paygate_tier or self.credits is not None)
             and self.suspect_since is None
         )
 
@@ -365,7 +367,7 @@ class FlowBridge:
                     "type": "auth_sync_ack",
                     "connectionId": conn.extension_connection_id or conn.id,
                     "backendConnectionId": conn.id,
-                    "status": "synced" if conn.ready else "auth_syncing",
+                    "status": "synced" if (conn.ready or conn.credits is not None) else "auth_syncing",
                     "email": conn.account_email,
                     "credits": conn.credits,
                     "busy": False,
