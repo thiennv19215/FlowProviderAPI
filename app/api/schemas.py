@@ -107,7 +107,7 @@ class ImageGenerationRequest(BaseModel):
 
 class ImageToVideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_default=True)
-    type: Literal["i2v", "omni_i2v", "image_to_video"]
+    type: Literal["start_to_video", "image_to_video", "i2v", "omni_i2v"]
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     start_media_id: str | None = Field(default=None, min_length=1, max_length=500)
@@ -135,7 +135,7 @@ class ImageToVideoGenerationRequest(BaseModel):
     def validate_start_image(self):
         if self.type == "image_to_video" and "aspect_ratio" not in self.model_fields_set:
             self.aspect_ratio = "VIDEO_ASPECT_RATIO_LANDSCAPE"
-        if self.type != "image_to_video" and self.quality is not None:
+        if self.type not in {"image_to_video", "start_to_video"} and self.quality is not None:
             raise ValueError("quality is only valid for legacy image_to_video")
         if self.start_media_id is not None and self.input_images:
             raise ValueError("provide exactly one start_media_id or input_images item")
@@ -151,7 +151,7 @@ I2VGenerationRequest = ImageToVideoGenerationRequest
 
 class OmniVideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_default=True)
-    type: Literal["r2v", "omni_r2v", "omni"]
+    type: Literal["reference_to_video", "omni", "r2v", "omni_r2v"]
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     reference_media_ids: list[str] = Field(default_factory=list, max_length=8)
@@ -231,6 +231,7 @@ class Job(BaseModel):
     id: str
     provider: str = "google_flow"
     type: Literal["image", "video"]
+    generation_type: Literal["image", "start_to_video", "reference_to_video"] | str = "image"
     status: Literal["queued", "running", "complete", "failed"]
     media: list[GeneratedMedia] = Field(default_factory=list)
     error: JobError | None = None

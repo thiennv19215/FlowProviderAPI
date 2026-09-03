@@ -125,6 +125,7 @@ def test_image_is_enqueued_worker_completes_it_and_status_only_reads_db(monkeypa
         assert status.json()["jobs"][0] == {
             "id": job_id,
             "type": "image",
+            "generation_type": "image",
             "status": "complete",
             "media": [{
                 "id": "media/image-1",

@@ -33,14 +33,14 @@ def _job_credit_cost(generation_type: str, duration_seconds: int) -> int:
 
 
 def _is_omni_generation(generation_type: str) -> bool:
-    return generation_type in {"omni", "r2v", "omni_r2v"}
+    return generation_type in {"omni", "r2v", "omni_r2v", "reference_to_video"}
 
 
 _is_omni_job_type = _is_omni_generation
 
 
 def _job_aspect_ratio(generation_type: str, payload: dict) -> str:
-    default = "VIDEO_ASPECT_RATIO_LANDSCAPE" if generation_type == "image_to_video" else "VIDEO_ASPECT_RATIO_PORTRAIT"
+    default = "VIDEO_ASPECT_RATIO_LANDSCAPE" if generation_type in {"image_to_video", "start_to_video"} else "VIDEO_ASPECT_RATIO_PORTRAIT"
     return payload.get("aspect_ratio", default)
 
 
