@@ -39,9 +39,7 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 
 | Method | Endpoint | Chức năng |
 |---|---|---|
-| `GET` | `/v1/projects` | Liệt kê Google Flow project của tài khoản. |
-| `POST` | `/v1/projects` | Tạo một Google Flow project. |
-| `POST` | `/v1/media` | Upload ảnh vào project và nhận media ID. |
+| `POST` | `/v1/media` | Upload ảnh và nhận media ID (tùy chọn). |
 | `POST` | `/v1/images/generations` | Tạo ảnh mới, có hoặc không có ảnh tham chiếu. |
 | `POST` | `/v1/videos/generations` | Tạo image-to-video hoặc Omni video. |
 | `POST` | `/v1/jobs/status` | Đọc trạng thái image/video job từ DB theo `job_ids`. |
