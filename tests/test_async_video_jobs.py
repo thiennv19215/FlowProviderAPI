@@ -130,10 +130,8 @@ def test_image_is_enqueued_worker_completes_it_and_status_only_reads_db(monkeypa
                 "id": "media/image-1",
                 "type": "image",
                 "url": "https://flow-content.google/image",
-                "thumbnail_url": None,
                 "width": 1024,
                 "height": 1024,
-                "duration_seconds": None,
             }],
             "error": None,
         }
@@ -218,7 +216,6 @@ def test_worker_persists_complete_video_and_status_returns_normalized_media(monk
             "thumbnail_url": "https://flow-content.google/thumbnail/signed",
             "width": None,
             "height": None,
-            "duration_seconds": None,
         }]
 
 

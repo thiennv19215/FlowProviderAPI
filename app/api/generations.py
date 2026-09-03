@@ -1168,15 +1168,25 @@ def _normalize_job_media(job: Any) -> list[dict]:
                 url = m.get("downloadUrl") or gen_img.get("fifeUrl") or gen_vid.get("fifeUrl") or gen_vid.get("url")
                 thumb = m.get("thumbnailUrl") or gen_img.get("thumbnailUrl") or gen_vid.get("thumbnailUrl")
                 dims = img.get("dimensions") or vid.get("dimensions") or {}
-                media_list.append({
+                media_type = "image" if img or getattr(job, "media_type", "") == "image" else "video"
+
+                item = {
                     "id": mid,
-                    "type": "image" if img or getattr(job, "media_type", "") == "image" else "video",
+                    "type": media_type,
                     "url": url,
-                    "thumbnail_url": thumb,
-                    "width": dims.get("width"),
-                    "height": dims.get("height"),
-                    "duration_seconds": vid.get("durationSeconds"),
-                })
+                }
+                if media_type == "image":
+                    if dims.get("width") is not None:
+                        item["width"] = dims.get("width")
+                    if dims.get("height") is not None:
+                        item["height"] = dims.get("height")
+                else:
+                    item["thumbnail_url"] = thumb
+                    item["width"] = dims.get("width")
+                    item["height"] = dims.get("height")
+                    if vid.get("durationSeconds") is not None:
+                        item["duration_seconds"] = vid.get("durationSeconds")
+                media_list.append(item)
     return media_list
 
 
