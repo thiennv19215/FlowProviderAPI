@@ -1124,12 +1124,12 @@ def _normalize_job_media(job: Any) -> list[dict]:
 
 
 def _normalize_generation_type(gen_type: str | None, media_type: str | None) -> str:
-    if gen_type in {"r2v", "omni_r2v", "omni", "reference_to_video"}:
+    if gen_type in {"r2v", "omni_r2v", "omni", "reference_to_video", "ingredients", "references"}:
         return "reference_to_video"
-    if gen_type in {"i2v", "omni_i2v", "image_to_video", "start_to_video"}:
-        return "start_to_video"
+    if gen_type in {"i2v", "omni_i2v", "image_to_video", "start_to_video", "frames_to_video", "frames"}:
+        return "frames_to_video"
     if media_type == "video":
-        return "start_to_video"
+        return "frames_to_video"
     return "image"
 
 
