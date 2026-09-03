@@ -146,6 +146,28 @@ class JobWorker:
         payload = job.request_payload
         duration = job.request_payload.get("duration_seconds", 8)
         cost = _job_credit_cost(job.generation_type, duration)
+
+        if not job.google_project_id or not job.installation_id:
+            referenced = []
+            if payload.get("start_media_id"):
+                referenced.append(payload["start_media_id"])
+            if payload.get("end_media_id"):
+                referenced.append(payload["end_media_id"])
+            if payload.get("reference_media_ids"):
+                referenced.extend(payload["reference_media_ids"])
+            if referenced:
+                from app.api.generations import _stored_media_route
+                try:
+                    inferred = _stored_media_route(self.runtime, referenced)
+                except Exception:
+                    inferred = None
+                if inferred:
+                    inferred_inst, inferred_proj = inferred
+                    if not job.installation_id:
+                        job.installation_id = inferred_inst
+                    if not job.google_project_id:
+                        job.google_project_id = inferred_proj
+
         project_owner = (
             self.runtime.projects.installation_for_project(job.google_project_id)
             if job.google_project_id

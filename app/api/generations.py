@@ -1294,6 +1294,28 @@ async def generate_image(
 
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
 
+    if payload.reference_media_ids:
+        inferred_route = _stored_media_route(runtime, payload.reference_media_ids)
+        if inferred_route:
+            inferred_account, inferred_project = inferred_route
+            if scoped_account_key and scoped_account_key != inferred_account:
+                raise APIError(
+                    409,
+                    "MEDIA_ACCOUNT_MISMATCH",
+                    "The routing scope does not own the referenced media.",
+                )
+            if payload.project_id and payload.project_id != inferred_project:
+                raise APIError(
+                    409,
+                    "MEDIA_PROJECT_MISMATCH",
+                    "Referenced media does not belong to the requested project.",
+                )
+            if not scoped_account_key:
+                scoped_account_key = inferred_account
+            if not payload.project_id:
+                payload.project_id = inferred_project
+                request_data["project_id"] = inferred_project
+
     if inline_images:
         _persist_inline_assets(runtime, inline_images)
 
@@ -1344,6 +1366,36 @@ async def generate_video(
         request_data["_idempotency_key"] = idempotency_key
 
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
+
+    referenced_media = []
+    if getattr(payload, "start_media_id", None):
+        referenced_media.append(payload.start_media_id)
+    if getattr(payload, "end_media_id", None):
+        referenced_media.append(payload.end_media_id)
+    if getattr(payload, "reference_media_ids", None):
+        referenced_media.extend(payload.reference_media_ids)
+
+    if referenced_media:
+        inferred_route = _stored_media_route(runtime, referenced_media)
+        if inferred_route:
+            inferred_account, inferred_project = inferred_route
+            if scoped_account_key and scoped_account_key != inferred_account:
+                raise APIError(
+                    409,
+                    "MEDIA_ACCOUNT_MISMATCH",
+                    "The routing scope does not own the referenced media.",
+                )
+            if payload.project_id and payload.project_id != inferred_project:
+                raise APIError(
+                    409,
+                    "MEDIA_PROJECT_MISMATCH",
+                    "Referenced media does not belong to the requested project.",
+                )
+            if not scoped_account_key:
+                scoped_account_key = inferred_account
+            if not payload.project_id:
+                payload.project_id = inferred_project
+                request_data["project_id"] = inferred_project
 
     if inline_images:
         _persist_inline_assets(runtime, inline_images)

@@ -709,3 +709,35 @@ def test_multiple_queued_image_jobs_processed_in_parallel(monkeypatch):
             stored = application.state.runtime.projects.get_job(jid)
             assert stored is not None
             assert stored.status == "completed"
+
+
+def test_video_generation_auto_infers_route_from_start_media_id(monkeypatch):
+    application = async_app()
+    connect(application, monkeypatch)
+    runtime = application.state.runtime
+    runtime.projects.put_media(
+        "installation-1",
+        "project-1",
+        "hash-123",
+        "media/auto-inferred-start",
+        "image/png",
+        "start.png",
+    )
+
+    with TestClient(application) as client:
+        # Client calls without project_id and without routing_scope
+        response = client.post(
+            "/v1/videos/generations",
+            json={
+                "type": "image_to_video",
+                "prompt": "animate this image",
+                "start_media_id": "media/auto-inferred-start",
+                "aspect_ratio": "9:16",
+            },
+        )
+        assert response.status_code == 202
+        job_id = response.json()["jobs"][0]["id"]
+        stored_job = runtime.projects.get_job(job_id)
+        assert stored_job is not None
+        assert stored_job.google_project_id == "project-1"
+        assert stored_job.installation_id == "installation-1"
