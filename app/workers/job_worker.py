@@ -167,8 +167,28 @@ class JobWorker:
             tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
             ctx = client_context(resolved_project_id, tier)
 
+            reference_media_ids = list(payload.get("reference_media_ids") or [])
+            if payload.get("input_images"):
+                from app.api.generations import _upload_inline_images
+                from app.api.schemas import InlineImageInput
+                raw_images = [
+                    InlineImageInput(**img) if isinstance(img, dict) else img
+                    for img in payload["input_images"]
+                ]
+                uploaded_ids, cached_digests, hits = await _upload_inline_images(
+                    self.runtime, connection, client, resolved_project_id, raw_images
+                )
+                if job.media_type == "image":
+                    reference_media_ids.extend(uploaded_ids)
+                elif _is_omni_generation(job.generation_type):
+                    payload["reference_media_ids"] = list(payload.get("reference_media_ids") or []) + uploaded_ids
+                elif job.generation_type in {"image_to_video", "i2v"}:
+                    if not payload.get("start_media_id") and uploaded_ids:
+                        payload["start_media_id"] = uploaded_ids[0]
+                        if len(uploaded_ids) > 1 and not payload.get("end_media_id"):
+                            payload["end_media_id"] = uploaded_ids[1]
+
             if job.media_type == "image":
-                reference_media_ids = payload.get("reference_media_ids") or []
                 requests = []
                 for _ in range(int(payload.get("variant_count", 1))):
                     item = {
