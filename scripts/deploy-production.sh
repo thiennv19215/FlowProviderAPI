@@ -33,7 +33,7 @@ import urllib.error
 base_url = "http://127.0.0.1:8000"
 with urllib.request.urlopen(base_url + "/openapi.json", timeout=5) as response:
     paths = json.load(response)["paths"]
-if set(paths) != {"/v1/projects", "/v1/media", "/v1/images/generations", "/v1/videos/generations", "/v1/jobs/status"}:
+if set(paths) != {"/v1/media", "/v1/images/generations", "/v1/videos/generations", "/v1/jobs/status"}:
     raise SystemExit(f"unexpected public API surface: {sorted(paths)}")
 try:
     urllib.request.urlopen(base_url + "/admin", timeout=5)

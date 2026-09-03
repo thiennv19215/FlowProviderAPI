@@ -62,7 +62,7 @@ def connect(application, monkeypatch):
 def test_public_surface_is_a_fixed_flow_facade():
     application = app()
     assert set(application.openapi()["paths"]) == {
-        "/v1/projects", "/v1/media", "/v1/images/generations",
+        "/v1/media", "/v1/images/generations",
         "/v1/videos/generations", "/v1/jobs/status",
     }
     with TestClient(application) as client:

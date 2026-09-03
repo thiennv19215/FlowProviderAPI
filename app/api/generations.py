@@ -9,13 +9,11 @@ import json
 import uuid
 from datetime import datetime
 from typing import Any
-from urllib.parse import quote
 
-from fastapi import APIRouter, Header, Query, Request, Response
+from fastapi import APIRouter, Header, Request, Response
 
 from app.api.errors import APIError
 from app.api.schemas import (
-    CreateProjectRequest,
     ImageGenerationRequest,
     ImageUploadRequest,
     InlineImageInput,
@@ -1005,73 +1003,7 @@ async def _api(client, *, url: str, body: dict, captcha_action: str | None = Non
     )
 
 
-@router.get("/v1/projects", response_model=None)
-async def list_projects(
-    request: Request,
-    page_size: int = Query(default=10, ge=1, le=100),
-    cursor: str | None = Query(default=None, min_length=1, max_length=2000),
-    routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
-) -> Response:
-    runtime = request.app.state.runtime
-    connection, client = _connection(request, routing_scope)
-    payload: dict = {
-        "json": {"pageSize": page_size, "toolName": "PINHOLE", "cursor": cursor},
-    }
-    if cursor is None:
-        payload["meta"] = {"values": {"cursor": ["undefined"]}}
-    encoded_input = quote(json.dumps(payload, separators=(",", ":")), safe="")
-    result = await client.trpc_request(
-        url=f"{TRPC_SEARCH_PROJECTS}?input={encoded_input}",
-        method="GET",
-        headers=TRPC_HEADERS,
-    )
-    project_items = _project_items(result)
-    for item in project_items:
-        info = item.get("projectInfo") if isinstance(item.get("projectInfo"), dict) else {}
-        runtime.projects.remember_project(
-            _account_key(connection),
-            item["projectId"],
-            str(info.get("projectTitle") or "Untitled"),
-        )
-    if cursor is None:
-        newest_project = _latest_project(project_items)
-        if newest_project:
-            account_key = _account_key(connection)
-            info = (
-                newest_project.get("projectInfo")
-                if isinstance(newest_project.get("projectInfo"), dict)
-                else {}
-            )
-            runtime.projects.put(
-                account_key,
-                newest_project["projectId"],
-                str(info.get("projectTitle") or "Untitled"),
-            )
-            runtime.mark_project_synced(connection, account_key)
-    return _scoped_response(result, runtime.settings, connection)
 
-
-@router.post("/v1/projects", response_model=None)
-async def create_project(
-    payload: CreateProjectRequest,
-    request: Request,
-) -> Response:
-    runtime = request.app.state.runtime
-    connection, client = _connection(request)
-    result = await client.trpc_request(
-        url=TRPC_CREATE_PROJECT,
-        method="POST",
-        headers=TRPC_HEADERS,
-        body={"json": {"projectTitle": payload.title, "toolName": "PINHOLE"}},
-    )
-    project_id = extract_project_id(result)
-    if project_id:
-        account_key = _account_key(connection)
-        runtime.projects.remember_project(account_key, project_id, payload.title)
-        if payload.title == "FlowProvider":
-            runtime.projects.put(account_key, project_id, payload.title)
-            runtime.mark_project_synced(connection, account_key)
-    return _scoped_response(result, runtime.settings, connection)
 
 
 

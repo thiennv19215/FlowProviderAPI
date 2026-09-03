@@ -307,30 +307,6 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
 
         return await provider.request("GET", "/health/ready")
 
-    @server.tool(title="List Flow projects", annotations=read_only)
-    async def flow_list_projects(
-        page_size: Annotated[int, Field(ge=1, le=100)] = 10,
-        cursor: str | None = None,
-        routing_scope: str | None = None,
-    ) -> FlowToolResult:
-        """List Google Flow projects. Preserve routing_scope when continuing an account-bound workflow."""
-
-        params: dict[str, Any] = {"page_size": page_size}
-        if cursor:
-            params["cursor"] = cursor
-        return await provider.request(
-            "GET",
-            "/v1/projects",
-            params=params,
-            routing_scope=routing_scope,
-        )
-
-    @server.tool(title="Create a Flow project", annotations=mutating)
-    async def flow_create_project(title: Annotated[str, Field(min_length=1, max_length=200)]) -> FlowToolResult:
-        """Create a Google Flow project. Usually omit projects and let generation use the managed project."""
-
-        return await provider.request("POST", "/v1/projects", body={"title": title})
-
     @server.tool(title="Upload an image to Flow", annotations=mutating)
     async def flow_upload_image(
         image_path: str,

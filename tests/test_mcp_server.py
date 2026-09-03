@@ -27,8 +27,6 @@ async def test_mcp_lists_business_tools():
 
     assert {tool.name for tool in result.tools} == {
         "flow_check_health",
-        "flow_list_projects",
-        "flow_create_project",
         "flow_upload_image",
         "flow_generate_image",
         "flow_generate_video",
