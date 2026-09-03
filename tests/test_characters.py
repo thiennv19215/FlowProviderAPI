@@ -251,6 +251,50 @@ def test_character_video_rejects_start_media_id_and_dialogue_false_keeps_prompt(
         assert accepted.json()["jobs"][0]["id"]
 
 
+def test_unknown_character_project_route_is_rejected():
+    with tempfile.TemporaryDirectory(dir=".") as td:
+        application = make_app(f"{td}/assets")
+        seed_connection(application)
+        with TestClient(application) as client:
+            created = client.post(
+                "/v1/characters",
+                json={"name": "Luna", "reference_media_ids": ["media-character"]},
+            )
+            character_id = created.json()["id"]
+            response = client.post(
+                f"/v1/characters/{character_id}/videos/generations",
+                json={"prompt": "walk", "project_id": "project-does-not-exist"},
+            )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "PROJECT_ROUTE_UNKNOWN"
+
+
+def test_cached_character_image_and_video_404_invalidate_media_cache():
+    for endpoint in ("images", "videos"):
+        with tempfile.TemporaryDirectory(dir=".") as td:
+            application = make_app(f"{td}/assets")
+            runtime = seed_connection(application)
+            with TestClient(application) as client:
+                created = client.post(
+                    "/v1/characters",
+                    json={"name": "Luna", "reference_media_ids": ["media-character"]},
+                )
+                job_response = client.post(
+                    f"/v1/characters/{created.json()['id']}/{endpoint}/generations",
+                    json={"prompt": "scene", "project_id": "project-1"},
+                )
+                async def fake_api(_connection_id, **_kwargs):
+                    return {"status": 404, "error": "media is stale"}
+
+                runtime.bridge.api_request = fake_api
+                asyncio.run(JobWorker(runtime).process_queued_jobs())
+                assert runtime.projects.get_job(job_response.json()["jobs"][0]["id"]).status == "failed"
+                assert runtime.projects.get_media(
+                    "installation-1\ncharacter@example.com", "project-1",
+                    runtime.projects.get_character(created.json()["id"]).reference_asset_hashes[0],
+                ) is None
+
+
 def test_worker_reuploads_character_asset_into_target_project():
     with tempfile.TemporaryDirectory(dir=".") as td:
         application = make_app(f"{td}/assets")

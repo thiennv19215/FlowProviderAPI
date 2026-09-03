@@ -7,7 +7,12 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from app.api.errors import APIError
-from app.api.generations import _decode_routing_scope, _image_digest, _job_response
+from app.api.generations import (
+    _decode_routing_scope,
+    _image_digest,
+    _job_response,
+    _validate_project_route,
+)
 from app.api.schemas import (
     ENTITY_TYPES,
     CharacterCreateRequest,
@@ -222,6 +227,7 @@ async def _enqueue_character_job(
     }
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
     project_id = body.get("project_id")
+    _validate_project_route(runtime, project_id)
     project_owner = runtime.projects.installation_for_project(project_id) if project_id else None
     if scoped_account_key and project_owner and scoped_account_key != project_owner:
         raise APIError(

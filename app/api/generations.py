@@ -18,8 +18,8 @@ from app.api.schemas import (
     ImageGenerationRequest,
     ImageUploadRequest,
     InlineImageInput,
-    JobStatusRequest,
     JobsResponse,
+    JobStatusRequest,
     VideoGenerationRequest,
 )
 from app.providers.google_flow.client import BoundFlowClient
@@ -287,6 +287,21 @@ def _known_media(runtime, media_ids: list[str]) -> dict[str, object]:
     }
 
 
+def _validate_project_route(runtime, project_id: str | None) -> None:
+    """Reject project IDs that are not owned by a known Provider account.
+
+    A queued job cannot safely discover the owner later: doing so would allow
+    the worker to send a project-bound request through an arbitrary account.
+    """
+    if project_id and runtime.projects.installation_for_project(project_id) is None:
+        raise APIError(
+            409,
+            "PROJECT_ROUTE_UNKNOWN",
+            "No provider account route is stored for this Google Flow project.",
+            field="project_id",
+        )
+
+
 def _should_auto_transfer_media(runtime, project_id: str | None, routing_scope: str | None, known_media: dict[str, object]) -> bool:
     if routing_scope or not known_media:
         return False
@@ -524,6 +539,27 @@ def _image_digest(image_base64: str) -> str:
     return hashlib.sha256(image_bytes).hexdigest()
 
 
+def _persist_inline_assets(runtime, images: list[InlineImageInput]) -> list[str]:
+    """Persist inline request images before enqueueing a durable job.
+
+    The worker may run after an API restart, so raw inline bytes cannot live
+    only in Runtime memory. Store the bytes in the content-addressed asset
+    store and snapshot their hashes in the job payload instead.
+    """
+    digests: list[str] = []
+    for image in images:
+        try:
+            digest, _path, size = runtime.projects.asset_store.put_base64(
+                image.image_base64, image.mime_type,
+            )
+        except ValueError as exc:
+            raise APIError(422, "INVALID_IMAGE", str(exc), field="input_images") from exc
+        runtime.projects.record_asset(digest, image.mime_type, size, image.file_name)
+        digests.append(digest)
+    runtime.projects.touch_assets(list(dict.fromkeys(digests)))
+    return digests
+
+
 async def _upload_inline_images(
     runtime,
     connection,
@@ -707,7 +743,7 @@ def _remember_generated_media(runtime, connection, project_id: str, result: dict
         if not isinstance(media_id, str) or not media_id:
             continue
         route_digest = hashlib.sha256(
-            f"generated-media-route\0{media_id}".encode("utf-8")
+            f"generated-media-route\0{media_id}".encode()
         ).hexdigest()
         runtime.projects.put_media(
             account_key,
@@ -1231,6 +1267,13 @@ async def generate_image(
 ) -> Response:
     runtime = request.app.state.runtime
     request_data = payload.model_dump(mode="json")
+    _validate_project_route(runtime, payload.project_id)
+    inline_images = payload.input_images
+    if inline_images:
+        request_data["input_image_hashes"] = [
+            _image_digest(image.image_base64) for image in inline_images
+        ]
+        request_data.pop("input_images", None)
     if idempotency_key is not None:
         idempotency_key = idempotency_key.strip()
         if not idempotency_key:
@@ -1251,8 +1294,8 @@ async def generate_image(
 
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
 
-    if "input_images" in request_data and request_data["input_images"]:
-        runtime.inline_images[job_id] = request_data.pop("input_images")
+    if inline_images:
+        _persist_inline_assets(runtime, inline_images)
 
     job = runtime.projects.enqueue_job(
         job_id=job_id,
@@ -1275,6 +1318,13 @@ async def generate_video(
 ) -> Response:
     runtime = request.app.state.runtime
     request_data = payload.model_dump(mode="json")
+    _validate_project_route(runtime, payload.project_id)
+    inline_images = payload.input_images
+    if inline_images:
+        request_data["input_image_hashes"] = [
+            _image_digest(image.image_base64) for image in inline_images
+        ]
+        request_data.pop("input_images", None)
     if idempotency_key is not None:
         idempotency_key = idempotency_key.strip()
         if not idempotency_key:
@@ -1295,8 +1345,8 @@ async def generate_video(
 
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
 
-    if "input_images" in request_data and request_data["input_images"]:
-        runtime.inline_images[job_id] = request_data.pop("input_images")
+    if inline_images:
+        _persist_inline_assets(runtime, inline_images)
 
     job = runtime.projects.enqueue_job(
         job_id=job_id,

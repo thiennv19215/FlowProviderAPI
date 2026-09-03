@@ -1,4 +1,7 @@
 import asyncio
+import base64
+import hashlib
+import tempfile
 from types import SimpleNamespace
 
 import pytest
@@ -137,6 +140,129 @@ def test_image_is_enqueued_worker_completes_it_and_status_only_reads_db(monkeypa
             "error": None,
         }
         assert calls == []
+
+
+def test_generic_inline_image_is_reloaded_from_asset_store_after_runtime_memory_reset(monkeypatch):
+    with tempfile.TemporaryDirectory(dir=".") as root:
+        db_path = f"{root}/projects.db"
+        asset_dir = f"{root}/assets"
+        application = create_app(Settings(
+            env="test", bootstrap_api_key="fpa_test", public_base_url="https://provider.test",
+            project_store_path=db_path, asset_store_path=asset_dir, worker_enabled=False,
+        ))
+        connect(application, monkeypatch)
+        raw = b"durable-inline-image"
+        with TestClient(application) as client:
+            response = client.post(
+                "/v1/images/generations",
+                json={
+                    "project_id": "project-1",
+                    "prompt": "use this image",
+                    "input_images": [{
+                        "image_base64": base64.b64encode(raw).decode("ascii"),
+                        "mime_type": "image/png",
+                        "file_name": "inline.png",
+                    }],
+                },
+            )
+            assert response.status_code == 202
+            job_id = response.json()["jobs"][0]["id"]
+
+        # Reopen the API against the same DB and asset directory. The worker
+        # must reconstruct the image from the persisted content-addressed file.
+        restarted = create_app(Settings(
+            env="test", bootstrap_api_key="fpa_test", public_base_url="https://provider.test",
+            project_store_path=db_path, asset_store_path=asset_dir, worker_enabled=False,
+        ))
+        connect(restarted, monkeypatch)
+        calls = []
+
+        async def fake_api(_connection_id, **kwargs):
+            calls.append(kwargs)
+            if "/flow/uploadImage" in kwargs["url"]:
+                return {"status": 200, "data": {"media": {"name": "media/reloaded"}}}
+            return {"status": 200, "data": {"media": [{"name": "media/generated"}]}}
+
+        monkeypatch.setattr(restarted.state.runtime.bridge, "api_request", fake_api)
+        with TestClient(restarted) as client:
+            asyncio.run(JobWorker(restarted.state.runtime).process_queued_jobs())
+            assert restarted.state.runtime.projects.get_job(job_id).status == "completed"
+            assert any("/flow/uploadImage" in call["url"] for call in calls)
+
+
+def test_missing_persisted_inline_asset_fails_job_before_dispatch(monkeypatch):
+    with tempfile.TemporaryDirectory(dir=".") as asset_dir:
+        application = create_app(Settings(
+            env="test", bootstrap_api_key="fpa_test", public_base_url="https://provider.test",
+            project_store_path=":memory:", asset_store_path=asset_dir, worker_enabled=False,
+        ))
+        connect(application, monkeypatch)
+        raw = b"asset-to-remove"
+        async def unexpected_api(*_args, **_kwargs):
+            raise AssertionError("missing asset must fail before calling Flow")
+
+        monkeypatch.setattr(application.state.runtime.bridge, "api_request", unexpected_api)
+        with TestClient(application) as client:
+            response = client.post(
+                "/v1/images/generations",
+                json={
+                    "project_id": "project-1",
+                    "prompt": "use this image",
+                    "input_images": [{"image_base64": base64.b64encode(raw).decode("ascii")}],
+                },
+            )
+            assert response.status_code == 202
+            job_id = response.json()["jobs"][0]["id"]
+            digest = hashlib.sha256(raw).hexdigest()
+            application.state.runtime.projects.asset_store.delete(digest)
+            asyncio.run(JobWorker(application.state.runtime).process_queued_jobs())
+            job = application.state.runtime.projects.get_job(job_id)
+            assert job.status == "failed"
+            assert job.error_code == "INPUT_IMAGE_ASSET_MISSING"
+
+
+def test_cached_generic_image_404_invalidates_media_cache(monkeypatch):
+    application = async_app()
+    connect(application, monkeypatch)
+    runtime = application.state.runtime
+    raw = b"cached-image"
+    digest, _path, size = runtime.projects.asset_store.put_bytes(raw, "image/png")
+    runtime.projects.record_asset(digest, "image/png", size, "cached.png")
+    runtime.projects.put_media(
+        "installation-1", "project-1", digest, "media/cached", "image/png", "cached.png",
+        {}, 200, {},
+    )
+
+    async def stale_flow(_connection_id, **_kwargs):
+        return {"status": 404, "error": "media is stale"}
+
+    monkeypatch.setattr(runtime.bridge, "api_request", stale_flow)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/images/generations",
+            json={
+                "project_id": "project-1",
+                "prompt": "use cached image",
+                "input_images": [{"image_base64": base64.b64encode(raw).decode("ascii")}],
+            },
+        )
+        assert response.status_code == 202
+        job_id = response.json()["jobs"][0]["id"]
+        asyncio.run(JobWorker(runtime).process_queued_jobs())
+        assert runtime.projects.get_job(job_id).status == "failed"
+        assert runtime.projects.get_media("installation-1", "project-1", digest) is None
+
+
+def test_unknown_generic_project_route_is_rejected(monkeypatch):
+    application = async_app()
+    connect(application, monkeypatch)
+    with TestClient(application) as client:
+        response = client.post(
+            "/v1/images/generations",
+            json={"project_id": "project-does-not-exist", "prompt": "draw"},
+        )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "PROJECT_ROUTE_UNKNOWN"
 
 
 def test_job_status_returns_image_and_video_types_in_request_order(monkeypatch):

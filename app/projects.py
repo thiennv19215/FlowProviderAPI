@@ -806,7 +806,11 @@ class ProjectStore:
             ).fetchall():
                 try:
                     payload = json.loads(row["request_payload_json"] or "{}")
-                    for key in ("reference_asset_hashes", "additional_reference_asset_hashes"):
+                    for key in (
+                        "reference_asset_hashes",
+                        "additional_reference_asset_hashes",
+                        "input_image_hashes",
+                    ):
                         values = payload.get(key, [])
                         referenced.update(str(value) for value in values if isinstance(value, str))
                 except (TypeError, ValueError):

@@ -243,7 +243,36 @@ class JobWorker:
                 reference_media_ids = uploaded_ids
                 payload["_cached_digests"] = list(cached_digests)
                 payload["reference_media_ids"] = uploaded_ids
-            inline_images = self.runtime.inline_images.pop(job.job_id, None) or payload.get("input_images")
+            inline_images = self.runtime.inline_images.pop(job.job_id, None)
+            if inline_images is None:
+                inline_images = payload.get("input_images")
+            if inline_images is None and payload.get("input_image_hashes"):
+                inline_images = []
+                missing_assets = []
+                from app.api.schemas import InlineImageInput
+                for digest in payload.get("input_image_hashes") or []:
+                    digest = str(digest)
+                    asset_mime, asset_file_name = self.runtime.projects.get_asset_info(digest)
+                    stored_asset = self.runtime.projects.asset_store.read(digest, asset_mime)
+                    if stored_asset is None:
+                        missing_assets.append(digest)
+                        continue
+                    raw_bytes, mime_type = stored_asset
+                    inline_images.append(
+                        InlineImageInput(
+                            image_base64=base64.b64encode(raw_bytes).decode("ascii"),
+                            mime_type=mime_type,
+                            file_name=asset_file_name or f"reference-{digest[:12]}.png",
+                        )
+                    )
+                if missing_assets:
+                    self.runtime.projects.update_job_failed(
+                        job.job_id,
+                        "One or more inline reference assets are unavailable.",
+                        claim_token,
+                        error_code="INPUT_IMAGE_ASSET_MISSING",
+                    )
+                    return
             if inline_images:
                 from app.api.generations import _upload_inline_images
                 from app.api.schemas import InlineImageInput
@@ -300,12 +329,12 @@ class JobWorker:
                     },
                     captcha_action=CAPTCHA_IMAGE,
                 )
-                if result.get("status") == 404:
+                status = result.get("status") if isinstance(result, dict) else None
+                if status == 404:
                     for digest in payload.get("_cached_digests") or []:
                         self.runtime.projects.invalidate_media(
                             account_key, resolved_project_id, digest
                         )
-                status = result.get("status") if isinstance(result, dict) else None
                 if not isinstance(status, int) or status >= 400 or result.get("error"):
                     unknown = not isinstance(status, int) or status in {
                         408, 425, 500, 502, 503, 504,
@@ -407,6 +436,11 @@ class JobWorker:
                 result = await _api(client, url=target_url, body=body, captcha_action=CAPTCHA_VIDEO)
 
             status = result.get("status") if isinstance(result, dict) else None
+            if status == 404:
+                for digest in payload.get("_cached_digests") or []:
+                    self.runtime.projects.invalidate_media(
+                        account_key, resolved_project_id, digest
+                    )
             if not isinstance(status, int) or status >= 400 or result.get("error"):
                 error_msg = str(result.get("error") or f"HTTP {status}")
                 if isinstance(status, int) and _credit_exhaustion(result):
