@@ -724,7 +724,8 @@ class ProjectStore:
         media_type = media_type or ("image" if gen_type == "image" else "video")
         if media_type not in {"image", "video"}:
             raise ValueError("media_type must be 'image' or 'video'")
-        payload_json = json.dumps(payload, ensure_ascii=False)
+        clean_payload = {k: v for k, v in payload.items() if k != "input_images"}
+        payload_json = json.dumps(clean_payload, ensure_ascii=False)
         with self._lock:
             try:
                 self._db().execute(

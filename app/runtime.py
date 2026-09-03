@@ -25,6 +25,7 @@ class Runtime:
     active_image_jobs: dict[str, int] = field(default_factory=dict)
     active_video_jobs: dict[str, int] = field(default_factory=dict)
     reserved_credits: dict[str, int] = field(default_factory=dict)
+    inline_images: dict[str, list] = field(default_factory=dict)
     worker: JobWorker | None = None
 
     def connection_load(self, connection) -> int:

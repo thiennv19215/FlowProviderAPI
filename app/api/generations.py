@@ -1277,8 +1277,8 @@ async def generate_image(
             raise APIError(400, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must contain at most 200 characters.")
         existing_job = runtime.projects.get_job_by_idempotency_key(idempotency_key)
         if existing_job:
-            clean_stored = {k: v for k, v in existing_job.request_payload.items() if not k.startswith("_")}
-            clean_current = {k: v for k, v in request_data.items() if not k.startswith("_")}
+            clean_stored = {k: v for k, v in existing_job.request_payload.items() if not k.startswith("_") and k != "input_images"}
+            clean_current = {k: v for k, v in request_data.items() if not k.startswith("_") and k != "input_images"}
             if clean_stored != clean_current:
                 raise APIError(409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was already used with a different request payload.")
             return _job_response(request, [existing_job], status_code=202, include_route=True)
@@ -1288,6 +1288,9 @@ async def generate_image(
         request_data["_idempotency_key"] = idempotency_key
 
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
+
+    if "input_images" in request_data and request_data["input_images"]:
+        runtime.inline_images[job_id] = request_data.pop("input_images")
 
     job = runtime.projects.enqueue_job(
         job_id=job_id,
@@ -1318,8 +1321,8 @@ async def generate_video(
             raise APIError(400, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must contain at most 200 characters.")
         existing_job = runtime.projects.get_job_by_idempotency_key(idempotency_key)
         if existing_job:
-            clean_stored = {k: v for k, v in existing_job.request_payload.items() if not k.startswith("_")}
-            clean_current = {k: v for k, v in request_data.items() if not k.startswith("_")}
+            clean_stored = {k: v for k, v in existing_job.request_payload.items() if not k.startswith("_") and k != "input_images"}
+            clean_current = {k: v for k, v in request_data.items() if not k.startswith("_") and k != "input_images"}
             if clean_stored != clean_current:
                 raise APIError(409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was already used with a different request payload.")
             return _job_response(request, [existing_job], status_code=202, include_route=True)
@@ -1329,6 +1332,9 @@ async def generate_video(
         request_data["_idempotency_key"] = idempotency_key
 
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
+
+    if "input_images" in request_data and request_data["input_images"]:
+        runtime.inline_images[job_id] = request_data.pop("input_images")
 
     job = runtime.projects.enqueue_job(
         job_id=job_id,

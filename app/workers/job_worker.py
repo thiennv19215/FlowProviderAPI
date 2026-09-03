@@ -168,12 +168,13 @@ class JobWorker:
             ctx = client_context(resolved_project_id, tier)
 
             reference_media_ids = list(payload.get("reference_media_ids") or [])
-            if payload.get("input_images"):
+            inline_images = self.runtime.inline_images.pop(job.job_id, None) or payload.get("input_images")
+            if inline_images:
                 from app.api.generations import _upload_inline_images
                 from app.api.schemas import InlineImageInput
                 raw_images = [
                     InlineImageInput(**img) if isinstance(img, dict) else img
-                    for img in payload["input_images"]
+                    for img in inline_images
                 ]
                 uploaded_ids, cached_digests, hits = await _upload_inline_images(
                     self.runtime, connection, client, resolved_project_id, raw_images
