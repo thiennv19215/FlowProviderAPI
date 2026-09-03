@@ -39,8 +39,12 @@ def _is_omni_generation(generation_type: str) -> bool:
 _is_omni_job_type = _is_omni_generation
 
 
+def _is_frames_generation(generation_type: str) -> bool:
+    return generation_type in {"image_to_video", "start_to_video", "frames_to_video", "frames", "i2v", "omni_i2v"}
+
+
 def _job_aspect_ratio(generation_type: str, payload: dict) -> str:
-    default = "VIDEO_ASPECT_RATIO_LANDSCAPE" if generation_type in {"image_to_video", "start_to_video", "frames_to_video", "frames"} else "VIDEO_ASPECT_RATIO_PORTRAIT"
+    default = "VIDEO_ASPECT_RATIO_LANDSCAPE" if generation_type == "image_to_video" else "VIDEO_ASPECT_RATIO_PORTRAIT"
     return payload.get("aspect_ratio", default)
 
 
@@ -183,7 +187,7 @@ class JobWorker:
                     reference_media_ids.extend(uploaded_ids)
                 elif _is_omni_generation(job.generation_type):
                     payload["reference_media_ids"] = list(payload.get("reference_media_ids") or []) + uploaded_ids
-                elif job.generation_type in {"image_to_video", "i2v"}:
+                elif _is_frames_generation(job.generation_type):
                     if not payload.get("start_media_id") and uploaded_ids:
                         payload["start_media_id"] = uploaded_ids[0]
                         if len(uploaded_ids) > 1 and not payload.get("end_media_id"):
