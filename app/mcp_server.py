@@ -22,7 +22,18 @@ ImageModel = Literal["pro", "v2"]
 ImageAspect = Literal["1:1", "16:9", "9:16"]
 VideoAspect = Literal["16:9", "9:16"]
 VideoQuality = Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"]
-VideoType = Literal["image_to_video", "omni"]
+VideoType = Literal[
+    "frames_to_video",
+    "reference_to_video",
+    "frames",
+    "ingredients",
+    "references",
+    "start_to_video",
+    "image_to_video",
+    "omni",
+    "r2v",
+    "i2v",
+]
 
 IMAGE_MIME_TYPES = {
     ".avif": "image/avif",
@@ -357,7 +368,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
             routing_scope=routing_scope,
         )
 
-    @server.tool(title="Generate a paid video with Flow", annotations=paid_mutating)
+    @server.tool(title="Generate a video with Flow", annotations=paid_mutating)
     async def flow_generate_video(
         type: VideoType,
         prompt: Annotated[str, Field(min_length=1, max_length=12000)],
@@ -366,42 +377,52 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         start_media_id: str | None = None,
         end_media_id: str | None = None,
         reference_media_ids: list[str] | None = None,
-        quality: VideoQuality = "lite",
+        image_paths: list[str] | None = None,
+        quality: VideoQuality | None = None,
         duration_seconds: Literal[4, 6, 8, 10] = 8,
         routing_scope: str | None = None,
     ) -> FlowToolResult:
-        """Start a paid, non-idempotent i2v (frame-to-video) or r2v (reference-to-video) job using Gemini Omni Flash."""
+        """Start a video generation job (frames_to_video or reference_to_video) using Gemini Omni Flash."""
 
-        if type == "image_to_video":
-            if not start_media_id:
-                raise ToolError("start_media_id is required for i2v video")
+        is_frames = type in {"frames_to_video", "frames", "start_to_video", "image_to_video", "i2v", "omni_i2v"}
+        paths = image_paths or []
+        encoded_images = await _encode_images(paths, provider.settings.allowed_root_paths) if paths else []
+
+        if is_frames:
+            if not start_media_id and not encoded_images:
+                raise ToolError("start_media_id is required (or provide local image_paths)")
             if reference_media_ids:
-                raise ToolError("reference_media_ids is only valid for r2v video")
+                raise ToolError("reference_media_ids is only valid for reference_to_video")
+            default_aspect = "16:9" if type == "image_to_video" else "9:16"
             body: dict[str, Any] = {
                 "type": type,
                 "project_id": project_id,
                 "prompt": prompt,
-                "start_media_id": start_media_id,
-                "aspect_ratio": aspect_ratio or "16:9",
+                "aspect_ratio": aspect_ratio or default_aspect,
                 "duration_seconds": duration_seconds,
             }
-            if type == "image_to_video":
-                body["quality"] = quality
+            if start_media_id:
+                body["start_media_id"] = start_media_id
             if end_media_id:
                 body["end_media_id"] = end_media_id
+            if encoded_images:
+                body["input_images"] = encoded_images
+            if quality and type == "image_to_video":
+                body["quality"] = quality
         else:
             media_ids = reference_media_ids or []
-            if not media_ids:
-                raise ToolError("reference_media_ids is required for r2v video")
-            if len(media_ids) > 8:
-                raise ToolError("Use at most 8 reference media IDs")
+            if not media_ids and not encoded_images:
+                raise ToolError("reference_media_ids is required (or provide local image_paths)")
+            if len(media_ids) + len(encoded_images) > 8:
+                raise ToolError("Use at most 8 reference media IDs and image files in total")
             if start_media_id or end_media_id:
-                raise ToolError("start_media_id and end_media_id are only valid for i2v video")
+                raise ToolError("start_media_id and end_media_id are only valid for frames_to_video")
             body = {
                 "type": type,
                 "project_id": project_id,
                 "prompt": prompt,
                 "reference_media_ids": media_ids,
+                "input_images": encoded_images,
                 "aspect_ratio": aspect_ratio or "9:16",
                 "duration_seconds": duration_seconds,
             }
