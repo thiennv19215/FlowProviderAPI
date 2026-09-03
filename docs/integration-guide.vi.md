@@ -559,6 +559,11 @@ Content-Type: application/json
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
 | `aspect_ratio` | Không | `"9:16"` (dọc - mặc định) hoặc `"16:9"` (ngang). |
 
+> [!TIP]
+> **Khuyến nghị tối ưu (Multi-Account & Caching):** Luôn ưu tiên truyền ảnh qua `input_images` (mảng Base64) thay vì `start_media_id`.
+> - **Tự động Cache SHA256**: Backend tự động băm content hash và lưu trong database. Nếu cùng 1 ảnh được gửi nhiều lần, backend sẽ tái sử dụng ngay `google_media_id` có sẵn mà không tốn công upload lại lên Google.
+> - **Tự do phân tải (Load Balancing)**: Khi truyền Base64, backend có thể phân bổ task cho bất kỳ tài khoản Google nào còn nhiều credit/rảnh slot nhất. Ngược lại, nếu dùng `start_media_id`, job sẽ bị trói cứng vào đúng 1 tài khoản đã tạo ra ảnh đó.
+
 ---
 
 ## 9. Tạo video từ ảnh tham chiếu (`reference_to_video` / Ảnh tham chiếu ➔ Video)
@@ -587,6 +592,11 @@ Content-Type: application/json
 | `input_images` | Không | Mảng từ 1 đến 8 ảnh Base64 để Provider tự động upload và gán tham chiếu. |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
 | `aspect_ratio` | Không | `"9:16"` (dọc - mặc định) hoặc `"16:9"` (ngang). |
+
+> [!TIP]
+> **Khuyến nghị tối ưu (Multi-Account & Caching):** Luôn ưu tiên truyền ảnh qua `input_images` (mảng Base64) thay vì `reference_media_ids`.
+> - **Tự động Cache SHA256**: Nếu cùng các ảnh tham chiếu được gửi nhiều lần cho các prompt/video khác nhau, backend sẽ tái sử dụng ngay media ID có sẵn trong cache SQLite mà không tốn công upload lại lên Google.
+> - **Tự do phân tải (Load Balancing)**: Khi truyền Base64, backend có thể phân bổ task cho bất kỳ tài khoản Google nào còn nhiều credit/rảnh slot nhất trong cụm.
 
 ### Response bắt đầu tạo video
 

@@ -36,10 +36,10 @@ Khi xây dựng Agent prompt hoặc System Instructions, tuân thủ 5 nguyên t
 
 1. **Kiểm tra Readiness**: Gọi `flow_check_health` ở đầu session nếu chưa biết trạng thái hệ thống.
 2. **Không cần truyền `project_id`**: Hệ thống đã có **Managed Project tự động** cho từng tài khoản Google. Agent chỉ cần tập trung vào `prompt`, `aspect_ratio`, `duration_seconds` và ảnh đầu vào.
-3. **Đọc ảnh local cực dễ qua `image_paths`**:
-   - Thay vì phải tự viết code convert Base64, Agent chỉ cần truyền đường dẫn file:
-     `image_paths: ["./character.png"]`
-   - MCP Server sẽ tự động kiểm tra bảo mật trong `FLOW_PROVIDER_MCP_ALLOWED_ROOTS`, đọc file và mã hóa tự động.
+3. **Luôn ưu tiên đọc ảnh qua `image_paths` (MCP) hoặc Base64 (`input_images`) thay vì `media_id`**:
+   - **Tự động Cache thông minh**: Backend đã có sẵn cơ chế băm **SHA256 Content Deduplication** trong SQLite. Nếu ảnh trùng, Backend tự động lấy `google_media_id` đã cache sẵn mà **hoàn toàn không cần upload lại lên Google**.
+   - **Tự do phân tải (Load Balancing)**: Khi gửi raw bytes / file, Backend có thể linh hoạt chuyển job sang **bất kỳ tài khoản Google nào còn nhiều credit/rảnh slot nhất** trong hệ thống. Ngược lại, nếu dùng `start_media_id` / `reference_media_ids`, job sẽ bị trói cứng vào duy nhất 1 tài khoản đã tạo ra ảnh đó.
+   - Với MCP: Agent chỉ cần truyền đường dẫn file: `image_paths: ["./character.png"]`, MCP Adapter sẽ tự động đọc và mã hóa.
 4. **Quy trình Polling an toàn**:
    - Sau khi gọi `flow_generate_image`, `flow_generate_video` hoặc một tool Character, Agent nhận về `job_id`.
    - Agent gọi `flow_get_job_status(job_ids=[job_id])` mỗi 5-10 giây cho đến khi `status == "complete"` hoặc `"failed"`.
