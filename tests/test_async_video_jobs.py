@@ -77,7 +77,7 @@ def test_video_is_enqueued_then_status_reads_database_only(monkeypatch):
         assert len(calls) == 1
 
         calls.clear()
-        status = client.post("/v1/videos/status", json={"job_ids": [job_id]})
+        status = client.post("/v1/jobs/status", json={"job_ids": [job_id]})
         assert status.status_code == 200
         assert status.json()["jobs"][0]["status"] == "running"
         assert calls == []
@@ -208,7 +208,7 @@ def test_worker_persists_complete_video_and_status_returns_normalized_media(monk
         phase = "poll"
         asyncio.run(worker.poll_running_jobs())
 
-        status = client.post("/v1/videos/status", json={"job_ids": [job_id]})
+        status = client.post("/v1/jobs/status", json={"job_ids": [job_id]})
         job = status.json()["jobs"][0]
         assert job["status"] == "complete"
         assert job["media"] == [{
@@ -275,7 +275,7 @@ def test_blank_idempotency_key_is_rejected(monkeypatch):
 def test_video_contract_is_present_in_openapi():
     schema = async_app().openapi()
     create_schema = schema["paths"]["/v1/videos/generations"]["post"]["responses"]["202"]
-    status_schema = schema["paths"]["/v1/videos/status"]["post"]["responses"]["200"]
+    status_schema = schema["paths"]["/v1/jobs/status"]["post"]["responses"]["200"]
     assert create_schema["content"]["application/json"]["schema"]["$ref"].endswith("JobsResponse")
     assert status_schema["content"]["application/json"]["schema"]["$ref"].endswith("JobsResponse")
     assert schema["components"]["schemas"]["Job"]["properties"]["type"]["enum"] == [
@@ -328,7 +328,7 @@ def test_worker_marks_terminal_media_failure(monkeypatch):
     assert failed.status == "failed"
     assert failed.error_code == "VIDEO_MEDIA_FAILED"
     with TestClient(application) as client:
-        response = client.post("/v1/videos/status", json={"job_ids": ["job-failed"]})
+        response = client.post("/v1/jobs/status", json={"job_ids": ["job-failed"]})
     assert response.json()["jobs"][0]["error"] == {
         "code": "VIDEO_MEDIA_FAILED",
         "message": "Google Flow video generation failed with status MEDIA_GENERATION_STATUS_UNSUCCESSFUL.",
@@ -454,7 +454,7 @@ def test_status_batch_preserves_order_and_does_not_require_extension(monkeypatch
 
     with TestClient(application) as client:
         response = client.post(
-            "/v1/videos/status",
+            "/v1/jobs/status",
             json={"job_ids": ["job-2", "job-1"]},
         )
 
@@ -492,7 +492,7 @@ def test_uncertain_paid_dispatch_is_terminal_and_not_retryable(monkeypatch):
     asyncio.run(JobWorker(runtime).process_queued_jobs())
     with TestClient(application) as client:
         response = client.post(
-            "/v1/videos/status", json={"job_ids": ["job-uncertain"]}
+            "/v1/jobs/status", json={"job_ids": ["job-uncertain"]}
         )
 
     error = response.json()["jobs"][0]["error"]

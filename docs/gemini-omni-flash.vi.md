@@ -102,7 +102,7 @@ Sau khi gọi `POST /v1/videos/generations`, server trả `202` cùng `jobs[].id
 
 ### Request Polling
 ```http
-POST /v1/videos/status
+POST /v1/jobs/status
 Content-Type: application/json
 
 {

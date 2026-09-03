@@ -444,7 +444,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
 
         return await provider.request(
             "POST",
-            "/v1/videos/status",
+            "/v1/jobs/status",
             body={"job_ids": job_ids},
         )
 

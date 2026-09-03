@@ -2,6 +2,8 @@ import base64
 import json
 from pathlib import Path
 
+import tempfile
+
 import httpx
 from mcp import Client
 
@@ -36,47 +38,49 @@ async def test_mcp_lists_business_tools():
 
 
 async def test_generate_image_encodes_local_reference_and_maps_agent_values():
-    image_path = Path("reference-generated-c1996c19.png").resolve()
-    image_bytes = image_path.read_bytes()
-    captured = {}
+    with tempfile.TemporaryDirectory() as td:
+        image_path = Path(td) / "reference-test.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+        image_bytes = image_path.read_bytes()
+        captured = {}
 
-    def handler(request: httpx.Request):
-        captured["request"] = request
-        captured["body"] = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={"media": [{"name": "media/generated"}]},
-            headers={
-                "X-Request-Id": "req_mcp",
-                "X-Flow-Project-Id": "projects/managed",
-            },
-        )
+        def handler(request: httpx.Request):
+            captured["request"] = request
+            captured["body"] = json.loads(request.content)
+            return httpx.Response(
+                200,
+                json={"media": [{"name": "media/generated"}]},
+                headers={
+                    "X-Request-Id": "req_mcp",
+                    "X-Flow-Project-Id": "projects/managed",
+                },
+            )
 
-    server = build_mcp_server(mock_client(handler))
-    async with Client(server) as client:
-        result = await client.call_tool(
-            "flow_generate_image",
-            {
-                "prompt": "a quiet mountain lake",
-                "model": "v2",
-                "aspect_ratio": "16:9",
-                "variant_count": 2,
-                "image_paths": [str(image_path)],
-            },
-        )
+        server = build_mcp_server(mock_client(handler, allowed_roots=td))
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "flow_generate_image",
+                {
+                    "prompt": "a quiet mountain lake",
+                    "model": "v2",
+                    "aspect_ratio": "16:9",
+                    "variant_count": 2,
+                    "image_paths": [str(image_path)],
+                },
+            )
 
-    assert result.is_error is False
-    assert "authorization" not in captured["request"].headers
-    assert captured["request"].url.path == "/v1/images/generations"
-    assert captured["body"]["model"] == "v2"
-    assert captured["body"]["aspect_ratio"] == "16:9"
-    assert captured["body"]["variant_count"] == 2
-    assert captured["body"]["input_images"] == [{
-        "image_base64": base64.b64encode(image_bytes).decode("ascii"),
-        "mime_type": "image/png",
-        "file_name": image_path.name,
-    }]
-    assert result.structured_content["metadata"]["x-flow-project-id"] == "projects/managed"
+        assert result.is_error is False
+        assert "authorization" not in captured["request"].headers
+        assert captured["request"].url.path == "/v1/images/generations"
+        assert captured["body"]["model"] == "v2"
+        assert captured["body"]["aspect_ratio"] == "16:9"
+        assert captured["body"]["variant_count"] == 2
+        assert captured["body"]["input_images"] == [{
+            "image_base64": base64.b64encode(image_bytes).decode("ascii"),
+            "mime_type": "image/png",
+            "file_name": image_path.name,
+        }]
+        assert result.structured_content["metadata"]["x-flow-project-id"] == "projects/managed"
 
 
 async def test_provider_error_is_returned_as_model_visible_tool_error():
@@ -211,18 +215,24 @@ async def test_image_tools_reject_paths_outside_allowed_roots():
         called = True
         return httpx.Response(200, json={})
 
-    allowed_root = Path("tests").resolve()
-    outside_image = Path("reference-generated-c1996c19.png").resolve()
-    server = build_mcp_server(mock_client(handler, allowed_roots=str(allowed_root)))
-    async with Client(server) as client:
-        result = await client.call_tool(
-            "flow_upload_image",
-            {"image_path": str(outside_image)},
-        )
+    with tempfile.TemporaryDirectory() as td:
+        allowed_root = Path(td) / "allowed"
+        allowed_root.mkdir()
+        outside_dir = Path(td) / "outside"
+        outside_dir.mkdir()
+        outside_image = outside_dir / "outside.png"
+        outside_image.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
 
-    assert result.is_error is True
-    assert "outside FLOW_PROVIDER_MCP_ALLOWED_ROOTS" in result.content[0].text
-    assert called is False
+        server = build_mcp_server(mock_client(handler, allowed_roots=str(allowed_root)))
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "flow_upload_image",
+                {"image_path": str(outside_image)},
+            )
+
+        assert result.is_error is True
+        assert "outside FLOW_PROVIDER_MCP_ALLOWED_ROOTS" in result.content[0].text
+        assert called is False
 
 
 async def test_image_generation_preflights_combined_base64_limit(monkeypatch):
@@ -233,15 +243,17 @@ async def test_image_generation_preflights_combined_base64_limit(monkeypatch):
         called = True
         return httpx.Response(200, json={})
 
-    monkeypatch.setattr(mcp_server_module, "MAX_BASE64_TOTAL_CHARS", 1)
-    image_path = Path("reference-generated-c1996c19.png").resolve()
-    server = build_mcp_server(mock_client(handler))
-    async with Client(server) as client:
-        result = await client.call_tool(
-            "flow_generate_image",
-            {"prompt": "test", "image_paths": [str(image_path)]},
-        )
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setattr(mcp_server_module, "MAX_BASE64_TOTAL_CHARS", 1)
+        image_path = Path(td) / "test-limit.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82")
+        server = build_mcp_server(mock_client(handler, allowed_roots=td))
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "flow_generate_image",
+                {"prompt": "test", "image_paths": [str(image_path)]},
+            )
 
-    assert result.is_error is True
-    assert "Base64 request limit" in result.content[0].text
-    assert called is False
+        assert result.is_error is True
+        assert "Base64 request limit" in result.content[0].text
+        assert called is False

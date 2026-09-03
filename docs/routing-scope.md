@@ -44,7 +44,7 @@ X-Provider-Routing-Scope: <opaque-signed-token>
 ```
 
 ```http
-POST /v1/videos/status
+POST /v1/jobs/status
 X-Provider-Routing-Scope: <opaque-signed-token>
 ```
 

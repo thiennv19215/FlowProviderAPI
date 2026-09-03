@@ -45,7 +45,6 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 | `POST` | `/v1/images/generations` | Tạo ảnh mới, có hoặc không có ảnh tham chiếu. |
 | `POST` | `/v1/videos/generations` | Tạo image-to-video hoặc Omni video. |
 | `POST` | `/v1/jobs/status` | Đọc trạng thái image/video job từ DB theo `job_ids`. |
-| `POST` | `/v1/videos/status` | Kiểm tra trạng thái các video operation. |
 | `GET` | `/health/live` | Kiểm tra process API đang chạy. |
 | `GET` | `/health/ready` | Kiểm tra extension/tài khoản Flow sẵn sàng. |
 
@@ -176,7 +175,7 @@ validate enum trước khi gọi Provider và không tự fallback âm thầm sa
 Luồng chuẩn (Khuyến nghị - Không cần quản lý project):
   1. Gửi thẳng Base64 qua input_images trong request tạo ảnh/video.
   2. Tạo ảnh qua /v1/images/generations hoặc tạo video qua /v1/videos/generations.
-  3. Kiểm tra tiến độ video qua /v1/videos/status.
+  3. Kiểm tra tiến độ video qua /v1/jobs/status.
   -> Provider tự động điều phối account, khởi tạo project, upload/cache media và gộp kết quả.
 
 Chế độ tương thích (Tùy chọn):
