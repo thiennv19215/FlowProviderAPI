@@ -426,8 +426,10 @@ class JobWorker:
                     "Paid dispatch failed or timed out; the outcome is unknown. "
                     "Reconcile before retrying. " + message
                 )
-                self.runtime.projects.update_job_failed(
-                    job.job_id, message, claim_token,
+            self.runtime.projects.update_job_failed(
+                job.job_id,
+                message,
+                claim_token,
                 error_code=(
                     "VIDEO_DISPATCH_OUTCOME_UNKNOWN"
                     if paid_attempted
