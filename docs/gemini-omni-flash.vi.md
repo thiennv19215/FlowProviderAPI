@@ -1,73 +1,88 @@
-# Hướng Dẫn Toàn Diện Về Gemini Omni Flash Video (`i2v` & `r2v`)
+# Hướng Dẫn Toàn Diện Về Video Gemini Omni Flash (`frames_to_video` & `reference_to_video`)
 
-Tài liệu này cung cấp đặc tả kỹ thuật, hướng dẫn tích hợp và thực hành tốt nhất cho hệ thống sinh video **Gemini Omni Flash** trên **FlowProviderAPI**.
+Tài liệu này cung cấp đặc tả kỹ thuật đầy đủ, hướng dẫn tích hợp chi tiết và các ví dụ thực tế cho hệ thống tạo video **Gemini Omni Flash** trên **FlowProviderAPI**.
 
-Hệ thống đã loại bỏ hoàn toàn họ model Veo 3.1 cũ (thời gian render 60–90 giây, chi phí lớn) và chuyển dịch 100% sang kiến trúc **Gemini Omni Flash** siêu tốc (thời gian render chỉ **10–15 giây**, hỗ trợ các mức thời lượng từ 4s đến 10s).
+Hệ thống hoạt động trên nền tảng **Gemini Omni Flash siêu tốc** (thời gian render chỉ từ **10 – 30 giây**, hỗ trợ 4 mức thời lượng: `4s`, `6s`, `8s`, `10s`), được chuẩn hóa theo đúng 2 chế độ cốt lõi của giao diện Google Flow.
 
 ---
 
-## 1. So Sánh Hai Chế Độ: `i2v` vs `r2v`
+## 1. Bản Chất 2 Chế Độ Video & Sự Khác Biệt Đầu Vào
 
-Hệ thống phân tách thành hai nhánh độc lập dựa trên bản chất đồ họa đầu vào:
-
-| Tiêu chí | Chế độ `i2v` (Khung hình ➔ Video) | Chế độ `r2v` (Ảnh tham chiếu ➔ Video) |
+| Tiêu chí | Chế độ 1: `frames_to_video` (Khung hình ➔ Video) | Chế độ 2: `reference_to_video` (Ảnh tham chiếu ➔ Video) |
 | :--- | :--- | :--- |
-| **Bản chất AI** | Bắt buộc video phải bắt đầu chính xác từ 1 khung hình xuất phát (Frame 0 không bị biến dạng). | AI học đặc điểm nhân vật, trang phục, sản phẩm từ ảnh tham chiếu để tự do sáng tạo phân cảnh và góc máy mới. |
-| **Trường ảnh đầu vào** | `start_media_id` (khung đầu)<br>`end_media_id` (khung cuối - tùy chọn nối cảnh) | `reference_media_ids` (danh sách 1 đến 8 ID ảnh tham chiếu) |
-| **Endpoint Google Flow** | `batchAsyncGenerateVideoStartImage`<br>hoặc `batchAsyncGenerateVideoStartAndEndImage` (khi có `end_media_id`) | `batchAsyncGenerateVideoReferenceImages` |
-| **Dòng Model ngầm** | `abra_i2v_4s`, `abra_i2v_6s`, `abra_i2v_8s`, `abra_i2v_10s` | `abra_r2v_4s`, `abra_r2v_6s`, `abra_r2v_8s`, `abra_r2v_10s` |
-| **Thời lượng hỗ trợ** | `4`, `6`, `8` (mặc định), `10` giây | `4`, `6`, `8` (mặc định), `10` giây |
-| **Chi phí Credit** | 4s: 15 \| 6s: 20 \| 8s: 25 \| 10s: 30 credits | 4s: 15 \| 6s: 20 \| 8s: 25 \| 10s: 30 credits |
-| **Tỷ lệ khung hình** | `9:16` (mặc định)<br>`16:9` | `9:16` (mặc định)<br>`16:9` |
-| **Tính năng nối cảnh** | ✅ Hỗ trợ First + Last Frame chuyển cảnh mượt mà | ❌ Không áp dụng |
+| **Thuật ngữ Google Flow UI** | **Frames** (Start Frame / First Frame) | **Ingredients** (Reference Images) |
+| **Bản chất hoạt động** | Video **bắt đầu chuyển động chính xác từ giây thứ 0 của bức ảnh đầu vào** (diễn hoạt từ ảnh tĩnh thành chuyển động thực tế). Khung hình đầu không bị AI biến dạng. | AI học hỏi **nhân vật, trang phục, gương mặt, phong cách, chi tiết** từ 1–8 ảnh tham chiếu để sáng tạo một phân cảnh hoàn toàn mới với góc quay tự do. |
+| **Tham số chỉ định chế độ (`type`)** | **`"frames_to_video"`** *(khuyên dùng)*<br>*(Alias: `"frames"`, `"start_to_video"`, `"image_to_video"`, `"i2v"`)* | **`"reference_to_video"`** *(khuyên dùng)*<br>*(Alias: `"ingredients"`, `"references"`, `"omni"`, `"r2v"`)* |
+| **Tham số ảnh qua Media ID** | `start_media_id`: ID khung hình bắt đầu *(bắt buộc)*<br>`end_media_id`: ID khung hình kết thúc *(tùy chọn nối cảnh)* | `reference_media_ids`: Mảng từ **1 đến 8 ID ảnh** tham chiếu *(bắt buộc)* |
+| **Tham số ảnh trực tiếp qua Base64** | `input_images`: Tối đa 2 ảnh Base64 (Ảnh 1 là Start, Ảnh 2 là End) | `input_images`: Mảng từ **1 đến 8 ảnh Base64** tham chiếu |
+| **Tính năng chuyển cảnh (Interpolation)** | ✅ **Có**: Biến đổi liền mạch từ ảnh đầu sang ảnh cuối (`end_media_id`) | ❌ **Không**: Ảnh dùng để học phong cách/nhân vật, không cố định khung đầu/cuối |
+| **Model nội bộ Google** | `abra_i2v_4s`, `abra_i2v_6s`, `abra_i2v_8s`, `abra_i2v_10s` | `abra_r2v_4s`, `abra_r2v_6s`, `abra_r2v_8s`, `abra_r2v_10s` |
+| **Endpoint Google Flow API** | `batchAsyncGenerateVideoStartImage`<br>hoặc `batchAsyncGenerateVideoStartAndEndImage` | `batchAsyncGenerateVideoReferenceImages` |
+| **Tỷ lệ khung hình (`aspect_ratio`)** | `"9:16"` (Dọc - Mặc định)<br>`"16:9"` (Ngang) | `"9:16"` (Dọc - Mặc định)<br>`"16:9"` (Ngang) |
+| **Thời lượng (`duration_seconds`)** | `4`, `6`, `8` (mặc định), `10` giây | `4`, `6`, `8` (mặc định), `10` giây |
 
 ---
 
-## 2. Bảng Chi Phí Credit & Model Wire Keys
+## 2. Bảng Chi Phí Credit & Model Mapping
 
-Mỗi request sinh video sẽ tự động trừ trước số credit tương ứng với thời lượng đã chọn để đảm bảo an toàn hạn mức:
+Mỗi request tạo video sẽ tự động trừ trước số credit tương ứng với thời lượng đã chọn để đảm bảo an toàn hạn mức tài khoản:
 
-| Thời lượng (`duration_seconds`) | Model Wire Key `i2v` | Model Wire Key `r2v` | Chi phí Credit | Thời gian render thực tế |
+| Thời lượng (`duration_seconds`) | Model Key `frames_to_video` | Model Key `reference_to_video` | Chi phí Credit | Thời gian render thực tế |
 | :---: | :---: | :---: | :---: | :---: |
-| **4 giây** | `abra_i2v_4s` | `abra_r2v_4s` | **15 credits** | ~10 - 12 giây |
-| **6 giây** | `abra_i2v_6s` | `abra_r2v_6s` | **20 credits** | ~12 - 15 giây |
-| **8 giây** (Mặc định) | `abra_i2v_8s` | `abra_r2v_8s` | **25 credits** | ~15 - 18 giây |
-| **10 giây** | `abra_i2v_10s` | `abra_r2v_10s` | **30 credits** | ~18 - 22 giây |
+| **4 giây** | `abra_i2v_4s` | `abra_r2v_4s` | **15 credits** | ~10 - 15 giây |
+| **6 giây** | `abra_i2v_6s` | `abra_r2v_6s` | **20 credits** | ~15 - 20 giây |
+| **8 giây** (Mặc định) | `abra_i2v_8s` | `abra_r2v_8s` | **25 credits** | ~20 - 30 giây |
+| **10 giây** | `abra_i2v_10s` | `abra_r2v_10s` | **30 credits** | ~25 - 35 giây |
 
 ---
 
 ## 3. Hướng Dẫn Tích Hợp Chi Tiết
 
-### 3.1. Chế độ `i2v` (Tạo video từ khung hình)
+### 3.1. Chế độ `frames_to_video` (Khung hình ➔ Video)
 
-#### Trường hợp 1: Có 1 khung hình đầu (`start_media_id`)
-Video bắt đầu chính xác từ ảnh này và diễn hoạt chuyển động theo mô tả prompt.
-
+#### Cách 1: Sử dụng `start_media_id` (Ảnh có sẵn trên Provider)
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
 
 {
-  "type": "i2v",
-  "prompt": "The camera slowly pans around the girl as neon rain reflections shimmer in the night, cinematic slow motion",
-  "start_media_id": "1f68b8ec-7e46-41b3-81f6-38a7a1d0a769",
+  "type": "frames_to_video",
+  "prompt": "The camera slowly pans around the character, rain drips in slow motion, cinematic lighting",
+  "start_media_id": "c61dffd2-2453-4a56-8aef-09c61f096e78",
+  "duration_seconds": 4,
+  "aspect_ratio": "9:16"
+}
+```
+
+#### Cách 2: Truyền trực tiếp ảnh Base64 vào `input_images` (Ảnh từ máy bạn)
+```http
+POST /v1/videos/generations
+Content-Type: application/json
+
+{
+  "type": "frames_to_video",
+  "prompt": "Camera zooms in smoothly onto the cyberpunk warrior, glowing neon reflections",
+  "input_images": [
+    {
+      "image_base64": "iVBORw0KGgoAAAANSUhEUgAA...",
+      "mime_type": "image/png"
+    }
+  ],
   "duration_seconds": 6,
   "aspect_ratio": "9:16"
 }
 ```
 
-#### Trường hợp 2: Có khung hình đầu VÀ khung hình cuối (`start_media_id` + `end_media_id`)
-AI sẽ tự động nội suy chuyển cảnh liền mạch từ ảnh đầu biến chuyển thành đúng ảnh cuối. Rất hữu ích khi nối Cảnh N sang Cảnh N+1:
-
+#### Cách 3: Nối cảnh từ Khung hình đầu sang Khung hình cuối (`start_media_id` + `end_media_id`)
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
 
 {
-  "type": "i2v",
-  "prompt": "Smooth morphing transition from daylight city skyline into nighttime neon street",
-  "start_media_id": "media-khung-dau",
-  "end_media_id": "media-khung-cuoi",
+  "type": "frames_to_video",
+  "prompt": "Seamless cinematic transition from daytime Tokyo street into nighttime futuristic neon cybercity",
+  "start_media_id": "media_id_khung_bat_dau",
+  "end_media_id": "media_id_khung_ket_thuc",
   "duration_seconds": 8,
   "aspect_ratio": "9:16"
 }
@@ -75,121 +90,138 @@ Content-Type: application/json
 
 ---
 
-### 3.2. Chế độ `r2v` (Tạo video từ ảnh tham chiếu)
+### 3.2. Chế độ `reference_to_video` (Ảnh tham chiếu ➔ Video)
 
-Dùng khi bạn có ảnh chân dung nhân vật hoặc hình ảnh sản phẩm và muốn AI tạo video ở bối cảnh mới hoàn toàn mà vẫn giữ nguyên gương mặt / trang phục:
-
+#### Cách 1: Sử dụng danh sách `reference_media_ids` (1 đến 8 ảnh)
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
 
 {
-  "type": "r2v",
-  "prompt": "The cyber hacker character walks down a bustling futuristic Tokyo street smiling at the neon signs, dynamic cinematic camera",
+  "type": "reference_to_video",
+  "prompt": "The cyberpunk samurai raises his glowing sword with dynamic action camera, cinematic slow motion",
   "reference_media_ids": [
-    "1f68b8ec-7e46-41b3-81f6-38a7a1d0a769"
+    "c61dffd2-2453-4a56-8aef-09c61f096e78"
   ],
   "duration_seconds": 4,
   "aspect_ratio": "9:16"
 }
 ```
 
+#### Cách 2: Truyền trực tiếp danh sách ảnh Base64 vào `input_images` (1 đến 8 ảnh)
+```http
+POST /v1/videos/generations
+Content-Type: application/json
+
+{
+  "type": "reference_to_video",
+  "prompt": "The character in the reference images explores an ancient alien temple with torchlight",
+  "input_images": [
+    {
+      "image_base64": "iVBORw0KGgoAAAANSUhEUgAA... (Anh mat nhan vat)",
+      "mime_type": "image/jpeg"
+    },
+    {
+      "image_base64": "iVBORw0KGgoAAAANSUhEUgAA... (Anh trang phuc)",
+      "mime_type": "image/jpeg"
+    }
+  ],
+  "duration_seconds": 8,
+  "aspect_ratio": "9:16"
+}
+```
+
 ---
 
-## 4. Quy Trình Polling Trạng Thái Video
+## 4. Cơ Chế Cache Ảnh & Bảo Vệ Database
 
-Sau khi gọi `POST /v1/videos/generations`, server trả `202` cùng `jobs[].id`. Dùng Provider job ID này để đọc trạng thái đã lưu trong database:
+1. **Không lưu Base64 vào Database SQLite**:
+   - Khi nhận `input_images`, chuỗi Base64 chỉ được giữ tạm trên RAM.
+   - Trước khi ghi vào SQLite queue, `input_images` bị bóc tách hoàn toàn.
+   - Sau khi worker upload xong lên Google Flow, dữ liệu Base64 được giải phóng khỏi RAM ngay lập tức.
+2. **Nhận diện ảnh trùng tự động qua SHA-256 (Deduplication)**:
+   - Hệ thống tự động băm mã SHA-256 (32 bytes) của nội dung ảnh.
+   - Dù bạn có gửi lại cùng 1 file ảnh Base64 nhiều lần, hệ thống nhận diện mã hash và **chỉ upload lên Google Flow đúng 1 lần đầu tiên** (các lần sau tái sử dụng trong 0ms).
 
-### Request Polling
+---
+
+## 5. Quy Trình Kiểm Tra Trạng Thái & Nhận Kết Quả (`POST /v1/jobs/status`)
+
+### 5.1. Gửi request kiểm tra trạng thái
 ```http
 POST /v1/jobs/status
 Content-Type: application/json
 
 {
   "job_ids": [
-    "job_637e4a8496a74319af90835674d66c4a"
+    "job_c9ece4c5b45048f18fed0a49801d7ba3"
   ]
 }
 ```
 
-### Response Khi Đang Render
+### 5.2. Kết quả khi hoàn thành (`status: "complete"`)
 ```json
 {
-  "jobs": [{
-    "id": "job_637e4a8496a74319af90835674d66c4a",
-    "status": "running",
-    "media": [],
-    "error": null
-  }],
-  "metadata": {"poll_after_seconds": 5}
-}
-```
-
-### Response Khi Render Thành Công (Kèm Link Tải)
-Khi job chuyển sang `complete`, URL đã được chuẩn hóa tại `jobs[].media[].url`:
-
-```json
-{
-  "jobs": [{
-    "id": "job_637e4a8496a74319af90835674d66c4a",
-    "status": "complete",
-    "media": [{
-      "id": "5b50a8e4-7b71-44ae-b2d4-019e7794ef33",
+  "jobs": [
+    {
+      "id": "job_c9ece4c5b45048f18fed0a49801d7ba3",
       "type": "video",
-      "url": "https://flow-content.google/video/signed-url",
-      "thumbnail_url": "https://flow-content.google/image/signed-url",
-      "width": null,
-      "height": null,
-      "duration_seconds": 4
-    }],
-    "error": null
-  }],
-  "metadata": {"poll_after_seconds": null}
-}
-```
-
-> **Lưu ý quan trọng:** `media[].url` là signed URL có thời hạn. Hãy tải file video về lưu trữ cục bộ hoặc S3 ngay sau khi hoàn tất.
-
----
-
-## 5. Tích Hợp Dành Cho AI Agent Qua MCP (Model Context Protocol)
-
-AI Agent kết nối qua MCP Server có thể gọi trực tiếp tool `flow_generate_video`:
-
-### Gọi `i2v` qua MCP:
-```json
-{
-  "name": "flow_generate_video",
-  "arguments": {
-    "type": "i2v",
-    "prompt": "Camera pushes forward into the room, cinematic lighting",
-    "start_media_id": "1f68b8ec-7e46-41b3-81f6-38a7a1d0a769",
-    "end_media_id": "media-id-optional-for-transition",
-    "duration_seconds": 6,
-    "aspect_ratio": "9:16"
+      "generation_type": "reference_to_video",
+      "status": "complete",
+      "media": [
+        {
+          "id": "2c51c2f3-fc4d-4835-86f8-318b2207cda6",
+          "type": "video",
+          "url": "https://flow-content.google/video/2c51c2f3-fc4d-4835-86f8-318b2207cda6?Expires=1788443969&KeyName=labs-flow-prod-cdn-key&Signature=...",
+          "thumbnail_url": "https://flow-content.google/image/2c51c2f3-fc4d-4835-86f8-318b2207cda6?Expires=1788443969&KeyName=labs-flow-prod-cdn-key&Signature=...",
+          "width": null,
+          "height": null
+        }
+      ],
+      "error": null
+    }
+  ],
+  "metadata": {
+    "counts": {
+      "queued": 0,
+      "running": 0,
+      "complete": 1,
+      "failed": 0
+    },
+    "done": true
   }
 }
 ```
 
-### Gọi `r2v` qua MCP:
-```json
-{
-  "name": "flow_generate_video",
-  "arguments": {
-    "type": "r2v",
-    "prompt": "The subject gives an energetic presentation on stage",
-    "reference_media_ids": ["1f68b8ec-7e46-41b3-81f6-38a7a1d0a769"],
-    "duration_seconds": 4,
-    "aspect_ratio": "9:16"
-  }
-}
-```
+### 5.3. Các trường quan trọng trong Response:
+- **`job.type`**: Loại media tổng thể (`"video"` hoặc `"image"`).
+- **`job.generation_type`**: Định danh chính xác phân loại video (`"frames_to_video"` hoặc `"reference_to_video"`).
+- **`media[].url`**: Đường dẫn trực tiếp đến file video MP4 trên Google CDN.
+- **`media[].thumbnail_url`**: Đường dẫn ảnh bìa (Poster frame) của video.
+- **`metadata.done`**: `true` khi toàn bộ job trong danh sách đã kết thúc (complete hoặc failed), báo hiệu cho client dừng polling.
 
 ---
 
-## 6. Tính Tương Thích Ngược (Backward Compatibility)
+## 6. Xử Lý Lỗi Chuẩn Hóa
 
-Hệ thống thiết kế tương thích 100% với các client hoặc script cũ:
-- Gửi `type: "image_to_video"` hoặc `type: "omni_i2v"` ➔ Tự động xử lý theo nhánh **`i2v`**.
-- Gửi `type: "omni"` hoặc `type: "omni_r2v"` ➔ Tự động xử lý theo nhánh **`r2v`**.
-- Nếu không truyền `duration_seconds`, hệ thống dùng mặc định là **8 giây** (`abra_*_8s`).
+Khi một tác vụ render video thất bại (ví dụ: Google Flow chặn prompt nhạy cảm, tài khoản hết credit), response trả về cấu trúc lỗi chuẩn:
+
+```json
+{
+  "jobs": [
+    {
+      "id": "job_c9ece4c5b45048f18fed0a49801d7ba3",
+      "type": "video",
+      "generation_type": "reference_to_video",
+      "status": "failed",
+      "media": [],
+      "error": {
+        "code": "PROMPT_BLOCKED_SAFETY",
+        "message": "Google Flow blocked this prompt due to safety policy.",
+        "retryable": false,
+        "outcome_unknown": false
+      }
+    }
+  ]
+}
+```

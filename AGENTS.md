@@ -35,9 +35,9 @@ The MCP adapter does not own Google cookies or tokens and does not expose a Stre
 2. Prefer managed projects by omitting `project_id` unless the caller needs an explicit project.
 3. For local image inputs, use paths inside `FLOW_PROVIDER_MCP_ALLOWED_ROOTS`.
 4. Preserve `metadata.x-flow-project-id` as `project_id` and `metadata.x-provider-routing-scope` as `routing_scope` when continuing an account/project-bound media workflow.
-5. For image-to-video, pass the source media ID as `start_media_id`.
-6. For Omni video, pass 1-8 IDs as `reference_media_ids`.
-7. After `flow_generate_image` or `flow_generate_video`, preserve every Provider identifier returned in `jobs[].id` and its `type` (`image` or `video`).
+5. For frames_to_video (start image to video), pass the source media ID as `start_media_id` (and optional `end_media_id`).
+6. For reference_to_video (Omni video), pass 1-8 IDs as `reference_media_ids` (or inline Base64 in `input_images`).
+7. After `flow_generate_image` or `flow_generate_video`, preserve every Provider identifier returned in `jobs[].id` and its `type` (`image` or `video`) and `generation_type` (`image`, `frames_to_video`, or `reference_to_video`).
 8. Read the same identifiers with `flow_get_job_status`. `queued` and `running` are normal; status reads only the Provider database.
 9. Never start a second paid video merely because the first is queued/running or a timeout left acceptance uncertain.
 10. Treat `jobs[].status == "failed"` as terminal. Download successful signed URLs promptly because they expire.
@@ -48,10 +48,9 @@ The MCP adapter does not own Google cookies or tokens and does not expose a Stre
 - Image aspect ratio: `1:1`, `16:9`, or `9:16` (default `9:16`).
 - Image variants: 1-4.
 - Image references: at most 8 combined local paths and media IDs.
-- Video type: `image_to_video` or `omni`.
-- Video aspect ratio defaults: `16:9` for image-to-video, `9:16` for Omni.
-- Image-to-video quality: `lite`, `fast`, `quality`, `lite_relaxed`, or `fast_relaxed`.
-- Omni duration: 4, 6, 8, or 10 seconds (default 8).
+- Video type: `frames_to_video` (aliases: `frames`, `start_to_video`, `image_to_video`, `i2v`) or `reference_to_video` (aliases: `ingredients`, `references`, `omni`, `r2v`).
+- Video aspect ratio default: `9:16` (portrait) or `16:9` (landscape).
+- Video duration: 4, 6, 8, or 10 seconds (default 8).
 - Job status accepts 1-20 Provider job IDs.
 
 ## Response handling

@@ -439,61 +439,63 @@ Response tạo ảnh chỉ xác nhận job đã được lưu:
 
 Khi status là `complete`, media ID nằm ở `jobs[i].media[].id` và URL ở `jobs[i].media[].url`.
 
-## 8. Tạo video từ khung hình (i2v / Image-to-Video)
+## 8. Tạo video từ khung hình (`frames_to_video` / Khung hình ➔ Video)
 
-`i2v` và `omni_i2v` sử dụng Gemini Omni Flash (`abra_i2v_*`), chọn model theo `duration_seconds` và mặc định khung hình dọc (`9:16`). Legacy `image_to_video` sử dụng Veo, chọn model theo `quality` và mặc định khung hình ngang (`16:9`). Hỗ trợ cả tùy chọn khung hình cuối (`end_media_id`) để nối cảnh liền mạch.
+Chế độ `frames_to_video` sử dụng Gemini Omni Flash (`abra_i2v_*`), bắt đầu diễn hoạt chính xác từ khung hình xuất phát (`start_media_id`), hỗ trợ cả tùy chọn khung hình kết thúc (`end_media_id`) để nối cảnh chuyển đổi First-and-Last frame liền mạch. Mặc định khung hình dọc (`9:16`).
 
-### Request
-
+### Request mẫu
 ```http
 POST /v1/videos/generations
-```
+Content-Type: application/json
 
-```json
 {
-  "type": "i2v",
-  "prompt": "Slow cinematic camera movement around the product",
-  "start_media_id": "media-id-khung-dau",
+  "type": "frames_to_video",
+  "prompt": "Slow cinematic camera movement around the cyberpunk character",
+  "start_media_id": "c61dffd2-2453-4a56-8aef-09c61f096e78",
   "end_media_id": "media-id-khung-cuoi-tuy-chon",
   "aspect_ratio": "9:16",
-  "duration_seconds": 8
+  "duration_seconds": 4
 }
 ```
 
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
-| `type` | Có | `i2v` (khuyên dùng), `omni_i2v`, hoặc chế độ legacy Veo `image_to_video`. |
-| `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định, hoặc truyền nếu muốn chỉ định project. |
+| `type` | Có | `"frames_to_video"` *(khuyên dùng)*, hoặc alias: `"frames"`, `"start_to_video"`, `"image_to_video"`, `"i2v"`. |
 | `prompt` | Có | 1–12.000 ký tự mô tả chuyển động. |
-| `start_media_id` | Có | ID ảnh làm khung hình xuất phát (hoặc 1 ảnh trong `input_images`). |
+| `start_media_id` | Có | ID ảnh làm khung hình xuất phát (hoặc truyền 1 ảnh Base64 vào `input_images`). |
 | `end_media_id` | Không | ID ảnh làm khung hình kết thúc (tùy chọn: dùng để chuyển cảnh First+Last frame mượt mà). |
+| `input_images` | Không | Mảng 1–2 ảnh Base64 (Ảnh 1 là Start Frame, Ảnh 2 là End Frame) nếu không dùng `start_media_id`. |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
-| `aspect_ratio` | Không | `9:16` hoặc `16:9`. Mặc định `9:16` cho `i2v`/`omni_i2v`; `16:9` cho legacy `image_to_video`. |
+| `aspect_ratio` | Không | `"9:16"` (dọc - mặc định) hoặc `"16:9"` (ngang). |
 
-## 9. Tạo video từ ảnh tham chiếu (r2v / Reference-to-Video)
+---
 
-Sử dụng Gemini Omni Flash (`abra_r2v_*`) nhận diện nhân vật / phong cách từ 1 đến 8 ảnh tham chiếu để tạo video mới.
+## 9. Tạo video từ ảnh tham chiếu (`reference_to_video` / Ảnh tham chiếu ➔ Video)
 
-### Request
+Chế độ `reference_to_video` sử dụng Gemini Omni Flash (`abra_r2v_*`), học nhận diện nhân vật, trang phục, phong cách từ **1 đến 8 ảnh tham chiếu** để sáng tạo một phân cảnh hoàn toàn mới với góc máy tự do.
 
-```json
+### Request mẫu
+```http
+POST /v1/videos/generations
+Content-Type: application/json
+
 {
-  "type": "r2v",
-  "prompt": "Create a vertical cinematic product advertisement",
-  "reference_media_ids": ["media-id-1", "media-id-2"],
+  "type": "reference_to_video",
+  "prompt": "The cyberpunk samurai raises his glowing sword, dynamic cinematic camera",
+  "reference_media_ids": ["c61dffd2-2453-4a56-8aef-09c61f096e78"],
   "aspect_ratio": "9:16",
-  "duration_seconds": 8
+  "duration_seconds": 4
 }
 ```
 
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
-| `type` | Có | `r2v` (khuyên dùng), `omni_r2v`, hoặc alias cũ `omni`. |
-| `project_id` | Không | Bỏ qua để Provider tự dùng managed project mặc định. |
+| `type` | Có | `"reference_to_video"` *(khuyên dùng)*, hoặc alias: `"ingredients"`, `"references"`, `"omni"`, `"r2v"`. |
 | `prompt` | Có | 1–12.000 ký tự. |
-| `reference_media_ids` | Có | Danh sách 1 đến 8 ID ảnh tham chiếu (hoặc truyền qua `input_images`). |
+| `reference_media_ids` | Có | Danh sách từ **1 đến 8 ID ảnh** tham chiếu (hoặc truyền qua `input_images`). |
+| `input_images` | Không | Mảng từ 1 đến 8 ảnh Base64 để Provider tự động upload và gán tham chiếu. |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
-| `aspect_ratio` | Không | `9:16` (mặc định) hoặc `16:9`. |
+| `aspect_ratio` | Không | `"9:16"` (dọc - mặc định) hoặc `"16:9"` (ngang). |
 
 ### Response bắt đầu tạo video
 
