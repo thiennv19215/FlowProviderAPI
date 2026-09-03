@@ -30,6 +30,7 @@ async def test_mcp_lists_business_tools():
         "flow_upload_image",
         "flow_generate_image",
         "flow_generate_video",
+        "flow_get_job_status",
         "flow_get_video_status",
     }
 
@@ -67,8 +68,8 @@ async def test_generate_image_encodes_local_reference_and_maps_agent_values():
     assert result.is_error is False
     assert "authorization" not in captured["request"].headers
     assert captured["request"].url.path == "/v1/images/generations"
-    assert captured["body"]["model"] == "NANO_BANANA_2"
-    assert captured["body"]["aspect_ratio"] == "IMAGE_ASPECT_RATIO_LANDSCAPE"
+    assert captured["body"]["model"] == "v2"
+    assert captured["body"]["aspect_ratio"] == "16:9"
     assert captured["body"]["variant_count"] == 2
     assert captured["body"]["input_images"] == [{
         "image_base64": base64.b64encode(image_bytes).decode("ascii"),
@@ -157,13 +158,13 @@ async def test_video_tool_uses_type_specific_default_aspect_ratios():
 
     assert image_to_video.is_error is False
     assert omni.is_error is False
-    assert bodies[0]["aspect_ratio"] == "VIDEO_ASPECT_RATIO_LANDSCAPE"
+    assert bodies[0]["aspect_ratio"] == "16:9"
     assert bodies[0]["quality"] == "fast"
-    assert bodies[1]["aspect_ratio"] == "VIDEO_ASPECT_RATIO_PORTRAIT"
+    assert bodies[1]["aspect_ratio"] == "9:16"
     assert "quality" not in bodies[1]
 
 
-async def test_video_tool_supports_i2v_and_r2v():
+async def test_video_tool_supports_canonical_image_to_video_and_omni():
     bodies = []
 
     def handler(request: httpx.Request):
@@ -175,7 +176,7 @@ async def test_video_tool_supports_i2v_and_r2v():
         i2v_res = await client.call_tool(
             "flow_generate_video",
             {
-                "type": "i2v",
+                "type": "image_to_video",
                 "prompt": "move slowly",
                 "start_media_id": "media/start",
                 "end_media_id": "media/end",
@@ -185,7 +186,7 @@ async def test_video_tool_supports_i2v_and_r2v():
         r2v_res = await client.call_tool(
             "flow_generate_video",
             {
-                "type": "r2v",
+                "type": "omni",
                 "prompt": "combine references",
                 "reference_media_ids": ["media/ref-1", "media/ref-2"],
                 "duration_seconds": 10,
@@ -194,10 +195,10 @@ async def test_video_tool_supports_i2v_and_r2v():
 
     assert i2v_res.is_error is False
     assert r2v_res.is_error is False
-    assert bodies[0]["type"] == "i2v"
+    assert bodies[0]["type"] == "image_to_video"
     assert bodies[0]["end_media_id"] == "media/end"
     assert bodies[0]["duration_seconds"] == 6
-    assert bodies[1]["type"] == "r2v"
+    assert bodies[1]["type"] == "omni"
     assert bodies[1]["reference_media_ids"] == ["media/ref-1", "media/ref-2"]
     assert bodies[1]["duration_seconds"] == 10
 

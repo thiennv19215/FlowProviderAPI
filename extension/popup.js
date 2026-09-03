@@ -7,6 +7,9 @@ const versionEl = document.querySelector("#version");
 const errorEl = document.querySelector("#error");
 const jobEl = document.querySelector("#job");
 const logsEl = document.querySelector("#logs");
+const statActiveEl = document.querySelector("#stat-active");
+const statCompletedEl = document.querySelector("#stat-completed");
+const statErrorEl = document.querySelector("#stat-error");
 const copyLogsEl = document.querySelector("#copy-logs");
 const clearLogsEl = document.querySelector("#clear-logs");
 const flowBtnEl = document.querySelector("#flow");
@@ -15,6 +18,8 @@ const send = (message) => chrome.runtime.sendMessage(message);
 
 let lastLogsFingerprint = null;
 let lastActiveCount = null;
+let lastCompletedCount = null;
+let lastErrorCount = null;
 
 function timeLabel(value) {
   if (!value) return "";
@@ -32,7 +37,22 @@ function getBadgeChar(status) {
 
 function renderActivity(activity = {}) {
   const active = Number(activity.activeCount || 0);
+  const completed = Number(activity.completedCount || 0);
+  const errorCount = Number(activity.errorCount || 0);
   const logs = Array.isArray(activity.logs) ? activity.logs : [];
+
+  // Update stats counters
+  if (statActiveEl && lastActiveCount !== active) {
+    statActiveEl.textContent = String(active);
+  }
+  if (statCompletedEl && lastCompletedCount !== completed) {
+    lastCompletedCount = completed;
+    statCompletedEl.textContent = String(completed);
+  }
+  if (statErrorEl && lastErrorCount !== errorCount) {
+    lastErrorCount = errorCount;
+    statErrorEl.textContent = String(errorCount);
+  }
 
   // Update job status
   if (lastActiveCount !== active) {
@@ -43,7 +63,7 @@ function renderActivity(activity = {}) {
 
   // Fast fingerprint to avoid needless DOM churn and UI freezes
   const topLog = logs[0];
-  const fingerprint = `${active}:${logs.length}:${topLog ? `${topLog.at}_${topLog.status}_${topLog.detail}` : "empty"}`;
+  const fingerprint = `${active}:${completed}:${errorCount}:${logs.length}:${topLog ? `${topLog.at}_${topLog.status}_${topLog.detail}` : "empty"}`;
   if (fingerprint === lastLogsFingerprint) {
     return;
   }
@@ -158,6 +178,7 @@ copyLogsEl.onclick = async () => {
       `Account ready: ${Boolean(state?.account?.ready)}`,
       `Account email: ${state?.account?.email || "none"}`,
       `Credits: ${state?.account?.credits ?? "unknown"}`,
+      `Stats: ${state?.activity?.activeCount || 0} active, ${state?.activity?.completedCount || 0} completed, ${state?.activity?.errorCount || 0} errors`,
       "--- Activity Logs ---",
       ...((state?.activity?.logs || []).slice().reverse().map((item) => (
         `[${new Date(item.at).toLocaleTimeString()}] [${String(item.status || "info").toUpperCase()}] ${item.label || "Activity"}${item.detail ? ` · ${item.detail}` : ""}`

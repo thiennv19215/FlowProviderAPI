@@ -37,10 +37,10 @@ The MCP adapter does not own Google cookies or tokens and does not expose a Stre
 4. Preserve `metadata.x-flow-project-id` as `project_id` and `metadata.x-provider-routing-scope` as `routing_scope` when continuing an account/project-bound media workflow.
 5. For image-to-video, pass the source media ID as `start_media_id`.
 6. For Omni video, pass 1-8 IDs as `reference_media_ids`.
-7. After `flow_generate_video`, extract every poll identifier from `operations[].operation.name` or `operations[].name`, then `workflows[].name`; if neither exists, use `media[].name`.
-8. Poll the same identifiers with `flow_get_video_status`. Pending is normal.
-9. Never start a second paid video merely because the first is pending or a timeout left acceptance uncertain.
-10. Treat `operation.error` or media failure as terminal. Download successful signed URLs promptly because they expire.
+7. After `flow_generate_image` or `flow_generate_video`, preserve every Provider identifier returned in `jobs[].id` and its `type` (`image` or `video`).
+8. Read the same identifiers with `flow_get_job_status`. `queued` and `running` are normal; status reads only the Provider database.
+9. Never start a second paid video merely because the first is queued/running or a timeout left acceptance uncertain.
+10. Treat `jobs[].status == "failed"` as terminal. Download successful signed URLs promptly because they expire.
 
 ## MCP value constraints
 
@@ -52,10 +52,10 @@ The MCP adapter does not own Google cookies or tokens and does not expose a Stre
 - Video aspect ratio defaults: `16:9` for image-to-video, `9:16` for Omni.
 - Image-to-video quality: `lite`, `fast`, `quality`, `lite_relaxed`, or `fast_relaxed`.
 - Omni duration: 4, 6, 8, or 10 seconds (default 8).
-- Video status accepts 1-20 poll identifiers.
+- Job status accepts 1-20 Provider job IDs.
 
 ## Response handling
 
-MCP success results contain `status_code`, upstream `data`, and selected headers under `metadata`. Do not assume generated images live under `images[]`; current upstream responses commonly use `media[]`. Do not assume video creation always returns `operations[]`; support `operations[]`, `workflows[]`, and the `media[]` fallback. Preserve upstream response fields rather than inventing aliases.
+Image and video creation return normalized `jobs[]`; each job has `id`, `type`, `status`, `media`, and `error`. Public statuses are `queued`, `running`, `complete`, and `failed`. Job status reads durable Provider state by `job_ids`; only the worker polls upstream video operations, while image jobs finish in one worker call.
 
 For full contracts, read `docs/mcp-agent.vi.md` first and use `docs/integration-guide.vi.md` for REST response details and error handling.

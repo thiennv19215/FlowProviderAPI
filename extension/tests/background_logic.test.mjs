@@ -242,19 +242,28 @@ test('configured production migration preserves an explicit custom server', asyn
   assert.equal(h.sockets[0].url, 'wss://custom.example.com/api/extensions/ws');
 });
 
-test('simulation mode is persisted and announced to the connected provider', async () => {
+test('job completion and error statistics are tracked and persisted', async () => {
   const h = buildHarness();
   await flush();
-  const ws = h.sockets[0];
-  ws.readyState = h.context.WebSocket.OPEN;
 
-  const enabled = await vm.runInContext('setSimulationMode(true)', h.context);
+  h.context.activity1 = vm.runInContext('beginActivity({ type: "SW_FETCH" })', h.context);
+  assert.equal(vm.runInContext('activityState.activeCount', h.context), 1);
+
+  vm.runInContext('finishActivity(activity1)', h.context);
+  assert.equal(vm.runInContext('activityState.activeCount', h.context), 0);
+  assert.equal(vm.runInContext('activityState.completedCount', h.context), 1);
+  assert.equal(vm.runInContext('activityState.errorCount', h.context), 0);
+  assert.equal(h.storage['flow_provider_job_stats']?.completedCount, 1);
+
+  h.context.activity2 = vm.runInContext('beginActivity({ type: "INJECT_PAGE_FETCH" })', h.context);
+  vm.runInContext('finishActivity(activity2, new Error("Failed upstream"))', h.context);
+  assert.equal(vm.runInContext('activityState.completedCount', h.context), 1);
+  assert.equal(vm.runInContext('activityState.errorCount', h.context), 1);
+  assert.equal(h.storage['flow_provider_job_stats']?.errorCount, 1);
+
   const state = await vm.runInContext('connectionState()', h.context);
-
-  assert.equal(enabled, true);
-  assert.equal(h.storage['flow-provider-simulation-mode-v1'], true);
-  assert.equal(state.simulationMode, true);
-  assert.ok(ws.sent.some((frame) => frame.type === 'simulation_mode_changed' && frame.simulationMode === true));
+  assert.equal(state.activity.completedCount, 1);
+  assert.equal(state.activity.errorCount, 1);
 });
 
 test('CANCEL_RPC aborts an in-flight SW_FETCH', async () => {

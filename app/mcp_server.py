@@ -22,21 +22,8 @@ ImageModel = Literal["pro", "v2"]
 ImageAspect = Literal["1:1", "16:9", "9:16"]
 VideoAspect = Literal["16:9", "9:16"]
 VideoQuality = Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"]
-VideoType = Literal["i2v", "r2v", "image_to_video", "omni"]
+VideoType = Literal["image_to_video", "omni"]
 
-IMAGE_MODEL = {
-    "pro": "NANO_BANANA_PRO",
-    "v2": "NANO_BANANA_2",
-}
-IMAGE_ASPECT = {
-    "1:1": "IMAGE_ASPECT_RATIO_SQUARE",
-    "16:9": "IMAGE_ASPECT_RATIO_LANDSCAPE",
-    "9:16": "IMAGE_ASPECT_RATIO_PORTRAIT",
-}
-VIDEO_ASPECT = {
-    "16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE",
-    "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT",
-}
 IMAGE_MIME_TYPES = {
     ".avif": "image/avif",
     ".gif": "image/gif",
@@ -288,10 +275,10 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         version="1.0.0",
         instructions=(
             "Use flow_generate_image for image creation. It automatically manages a Flow project when "
-            "project_id is omitted. For image-to-video, reuse the image media name and the project_id "
-            "returned in metadata. flow_generate_video returns an operation; poll it with "
-            "flow_get_video_status until done. Never create a second paid video merely because status "
-            "is pending. Generated URLs can expire, so download completed outputs promptly."
+            "project_id is omitted. Image and video generation both return Provider job ids; read them "
+            "with flow_get_job_status until status is complete or failed. For image-to-video, reuse the "
+            "completed image media id and project_id. Never create a second paid video "
+            "while a job is queued or running. Generated URLs can expire, so download completed outputs promptly."
         ),
         lifespan=lifespan,
     )
@@ -372,7 +359,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         project_id: str | None = None,
         routing_scope: str | None = None,
     ) -> FlowToolResult:
-        """Generate images from a prompt, optional local reference files, or existing Flow media IDs."""
+        """Queue image generation and return a Provider job id for status checks."""
 
         paths = image_paths or []
         media_ids = reference_media_ids or []
@@ -381,8 +368,8 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         body = {
             "project_id": project_id,
             "prompt": prompt,
-            "model": IMAGE_MODEL[model],
-            "aspect_ratio": IMAGE_ASPECT[aspect_ratio],
+            "model": model,
+            "aspect_ratio": aspect_ratio,
             "reference_media_ids": media_ids,
             "input_images": await _encode_images(paths, provider.settings.allowed_root_paths),
             "variant_count": variant_count,
@@ -409,7 +396,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
     ) -> FlowToolResult:
         """Start a paid, non-idempotent i2v (frame-to-video) or r2v (reference-to-video) job using Gemini Omni Flash."""
 
-        if type in {"i2v", "image_to_video"}:
+        if type == "image_to_video":
             if not start_media_id:
                 raise ToolError("start_media_id is required for i2v video")
             if reference_media_ids:
@@ -419,7 +406,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
                 "project_id": project_id,
                 "prompt": prompt,
                 "start_media_id": start_media_id,
-                "aspect_ratio": VIDEO_ASPECT[aspect_ratio or ("16:9" if type == "image_to_video" else "9:16")],
+                "aspect_ratio": aspect_ratio or "16:9",
                 "duration_seconds": duration_seconds,
             }
             if type == "image_to_video":
@@ -439,7 +426,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
                 "project_id": project_id,
                 "prompt": prompt,
                 "reference_media_ids": media_ids,
-                "aspect_ratio": VIDEO_ASPECT[aspect_ratio or "9:16"],
+                "aspect_ratio": aspect_ratio or "9:16",
                 "duration_seconds": duration_seconds,
             }
         return await provider.request(
@@ -451,16 +438,26 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
 
     @server.tool(title="Check Flow video status", annotations=read_only)
     async def flow_get_video_status(
-        operation_names: Annotated[list[str], Field(min_length=1, max_length=20)],
-        routing_scope: str | None = None,
+        job_ids: Annotated[list[str], Field(min_length=1, max_length=20)],
     ) -> FlowToolResult:
-        """Poll video operations. Pending is normal; retry this tool instead of starting another video."""
+        """Read video job states from the Provider database. Queued or running is normal."""
 
         return await provider.request(
             "POST",
             "/v1/videos/status",
-            body={"operation_names": operation_names},
-            routing_scope=routing_scope,
+            body={"job_ids": job_ids},
+        )
+
+    @server.tool(title="Check Flow job status", annotations=read_only)
+    async def flow_get_job_status(
+        job_ids: Annotated[list[str], Field(min_length=1, max_length=20)],
+    ) -> FlowToolResult:
+        """Read image or video job states from the Provider database only."""
+
+        return await provider.request(
+            "POST",
+            "/v1/jobs/status",
+            body={"job_ids": job_ids},
         )
 
     return server

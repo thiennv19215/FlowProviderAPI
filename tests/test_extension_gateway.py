@@ -93,16 +93,6 @@ async def test_account_refresh_ignores_delayed_previous_account_after_switch(mon
     await bridge.close_background_tasks()
 
 
-async def test_extension_simulation_mode_is_tracked_without_reconnecting():
-    bridge = FlowBridge(flow_api_key="test-key")
-    socket = FakeSocket()
-    connection = bridge.register(socket, {
-        "installationId": "install-test", "simulationMode": True,
-    })
-
-    assert connection.simulation_mode is True
-    await bridge.handle_message({"type": "simulation_mode_changed", "simulationMode": False}, socket)
-    assert connection.simulation_mode is False
 
 
 async def test_media_redirect_uses_browser_cookies_and_url_encodes_id(monkeypatch):
@@ -255,7 +245,6 @@ def test_extension_gateway_rejects_an_invalid_connector_key():
                 "protocolVersion": 7,
                 "installationId": "attacker",
                 "connectorApiKey": "wrong-secret",
-                "simulationMode": True,
             })
             try:
                 ws.receive_json()
@@ -278,30 +267,6 @@ def test_extension_gateway_requires_the_versioned_subprotocol():
                 raise AssertionError("missing extension subprotocol must close the socket")
 
 
-def test_extension_gateway_rejects_simulation_when_disabled():
-    app = create_app(Settings(
-        env="test",
-        bootstrap_api_key="test",
-        extension_api_key="connector-secret",
-        allow_simulation_mode=False,
-        project_store_path=":memory:",
-    ))
-    with TestClient(app) as client:
-        with client.websocket_connect("/api/extensions/ws", subprotocols=["flow-provider-v7"]) as ws:
-            ws.send_json({
-                "type": "extension_ready",
-                "protocolVersion": 7,
-                "installationId": "connector",
-                "connectorApiKey": "connector-secret",
-                "simulationMode": True,
-            })
-            try:
-                ws.receive_json()
-            except WebSocketDisconnect as exc:
-                assert exc.code == 4403
-            else:
-                raise AssertionError("disabled simulation mode must close the socket")
-        assert app.state.runtime.bridge.connected is False
 
 
 def test_legacy_extension_websocket_is_removed():

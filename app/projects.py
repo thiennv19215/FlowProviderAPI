@@ -7,10 +7,9 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-
-# A dispatch claim is held only during one worker attempt.  This lease is
-# longer than the bridge's maximum paid request timeout, so a live worker is
-# not normally reclaimed; a crashed worker can be retried eventually.
+# A dispatch claim is held only during one worker attempt. The lease is longer
+# than the bridge's maximum paid-request timeout. An expired claim is failed as
+# outcome-unknown for reconciliation; it is never automatically paid again.
 JOB_CLAIM_LEASE_SECONDS = 15 * 60
 
 
@@ -19,6 +18,7 @@ class ProviderProject:
     installation_id: str
     google_project_id: str
     project_title: str
+    provider: str = "google_flow"
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,7 @@ class ProviderMedia:
     response_data: dict | None
     response_status: int | None
     response_headers: dict | None
+    provider: str = "google_flow"
 
 
 @dataclass(frozen=True)
@@ -46,27 +47,50 @@ class ProviderOperation:
 @dataclass(frozen=True)
 class ProviderJob:
     job_id: str
-    job_type: str
+    media_type: str
+    generation_type: str
     status: str
     request_payload: dict
+    provider: str = "google_flow"
     operation_name: str | None = None
     installation_id: str | None = None
     google_project_id: str | None = None
     poll_name: str | None = None
     result_data: dict | None = None
     error_message: str | None = None
+    error_code: str | None = None
+    error_retryable: bool = False
+    outcome_unknown: bool = False
+    running_at: str | None = None
+    next_poll_at: str | None = None
+    last_poll_at: str | None = None
+    last_poll_error: str | None = None
+    poll_attempts: int = 0
+    poll_error_count: int = 0
     created_at: str | None = None
     updated_at: str | None = None
     completed_at: str | None = None
     claim_token: str | None = None
+    idempotency_key: str | None = None
 
 
 def _row_to_job(row: sqlite3.Row) -> ProviderJob:
+    columns = set(row.keys())
     payload = json.loads(row["request_payload_json"]) if row["request_payload_json"] else {}
     result = json.loads(row["result_json"]) if row["result_json"] else None
     return ProviderJob(
         job_id=row["job_id"],
-        job_type=row["job_type"],
+        provider=(
+            row["provider"]
+            if "provider" in columns and row["provider"]
+            else "google_flow"
+        ),
+        media_type=(
+            row["media_type"]
+            if "media_type" in columns and row["media_type"]
+            else ("image" if row["generation_type"] == "image" else "video")
+        ),
+        generation_type=row["generation_type"],
         status=row["status"],
         request_payload=payload,
         operation_name=row["operation_name"],
@@ -75,10 +99,20 @@ def _row_to_job(row: sqlite3.Row) -> ProviderJob:
         poll_name=row["poll_name"],
         result_data=result,
         error_message=row["error_message"],
+        error_code=row["error_code"] if "error_code" in columns else None,
+        error_retryable=bool(row["error_retryable"]) if "error_retryable" in columns else False,
+        outcome_unknown=bool(row["outcome_unknown"]) if "outcome_unknown" in columns else False,
+        running_at=row["running_at"] if "running_at" in columns else None,
+        next_poll_at=row["next_poll_at"] if "next_poll_at" in columns else None,
+        last_poll_at=row["last_poll_at"] if "last_poll_at" in columns else None,
+        last_poll_error=row["last_poll_error"] if "last_poll_error" in columns else None,
+        poll_attempts=int(row["poll_attempts"] or 0) if "poll_attempts" in columns else 0,
+        poll_error_count=int(row["poll_error_count"] or 0) if "poll_error_count" in columns else 0,
         created_at=str(row["created_at"]) if row["created_at"] else None,
         updated_at=str(row["updated_at"]) if row["updated_at"] else None,
         completed_at=str(row["completed_at"]) if row["completed_at"] else None,
-        claim_token=row["claim_token"] if "claim_token" in row.keys() else None,
+        claim_token=row["claim_token"] if "claim_token" in columns else None,
+        idempotency_key=row["idempotency_key"] if "idempotency_key" in columns else None,
     )
 
 
@@ -161,6 +195,10 @@ class ProjectStore:
                     self._connection.execute(
                         "ALTER TABLE provider_media ADD COLUMN response_headers_json TEXT"
                     )
+                if "provider" not in media_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_media ADD COLUMN provider TEXT NOT NULL DEFAULT 'google_flow'"
+                    )
                 self._connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS provider_operations (
@@ -213,7 +251,8 @@ class ProjectStore:
                     """
                     CREATE TABLE IF NOT EXISTS provider_jobs (
                         job_id TEXT PRIMARY KEY,
-                        job_type TEXT NOT NULL,
+                        media_type TEXT NOT NULL DEFAULT 'video',
+                        generation_type TEXT NOT NULL,
                         status TEXT NOT NULL DEFAULT 'queued',
                         request_payload_json TEXT NOT NULL,
                         claimed_at TEXT,
@@ -224,6 +263,16 @@ class ProjectStore:
                         poll_name TEXT,
                         result_json TEXT,
                         error_message TEXT,
+                        error_code TEXT,
+                        error_retryable INTEGER NOT NULL DEFAULT 0,
+                        outcome_unknown INTEGER NOT NULL DEFAULT 0,
+                        idempotency_key TEXT,
+                        running_at TEXT,
+                        next_poll_at TEXT,
+                        last_poll_at TEXT,
+                        last_poll_error TEXT,
+                        poll_attempts INTEGER NOT NULL DEFAULT 0,
+                        poll_error_count INTEGER NOT NULL DEFAULT 0,
                         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         completed_at TEXT
@@ -234,19 +283,85 @@ class ProjectStore:
                     row["name"]
                     for row in self._connection.execute("PRAGMA table_info(provider_jobs)")
                 }
+                if "generation_type" not in job_columns and "job_type" in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs RENAME COLUMN job_type TO generation_type"
+                    )
+                    job_columns.remove("job_type")
+                    job_columns.add("generation_type")
                 if "claimed_at" not in job_columns:
                     self._connection.execute(
                         "ALTER TABLE provider_jobs ADD COLUMN claimed_at TEXT"
+                    )
+                if "media_type" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN media_type TEXT NOT NULL DEFAULT 'video'"
+                    )
+                    self._connection.execute(
+                        "UPDATE provider_jobs SET media_type = 'image' WHERE generation_type = 'image'"
                     )
                 if "claim_token" not in job_columns:
                     self._connection.execute(
                         "ALTER TABLE provider_jobs ADD COLUMN claim_token TEXT"
                     )
+                if "idempotency_key" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN idempotency_key TEXT"
+                    )
+                if "error_code" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN error_code TEXT"
+                    )
+                if "error_retryable" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN error_retryable INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "outcome_unknown" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN outcome_unknown INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "running_at" not in job_columns:
+                    self._connection.execute("ALTER TABLE provider_jobs ADD COLUMN running_at TEXT")
+                if "next_poll_at" not in job_columns:
+                    self._connection.execute("ALTER TABLE provider_jobs ADD COLUMN next_poll_at TEXT")
+                if "last_poll_at" not in job_columns:
+                    self._connection.execute("ALTER TABLE provider_jobs ADD COLUMN last_poll_at TEXT")
+                if "last_poll_error" not in job_columns:
+                    self._connection.execute("ALTER TABLE provider_jobs ADD COLUMN last_poll_error TEXT")
+                if "poll_attempts" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN poll_attempts INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "poll_error_count" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN poll_error_count INTEGER NOT NULL DEFAULT 0"
+                    )
+                if "provider" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN provider TEXT NOT NULL DEFAULT 'google_flow'"
+                    )
+                self._connection.execute(
+                    """
+                    UPDATE provider_jobs
+                    SET outcome_unknown = 1,
+                        error_code = COALESCE(error_code, 'VIDEO_DISPATCH_OUTCOME_UNKNOWN')
+                    WHERE status = 'failed'
+                      AND outcome_unknown = 0
+                      AND lower(COALESCE(error_message, '')) LIKE '%outcome is unknown%'
+                    """
+                )
                 self._connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_jobs_status ON provider_jobs (status, created_at)"
                 )
                 self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_jobs_poll_due ON provider_jobs (status, next_poll_at)"
+                )
+                self._connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_jobs_operation ON provider_jobs (operation_name)"
+                )
+                self._connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_key "
+                    "ON provider_jobs (idempotency_key) WHERE idempotency_key IS NOT NULL"
                 )
                 self._connection.commit()
             return self._connection
@@ -591,21 +706,103 @@ class ProjectStore:
             )
             self._db().commit()
 
-    def enqueue_job(self, job_id: str, job_type: str, request_payload: dict) -> ProviderJob:
-        payload_json = json.dumps(request_payload, ensure_ascii=False)
+    def enqueue_job(
+        self,
+        job_id: str,
+        generation_type: str | None = None,
+        request_payload: dict | None = None,
+        *,
+        job_type: str | None = None,
+        provider: str = "google_flow",
+        media_type: str | None = None,
+        installation_id: str | None = None,
+        google_project_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ProviderJob:
+        gen_type = generation_type or job_type or "image"
+        payload = request_payload or {}
+        media_type = media_type or ("image" if gen_type == "image" else "video")
+        if media_type not in {"image", "video"}:
+            raise ValueError("media_type must be 'image' or 'video'")
+        payload_json = json.dumps(payload, ensure_ascii=False)
         with self._lock:
-            self._db().execute(
-                """
-                INSERT INTO provider_jobs (job_id, job_type, status, request_payload_json)
-                VALUES (?, ?, 'queued', ?)
-                """,
-                (job_id, job_type, payload_json),
-            )
-            self._db().commit()
+            try:
+                self._db().execute(
+                    """
+                    INSERT INTO provider_jobs (
+                        job_id, provider, media_type, generation_type, status, request_payload_json,
+                        installation_id, google_project_id, idempotency_key
+                    )
+                    VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+                    """,
+                    (
+                        job_id,
+                        provider,
+                        media_type,
+                        gen_type,
+                        payload_json,
+                        installation_id,
+                        google_project_id,
+                        idempotency_key,
+                    ),
+                )
+                self._db().commit()
+            except sqlite3.IntegrityError:
+                self._db().rollback()
+                if idempotency_key:
+                    existing = self.get_job_by_idempotency_key(idempotency_key)
+                    if existing is not None:
+                        return existing
+                raise
         job = self.get_job(job_id)
         if job is None:
             raise RuntimeError(f"failed to enqueue job {job_id}")
         return job
+
+    def get_job_by_idempotency_key(self, idempotency_key: str) -> ProviderJob | None:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT * FROM provider_jobs WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+        return _row_to_job(row) if row is not None else None
+
+    def fail_abandoned_dispatches(self, lease_seconds: int = JOB_CLAIM_LEASE_SECONDS) -> int:
+        """Fail only dispatch claims old enough that their owning worker is gone."""
+        with self._lock:
+            db = self._db()
+            updated = db.execute(
+                """
+                UPDATE provider_jobs
+                SET status = 'failed',
+                    claimed_at = NULL,
+                    claim_token = NULL,
+                    error_message = CASE media_type
+                        WHEN 'image' THEN 'Provider restarted during image dispatch; the outcome is unknown.'
+                        ELSE ?
+                    END,
+                    error_code = CASE media_type
+                        WHEN 'image' THEN 'IMAGE_DISPATCH_OUTCOME_UNKNOWN'
+                        ELSE 'VIDEO_DISPATCH_OUTCOME_UNKNOWN'
+                    END,
+                    error_retryable = 0,
+                    outcome_unknown = 1,
+                    updated_at = CURRENT_TIMESTAMP,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE status = 'dispatching'
+                  AND claimed_at IS NOT NULL
+                  AND claimed_at <= datetime('now', ?)
+                """,
+                (
+                    (
+                        "Provider restarted during paid dispatch; the outcome is unknown. "
+                        "Reconcile before retrying."
+                    ),
+                    f"-{max(1, lease_seconds)} seconds",
+                ),
+            ).rowcount
+            db.commit()
+        return updated
 
     def get_job(self, job_id: str) -> ProviderJob | None:
         with self._lock:
@@ -658,13 +855,9 @@ class ProjectStore:
                 """
                 SELECT * FROM provider_jobs
                 WHERE status = 'queued'
-                  AND (
-                      claimed_at IS NULL
-                      OR claimed_at < datetime('now', ?)
-                  )
-                ORDER BY created_at ASC LIMIT 1
-                """,
-                (f"-{JOB_CLAIM_LEASE_SECONDS} seconds",),
+                ORDER BY CASE media_type WHEN 'image' THEN 0 ELSE 1 END,
+                         created_at ASC LIMIT 1
+                """
             ).fetchone()
             if row is None:
                 db.commit()
@@ -673,17 +866,13 @@ class ProjectStore:
             updated = db.execute(
                 """
                 UPDATE provider_jobs
-                SET claimed_at = CURRENT_TIMESTAMP,
+                SET status = 'dispatching',
+                    claimed_at = CURRENT_TIMESTAMP,
                     claim_token = ?,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE job_id = ?
-                  AND status = 'queued'
-                  AND (
-                      claimed_at IS NULL
-                      OR claimed_at < datetime('now', ?)
-                  )
+                WHERE job_id = ? AND status = 'queued'
                 """,
-                (claim_token, row["job_id"], f"-{JOB_CLAIM_LEASE_SECONDS} seconds"),
+                (claim_token, row["job_id"]),
             ).rowcount
             if updated != 1:
                 db.rollback()
@@ -701,8 +890,9 @@ class ProjectStore:
             updated = self._db().execute(
                 """
                 UPDATE provider_jobs
-                SET claimed_at = NULL, claim_token = NULL, updated_at = CURRENT_TIMESTAMP
-                WHERE job_id = ? AND status = 'queued' AND claim_token = ?
+                SET status = 'queued', claimed_at = NULL, claim_token = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND status = 'dispatching' AND claim_token = ?
                 """,
                 (job_id, claim_token),
             ).rowcount
@@ -722,7 +912,7 @@ class ProjectStore:
         poll_name = poll_name or operation_name
         with self._lock:
             db = self._db()
-            condition = "job_id = ? AND status = 'queued'"
+            condition = "job_id = ? AND status = 'dispatching'"
             params: list[object] = [operation_name, installation_id, google_project_id, poll_name, job_id]
             if claim_token is not None:
                 condition += " AND claim_token = ?"
@@ -736,6 +926,12 @@ class ProjectStore:
                     installation_id = ?,
                     google_project_id = ?,
                     poll_name = ?,
+                    running_at = CURRENT_TIMESTAMP,
+                    next_poll_at = CURRENT_TIMESTAMP,
+                    last_poll_at = NULL,
+                    last_poll_error = NULL,
+                    poll_attempts = 0,
+                    poll_error_count = 0,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE {condition}
                 """,
@@ -750,7 +946,7 @@ class ProjectStore:
         result_json = json.dumps(result_data, ensure_ascii=False)
         with self._lock:
             db = self._db()
-            condition = "job_id = ? AND status = 'running'"
+            condition = "job_id = ? AND status IN ('dispatching', 'running')"
             params: list[object] = [result_json, job_id]
             if claim_token is not None:
                 condition += " AND claim_token = ?"
@@ -762,6 +958,7 @@ class ProjectStore:
                     claimed_at = NULL,
                     claim_token = NULL,
                     result_json = ?,
+                    next_poll_at = NULL,
                     updated_at = CURRENT_TIMESTAMP,
                     completed_at = CURRENT_TIMESTAMP
                 WHERE {condition}
@@ -773,11 +970,15 @@ class ProjectStore:
 
     def update_job_failed(
         self, job_id: str, error_message: str, claim_token: str | None = None,
+        *, error_code: str = "VIDEO_GENERATION_FAILED", retryable: bool = False,
+        outcome_unknown: bool = False,
     ) -> bool:
         with self._lock:
             db = self._db()
-            condition = "job_id = ? AND status IN ('queued', 'running')"
-            params: list[object] = [error_message[:1000], job_id]
+            condition = "job_id = ? AND status IN ('queued', 'dispatching', 'running')"
+            params: list[object] = [
+                error_message[:1000], error_code, int(retryable), int(outcome_unknown), job_id,
+            ]
             if claim_token is not None:
                 condition += " AND claim_token = ?"
                 params.append(claim_token)
@@ -788,6 +989,10 @@ class ProjectStore:
                     claimed_at = NULL,
                     claim_token = NULL,
                     error_message = ?,
+                    error_code = ?,
+                    error_retryable = ?,
+                    outcome_unknown = ?,
+                    next_poll_at = NULL,
                     updated_at = CURRENT_TIMESTAMP,
                     completed_at = CURRENT_TIMESTAMP
                 WHERE {condition}
@@ -797,12 +1002,130 @@ class ProjectStore:
             db.commit()
         return updated == 1
 
-    def list_running_jobs(self) -> list[ProviderJob]:
+    def fail_expired_running_jobs(self, max_age_seconds: int) -> int:
+        """Move irrecoverably stale polling jobs to an explicit reconciliation failure."""
+        with self._lock:
+            updated = self._db().execute(
+                """
+                UPDATE provider_jobs
+                SET status = 'failed',
+                    error_message = ?,
+                    error_code = 'VIDEO_POLL_TIMEOUT',
+                    error_retryable = 0,
+                    outcome_unknown = 1,
+                    updated_at = CURRENT_TIMESTAMP,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE status = 'running' AND media_type = 'video'
+                  AND COALESCE(running_at, updated_at) <= datetime('now', ?)
+                """,
+                (
+                    "Video polling exceeded its maximum age; reconcile the existing Flow operation before retrying.",
+                    f"-{max(1, max_age_seconds)} seconds",
+                ),
+            ).rowcount
+            self._db().commit()
+        return updated
+
+    def schedule_job_poll(
+        self,
+        job_id: str,
+        delay_seconds: float,
+        *,
+        error_message: str | None = None,
+        attempted: bool = True,
+    ) -> bool:
+        """Persist the next poll time and consecutive-error state for a running job."""
+        modifier = f"+{max(1, int(delay_seconds))} seconds"
+        with self._lock:
+            if error_message is None:
+                poll_error_sql = "0"
+                last_error: str | None = None
+            else:
+                poll_error_sql = "poll_error_count + 1"
+                last_error = error_message[:1000]
+            updated = self._db().execute(
+                f"""
+                UPDATE provider_jobs
+                SET next_poll_at = datetime('now', ?),
+                    last_poll_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_poll_at END,
+                    last_poll_error = ?,
+                    poll_attempts = poll_attempts + CASE WHEN ? THEN 1 ELSE 0 END,
+                    poll_error_count = {poll_error_sql},
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND status = 'running'
+                """,
+                (modifier, int(attempted), last_error, int(attempted), job_id),
+            ).rowcount
+            self._db().commit()
+        return updated == 1
+
+    def record_job_poll_attempt(self, job_id: str) -> bool:
+        """Record one completed provider poll cycle before interpreting its result."""
+        with self._lock:
+            updated = self._db().execute(
+                """
+                UPDATE provider_jobs
+                SET last_poll_at = CURRENT_TIMESTAMP,
+                    poll_attempts = poll_attempts + 1,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE job_id = ? AND status = 'running'
+                """,
+                (job_id,),
+            ).rowcount
+            self._db().commit()
+        return updated == 1
+
+    def list_running_jobs(self, limit: int = 100) -> list[ProviderJob]:
         with self._lock:
             rows = self._db().execute(
-                "SELECT * FROM provider_jobs WHERE status = 'running' ORDER BY created_at ASC"
+                """
+                SELECT * FROM provider_jobs
+                WHERE status = 'running' AND media_type = 'video'
+                  AND (next_poll_at IS NULL OR next_poll_at <= CURRENT_TIMESTAMP)
+                ORDER BY COALESCE(next_poll_at, running_at, created_at) ASC
+                LIMIT ?
+                """,
+                (max(1, limit),),
             ).fetchall()
         return [_row_to_job(r) for r in rows]
+
+    def claim_due_running_jobs(
+        self, *, limit: int = 100, lease_seconds: int = 120,
+    ) -> list[ProviderJob]:
+        """Atomically lease due polling work so multiple workers do not duplicate polls."""
+        with self._lock:
+            db = self._db()
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute(
+                """
+                SELECT job_id FROM provider_jobs
+                WHERE status = 'running' AND media_type = 'video'
+                  AND (next_poll_at IS NULL OR next_poll_at <= CURRENT_TIMESTAMP)
+                ORDER BY COALESCE(next_poll_at, running_at, created_at) ASC
+                LIMIT ?
+                """,
+                (max(1, limit),),
+            ).fetchall()
+            job_ids = [str(row["job_id"]) for row in rows]
+            if not job_ids:
+                db.commit()
+                return []
+            placeholders = ",".join("?" for _ in job_ids)
+            db.execute(
+                f"""
+                UPDATE provider_jobs
+                SET next_poll_at = datetime('now', ?)
+                WHERE status = 'running' AND job_id IN ({placeholders})
+                """,
+                (f"+{max(1, lease_seconds)} seconds", *job_ids),
+            )
+            claimed = db.execute(
+                f"SELECT * FROM provider_jobs WHERE status = 'running' AND job_id IN ({placeholders})",
+                job_ids,
+            ).fetchall()
+            db.commit()
+        by_id = {str(row["job_id"]): _row_to_job(row) for row in claimed}
+        return [by_id[job_id] for job_id in job_ids if job_id in by_id]
 
     def close(self) -> None:
         with self._lock:

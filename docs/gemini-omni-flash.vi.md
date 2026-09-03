@@ -18,7 +18,7 @@ Hệ thống phân tách thành hai nhánh độc lập dựa trên bản chất
 | **Dòng Model ngầm** | `abra_i2v_4s`, `abra_i2v_6s`, `abra_i2v_8s`, `abra_i2v_10s` | `abra_r2v_4s`, `abra_r2v_6s`, `abra_r2v_8s`, `abra_r2v_10s` |
 | **Thời lượng hỗ trợ** | `4`, `6`, `8` (mặc định), `10` giây | `4`, `6`, `8` (mặc định), `10` giây |
 | **Chi phí Credit** | 4s: 15 \| 6s: 20 \| 8s: 25 \| 10s: 30 credits | 4s: 15 \| 6s: 20 \| 8s: 25 \| 10s: 30 credits |
-| **Tỷ lệ khung hình** | `VIDEO_ASPECT_RATIO_PORTRAIT` (9:16 - mặc định)<br>`VIDEO_ASPECT_RATIO_LANDSCAPE` (16:9) | `VIDEO_ASPECT_RATIO_PORTRAIT` (9:16 - mặc định)<br>`VIDEO_ASPECT_RATIO_LANDSCAPE` (16:9) |
+| **Tỷ lệ khung hình** | `9:16` (mặc định)<br>`16:9` | `9:16` (mặc định)<br>`16:9` |
 | **Tính năng nối cảnh** | ✅ Hỗ trợ First + Last Frame chuyển cảnh mượt mà | ❌ Không áp dụng |
 
 ---
@@ -52,7 +52,7 @@ Content-Type: application/json
   "prompt": "The camera slowly pans around the girl as neon rain reflections shimmer in the night, cinematic slow motion",
   "start_media_id": "1f68b8ec-7e46-41b3-81f6-38a7a1d0a769",
   "duration_seconds": 6,
-  "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT"
+  "aspect_ratio": "9:16"
 }
 ```
 
@@ -69,7 +69,7 @@ Content-Type: application/json
   "start_media_id": "media-khung-dau",
   "end_media_id": "media-khung-cuoi",
   "duration_seconds": 8,
-  "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT"
+  "aspect_ratio": "9:16"
 }
 ```
 
@@ -90,7 +90,7 @@ Content-Type: application/json
     "1f68b8ec-7e46-41b3-81f6-38a7a1d0a769"
   ],
   "duration_seconds": 4,
-  "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT"
+  "aspect_ratio": "9:16"
 }
 ```
 
@@ -98,7 +98,7 @@ Content-Type: application/json
 
 ## 4. Quy Trình Polling Trạng Thái Video
 
-Sau khi gọi `POST /v1/videos/generations`, server sẽ trả về mã `workflows` hoặc `operations`. Bạn dùng mã này để polling trạng thái:
+Sau khi gọi `POST /v1/videos/generations`, server trả `202` cùng `jobs[].id`. Dùng Provider job ID này để đọc trạng thái đã lưu trong database:
 
 ### Request Polling
 ```http
@@ -106,8 +106,8 @@ POST /v1/videos/status
 Content-Type: application/json
 
 {
-  "operation_names": [
-    "637e4a84-96a7-4319-af90-835674d66c4a"
+  "job_ids": [
+    "job_637e4a8496a74319af90835674d66c4a"
   ]
 }
 ```
@@ -115,53 +115,40 @@ Content-Type: application/json
 ### Response Khi Đang Render
 ```json
 {
-  "remainingCredits": 201,
-  "media": [
-    {
-      "name": "5b50a8e4-7b71-44ae-b2d4-019e7794ef33",
-      "mediaMetadata": {
-        "mediaStatus": {
-          "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SCHEDULED"
-        }
-      }
-    }
-  ]
+  "jobs": [{
+    "id": "job_637e4a8496a74319af90835674d66c4a",
+    "status": "running",
+    "media": [],
+    "error": null
+  }],
+  "metadata": {"poll_after_seconds": 5}
 }
 ```
 
 ### Response Khi Render Thành Công (Kèm Link Tải)
-Khi `mediaGenerationStatus` chuyển sang `MEDIA_GENERATION_STATUS_SUCCESSFUL`, response sẽ có trường `downloadUrl` và `thumbnailUrl`:
+Khi job chuyển sang `complete`, URL đã được chuẩn hóa tại `jobs[].media[].url`:
 
 ```json
 {
-  "remainingCredits": 201,
-  "media": [
-    {
-      "name": "5b50a8e4-7b71-44ae-b2d4-019e7794ef33",
-      "mediaMetadata": {
-        "mediaTitle": "The cyber hacker character walks down a bustling futuristic Tokyo street",
-        "mediaStatus": {
-          "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SUCCESSFUL"
-        },
-        "mediaBlobSize": "2845434"
-      },
-      "video": {
-        "generatedVideo": {
-          "model": "abra_r2v_4s",
-          "aspectRatio": "VIDEO_ASPECT_RATIO_PORTRAIT"
-        },
-        "dimensions": {
-          "length": "4s"
-        }
-      },
-      "downloadUrl": "https://flow-content.google/video/5b50a8e4-7b71-44ae-b2d4-019e7794ef33?Expires=1788394001&KeyName=labs-flow-prod-cdn-key&Signature=MW2MCUIrhThGVc5FrEspX3qxrTA",
-      "thumbnailUrl": "https://flow-content.google/image/5b50a8e4-7b71-44ae-b2d4-019e7794ef33?Expires=1788394001&KeyName=labs-flow-prod-cdn-key&Signature=Bv2cztCTsUSQJ9zb1w342JumiTo"
-    }
-  ]
+  "jobs": [{
+    "id": "job_637e4a8496a74319af90835674d66c4a",
+    "status": "complete",
+    "media": [{
+      "id": "5b50a8e4-7b71-44ae-b2d4-019e7794ef33",
+      "type": "video",
+      "url": "https://flow-content.google/video/signed-url",
+      "thumbnail_url": "https://flow-content.google/image/signed-url",
+      "width": null,
+      "height": null,
+      "duration_seconds": 4
+    }],
+    "error": null
+  }],
+  "metadata": {"poll_after_seconds": null}
 }
 ```
 
-> **Lưu ý quan trọng:** `downloadUrl` là Google Cloud Storage Signed URL có thời hạn hết hạn (`Expires=...`). Hãy tải file video về lưu trữ cục bộ hoặc S3 ngay sau khi hoàn tất.
+> **Lưu ý quan trọng:** `media[].url` là signed URL có thời hạn. Hãy tải file video về lưu trữ cục bộ hoặc S3 ngay sau khi hoàn tất.
 
 ---
 

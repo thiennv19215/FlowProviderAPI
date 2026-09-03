@@ -101,9 +101,10 @@ Không có biến `FLOW_PROVIDER_MCP_API_KEY` trong implementation hiện tại.
 | `flow_list_projects` | Liệt kê Flow project. |
 | `flow_create_project` | Tạo Flow project; thường không cần vì Provider có managed project. |
 | `flow_upload_image` | Đọc ảnh local, Base64 và upload để lấy media ID. |
-| `flow_generate_image` | Tạo ảnh từ prompt, file tham chiếu hoặc media ID. |
-| `flow_generate_video` | Bắt đầu image-to-video hoặc Omni; trả dữ liệu chứa poll identifier. |
-| `flow_get_video_status` | Poll từ 1 đến 20 identifier và trả trạng thái/video URL khi hoàn tất. |
+| `flow_generate_image` | Xếp hàng tạo ảnh; trả Provider job ID. |
+| `flow_generate_video` | Xếp hàng image-to-video hoặc Omni; trả Provider job ID. |
+| `flow_get_video_status` | Đọc trạng thái 1 đến 20 Provider job từ database. |
+| `flow_get_job_status` | Đọc trạng thái image/video job từ database. |
 
 Các giá trị MCP được rút gọn cho agent:
 
@@ -132,7 +133,7 @@ Mọi kết quả thành công có dạng:
 
 Khi tạo image-to-video, lấy media ID từ ảnh đã tạo/upload và truyền `metadata.x-flow-project-id` vào `project_id`. Nên tiếp tục truyền `metadata.x-provider-routing-scope` vào `routing_scope` cho workflow gắn với account/project cụ thể. Nếu bỏ `aspect_ratio`, image-to-video mặc định `16:9`, còn Omni mặc định `9:16`.
 
-Khi tạo video thành công, thu thập poll identifier theo thứ tự: `operations[].operation.name` hoặc `operations[].name`, tiếp theo `workflows[].name`; nếu không có các field trên thì dùng `media[].name`. Giữ nguyên prefix và gọi `flow_get_video_status` cho tới khi hoàn tất hoặc có lỗi. Pending là trạng thái bình thường; không tạo operation trả phí mới chỉ vì operation cũ vẫn pending hoặc request trước bị timeout không chắc chắn.
+Khi tạo ảnh hoặc video, lưu `jobs[].id` và gọi `flow_get_job_status` với ID đó cho tới khi trạng thái là `complete` hoặc `failed`. Mỗi job có `type: image|video`; `queued` và `running` là bình thường. Status chỉ đọc database. Worker gọi Flow một lần cho ảnh; riêng video mới được worker polling upstream. Không tạo job trả phí mới chỉ vì job cũ chưa hoàn tất hoặc request trước bị timeout không chắc chắn.
 
 ## Kiểm tra bằng MCP Inspector
 

@@ -4,7 +4,7 @@ import ipaddress
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 MAX_BASE64_TOTAL_CHARS = 64 * 1024 * 1024
 
@@ -66,14 +66,35 @@ class InlineImageInput(BaseModel):
 
 
 class ImageGenerationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_default=True)
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
-    model: Literal["NANO_BANANA_PRO", "NANO_BANANA_2"] = "NANO_BANANA_PRO"
-    aspect_ratio: Literal["IMAGE_ASPECT_RATIO_SQUARE", "IMAGE_ASPECT_RATIO_LANDSCAPE", "IMAGE_ASPECT_RATIO_PORTRAIT"] = "IMAGE_ASPECT_RATIO_PORTRAIT"
+    model: Literal["pro", "v2", "NANO_BANANA_PRO", "NANO_BANANA_2"] = Field(
+        default="pro", json_schema_extra={"enum": ["pro", "v2"]},
+    )
+    aspect_ratio: Literal[
+        "1:1", "16:9", "9:16",
+        "IMAGE_ASPECT_RATIO_SQUARE",
+        "IMAGE_ASPECT_RATIO_LANDSCAPE",
+        "IMAGE_ASPECT_RATIO_PORTRAIT",
+    ] = Field(default="9:16", json_schema_extra={"enum": ["1:1", "16:9", "9:16"]})
     reference_media_ids: list[str] = Field(default_factory=list, max_length=8)
     input_images: list[InlineImageInput] = Field(default_factory=list, max_length=8)
     variant_count: int = Field(default=1, ge=1, le=4)
+
+    @field_validator("model")
+    @classmethod
+    def normalize_model(cls, value: str) -> str:
+        return {"pro": "NANO_BANANA_PRO", "v2": "NANO_BANANA_2"}.get(value, value)
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def normalize_aspect_ratio(cls, value: str) -> str:
+        return {
+            "1:1": "IMAGE_ASPECT_RATIO_SQUARE",
+            "16:9": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+            "9:16": "IMAGE_ASPECT_RATIO_PORTRAIT",
+        }.get(value, value)
 
     @model_validator(mode="after")
     def validate_references(self):
@@ -85,16 +106,26 @@ class ImageGenerationRequest(BaseModel):
 
 
 class ImageToVideoGenerationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_default=True)
     type: Literal["i2v", "omni_i2v", "image_to_video"]
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     start_media_id: str | None = Field(default=None, min_length=1, max_length=500)
     end_media_id: str | None = Field(default=None, min_length=1, max_length=500)
     input_images: list[InlineImageInput] = Field(default_factory=list, max_length=2)
-    aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_PORTRAIT"
+    aspect_ratio: Literal[
+        "16:9", "9:16", "VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"
+    ] = Field(default="9:16", json_schema_extra={"enum": ["16:9", "9:16"]})
     duration_seconds: Literal[4, 6, 8, 10] = 8
     quality: Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"] | None = None
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def normalize_aspect_ratio(cls, value: str) -> str:
+        return {
+            "16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+            "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT",
+        }.get(value, value)
 
     @property
     def duration_model(self) -> str:
@@ -119,14 +150,24 @@ I2VGenerationRequest = ImageToVideoGenerationRequest
 
 
 class OmniVideoGenerationRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_default=True)
     type: Literal["r2v", "omni_r2v", "omni"]
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     reference_media_ids: list[str] = Field(default_factory=list, max_length=8)
     input_images: list[InlineImageInput] = Field(default_factory=list, max_length=8)
-    aspect_ratio: Literal["VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"] = "VIDEO_ASPECT_RATIO_PORTRAIT"
+    aspect_ratio: Literal[
+        "16:9", "9:16", "VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"
+    ] = Field(default="9:16", json_schema_extra={"enum": ["16:9", "9:16"]})
     duration_seconds: Literal[4, 6, 8, 10] = 8
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def normalize_aspect_ratio(cls, value: str) -> str:
+        return {
+            "16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+            "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT",
+        }.get(value, value)
 
     @property
     def duration_model(self) -> str:
@@ -151,6 +192,69 @@ VideoGenerationRequest = Annotated[
 ]
 
 
-class VideoStatusRequest(BaseModel):
+class JobStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    operation_names: list[str] = Field(min_length=1, max_length=20)
+    job_ids: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    operation_names: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+    @model_validator(mode="after")
+    def validate_status_ids(self):
+        if not self.job_ids and not self.operation_names:
+            raise ValueError("Either job_ids or operation_names must be provided")
+        return self
+
+
+class GeneratedMedia(BaseModel):
+    id: str
+    type: Literal["image", "video"]
+    url: str | None = None
+    thumbnail_url: str | None = None
+    width: int | None = None
+    height: int | None = None
+    duration_seconds: int | None = None
+
+
+class JobError(BaseModel):
+    code: str
+    message: str
+    retryable: bool = False
+    outcome_unknown: bool = False
+
+
+class Job(BaseModel):
+    id: str
+    provider: str = "google_flow"
+    type: Literal["image", "video"]
+    status: Literal["queued", "running", "complete", "failed"]
+    media: list[GeneratedMedia] = Field(default_factory=list)
+    error: JobError | None = None
+
+
+class JobMetadata(BaseModel):
+    request_id: str | None = None
+    project_id: str | None = None
+    routing_scope: str | None = None
+    poll_after_seconds: int | None = None
+    counts: dict[Literal["queued", "running", "complete", "failed"], int] = Field(
+        default_factory=dict,
+    )
+    done: bool = False
+
+
+class JobsResponse(BaseModel):
+    jobs: list[Job]
+    metadata: JobMetadata
+
+
+# Backward-compatible name used by the existing /v1/videos/status contract.
+VideoStatusRequest = JobStatusRequest
+VideoJobError = JobError
+VideoJob = Job
+VideoJobMetadata = JobMetadata
+VideoJobsResponse = JobsResponse

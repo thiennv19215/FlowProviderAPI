@@ -195,19 +195,29 @@ def generate_full_flow():
         headers=headers,
         json={
             "prompt": "Cinematic shot of a warrior robot standing on a cliff at sunrise, photorealistic, 8k",
-            "model": "NANO_BANANA_PRO",
-            "aspect_ratio": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+            "model": "pro",
+            "aspect_ratio": "16:9",
             "variant_count": 1
         }
     )
     img_resp.raise_for_status()
-    img_data = img_resp.json()
+    img_job_id = img_resp.json()["jobs"][0]["id"]
     
     # Lấy routing_scope và project_id từ header/response để đảm bảo nhất quán tài khoản
     routing_scope = img_resp.headers.get("X-Provider-Routing-Scope")
     project_id = img_resp.headers.get("X-Flow-Project-Id")
     
-    media_id = extract_first_media_id(img_data)
+    for _ in range(60):
+        time.sleep(2)
+        img_data = requests.post(
+            f"{BASE_URL}/v1/jobs/status", json={"job_ids": [img_job_id]}
+        ).json()
+        image_job = img_data["jobs"][0]
+        if image_job["status"] == "failed":
+            raise RuntimeError(f"Lỗi tạo ảnh: {image_job['error']}")
+        if image_job["status"] == "complete":
+            break
+    media_id = image_job["media"][0]["id"]
     if not media_id:
         raise RuntimeError("Flow không trả về media ID của ảnh")
     image_url = find_download_url(img_data)
@@ -228,16 +238,14 @@ def generate_full_flow():
             "project_id": project_id,
             "prompt": "Camera slowly pushes in towards the robot as sunlight flares into the lens",
             "start_media_id": media_id,
-            "aspect_ratio": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+            "aspect_ratio": "16:9",
             "quality": "lite"
         }
     )
     vid_resp.raise_for_status()
     vid_data = vid_resp.json()
-    poll_names = extract_video_poll_names(vid_data)
-    if not poll_names:
-        raise RuntimeError("Flow không trả về operation/workflow/media name để polling")
-    print(f"Video poll identifiers: {poll_names}")
+    job_ids = [job["id"] for job in vid_data["jobs"]]
+    print(f"Provider job IDs: {job_ids}")
 
     # 4. Polling trạng thái Video
     print("\n--- [Bước 3] Đang polling trạng thái video (mỗi 10s) ---")
@@ -245,43 +253,19 @@ def generate_full_flow():
     for attempt in range(60):  # Chờ tối đa 10 phút
         time.sleep(10)
         status_resp = requests.post(
-            f"{BASE_URL}/v1/videos/status",
-            headers=vid_headers,
-            json={"operation_names": poll_names}
+            f"{BASE_URL}/v1/jobs/status",
+            json={"job_ids": job_ids}
         )
         status_resp.raise_for_status()
         status_data = status_resp.json()
 
-        operations = [item.get("operation") or item for item in status_data.get("operations", [])]
-        operation_error = next((item.get("error") for item in operations if item.get("error")), None)
-        if operation_error:
-            raise RuntimeError(f"Lỗi tạo video: {operation_error}")
-
-        media = status_data.get("media", [])
-        media_error = next((item.get("error") for item in media if item.get("error")), None)
-        if media_error:
-            raise RuntimeError(f"Lỗi tạo video: {media_error}")
-
-        operations_done = bool(operations) and all(item.get("done") is True for item in operations)
-        media_statuses = find_media_statuses(media)
-        failed_statuses = {
-            "MEDIA_GENERATION_STATUS_UNSUCCESSFUL",
-            "MEDIA_GENERATION_STATUS_FAILED",
-            "MEDIA_GENERATION_STATUS_CANCELLED",
-        }
-        if any(status in failed_statuses for status in media_statuses):
-            raise RuntimeError(f"Lỗi tạo video: {media_statuses}")
-        media_done = bool(media_statuses) and all(
-            status == "MEDIA_GENERATION_STATUS_SUCCESSFUL" for status in media_statuses
-        )
-        download_url = find_download_url(status_data)
-        print(f"Poll #{attempt+1}: done={operations_done or media_done}, url={bool(download_url)}")
-
-        if operations_done or media_done:
-            if not download_url:
-                # Signed URL đôi khi được cấp chậm; tiếp tục poll cùng identifier.
-                continue
+        job = status_data["jobs"][0]
+        if job["status"] == "failed":
+            raise RuntimeError(f"Lỗi tạo video: {job['error']}")
+        if job["status"] == "complete":
+            download_url = job["media"][0]["url"]
             break
+        print(f"Poll #{attempt+1}: status={job['status']}")
 
     if not download_url:
         raise TimeoutError("Hết thời gian chờ video hoàn tất!")
@@ -374,14 +358,22 @@ async function runFlow() {
   // 1. Sinh ảnh
   const imgRes = await client.post('/v1/images/generations', {
     prompt: 'A cute red panda wearing astronaut suit in space, 3D render',
-    model: 'NANO_BANANA_PRO',
-    aspect_ratio: 'IMAGE_ASPECT_RATIO_SQUARE',
+    model: 'pro',
+    aspect_ratio: '1:1',
     variant_count: 1,
   });
 
   const routingScope = imgRes.headers['x-provider-routing-scope'];
   const projectScope = imgRes.headers['x-flow-project-id'];
-  const mediaId = extractFirstMediaId(imgRes.data);
+  const imageJobId = imgRes.data.jobs[0].id;
+  let imageJob;
+  while (true) {
+    await new Promise((r) => setTimeout(r, 2000));
+    imageJob = (await client.post('/v1/jobs/status', { job_ids: [imageJobId] })).data.jobs[0];
+    if (imageJob.status === 'failed') throw new Error(JSON.stringify(imageJob.error));
+    if (imageJob.status === 'complete') break;
+  }
+  const mediaId = imageJob.media[0]?.id;
   if (!mediaId) throw new Error('Flow không trả về media ID của ảnh');
   console.log(`Media ID: ${mediaId}`);
 
@@ -393,7 +385,7 @@ async function runFlow() {
       project_id: projectScope,
       prompt: 'Floating in zero gravity with earth in background',
       start_media_id: mediaId,
-      aspect_ratio: 'VIDEO_ASPECT_RATIO_PORTRAIT',
+      aspect_ratio: '9:16',
       quality: 'lite',
     },
     {
@@ -401,39 +393,19 @@ async function runFlow() {
     }
   );
 
-  const pollNames = extractVideoPollNames(vidRes.data);
-  if (pollNames.length === 0) {
-    throw new Error('Flow không trả về operation/workflow/media name để polling');
-  }
-  console.log(`Video poll identifiers: ${pollNames.join(', ')}`);
+  const jobIds = vidRes.data.jobs.map((job: any) => job.id);
 
   // 3. Poll
   while (true) {
     await new Promise((r) => setTimeout(r, 10000));
     const statusRes = await client.post(
-      '/v1/videos/status',
-      { operation_names: pollNames },
-      { headers: routingScope ? { 'X-Provider-Routing-Scope': routingScope } : {} },
+      '/v1/jobs/status',
+      { job_ids: jobIds },
     );
-    const operations = (statusRes.data.operations ?? []).map((x: any) => x?.operation ?? x);
-    const operationError = operations.find((x: any) => x?.error)?.error;
-    const mediaError = (statusRes.data.media ?? []).find((x: any) => x?.error)?.error;
-    if (operationError || mediaError) throw new Error(JSON.stringify(operationError ?? mediaError));
-
-    const operationsDone = operations.length > 0 && operations.every((x: any) => x?.done === true);
-    const mediaStatuses = findMediaStatuses(statusRes.data.media ?? []);
-    const failedStatuses = new Set([
-      'MEDIA_GENERATION_STATUS_UNSUCCESSFUL',
-      'MEDIA_GENERATION_STATUS_FAILED',
-      'MEDIA_GENERATION_STATUS_CANCELLED',
-    ]);
-    if (mediaStatuses.some((status) => failedStatuses.has(status))) {
-      throw new Error(`Video failed: ${mediaStatuses.join(', ')}`);
-    }
-    const mediaDone = mediaStatuses.length > 0
-      && mediaStatuses.every((status) => status === 'MEDIA_GENERATION_STATUS_SUCCESSFUL');
-    const downloadUrl = findDownloadUrl(statusRes.data);
-    if ((operationsDone || mediaDone) && downloadUrl) {
+    const job = statusRes.data.jobs[0];
+    if (job.status === 'failed') throw new Error(JSON.stringify(job.error));
+    if (job.status === 'complete') {
+      const downloadUrl = job.media[0]?.url;
       console.log(`Video sẵn sàng: ${downloadUrl}`);
       break;
     }

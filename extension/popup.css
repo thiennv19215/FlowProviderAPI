@@ -175,6 +175,75 @@ body {
   font-size: 10px;
 }
 
+/* Stats Panel */
+.stats-panel {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.stat-card {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  transition: border-color 0.15s ease, transform 0.15s ease, background 0.15s ease;
+  user-select: none;
+}
+
+.stat-card:hover {
+  border-color: #388bfd44;
+  background: #1c2128;
+}
+
+.stat-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #8b949e;
+}
+
+.stat-icon {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.stat-card-active .stat-icon {
+  color: #58a6ff;
+}
+
+.stat-card-completed .stat-icon {
+  color: #3fb950;
+}
+
+.stat-card-error .stat-icon {
+  color: #f85149;
+}
+
+.stat-value {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.2;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+}
+
+.stat-card-active .stat-value {
+  color: #58a6ff;
+}
+
+.stat-card-completed .stat-value {
+  color: #3fb950;
+}
+
+.stat-card-error .stat-value {
+  color: #f85149;
+}
+
 /* Activity Panel */
 .activity-panel {
   background: #161b22;

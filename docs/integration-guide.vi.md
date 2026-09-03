@@ -27,8 +27,8 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 - API lưu mapping project và hash ảnh → media ID theo đúng extension/account/project; đăng nhập Google account khác trên cùng extension không dùng lại mapping cũ.
 - **Tự động quản lý project (Auto-managed project)**: Backend tích hợp **không cần tạo hoặc truyền `project_id`**. Provider dùng lại project mới nhất hiện có trên từng tài khoản Google; chỉ tạo project `FlowProvider` khi lookup đầy đủ xác nhận account chưa có project nào. Provider quản lý mapping media/operation. (Nếu backend truyền `project_id`, Provider vẫn tôn trọng để tương thích hoặc nhóm tài nguyên theo ý muốn).
 - Ảnh upload được chuyển trực tiếp vào Google Flow dưới dạng Base64.
-- Tạo ảnh trả kết quả đồng bộ sau khi Flow xử lý xong.
-- Tạo video trả operation; bên gọi chủ động kiểm tra bằng `/v1/videos/status`.
+- Tạo ảnh và video đều trả Provider job (`202 Accepted`). Bên gọi kiểm tra bằng `/v1/jobs/status`.
+- Worker gọi Flow một lần cho ảnh; chỉ video cần polling Google Flow. Các endpoint status chỉ đọc DB.
 - URL ảnh/video do Google Flow cấp có thể hết hạn hoặc bị thu hồi. Bên tích hợp nên tải và lưu kết quả ngay khi hoàn tất.
 - Provider ưu tiên tối đa 3 request đồng thời trên một extension rồi mới chuyển sang extension tiếp theo.
 - Mỗi video job reserve trước tối thiểu 20 credits, hoặc mức Omni cao hơn đã biết; các request đồng thời không thể dùng lặp cùng số dư. Sau mọi lần gọi video, kể cả timeout chưa rõ kết quả, Provider khóa paid routing cho account đó đến khi refresh credit thành công. Account vẫn có thể xử lý ảnh.
@@ -44,6 +44,7 @@ Có thể gửi thêm `X-Request-Id` để đối soát log. Nếu không gửi,
 | `POST` | `/v1/media` | Upload ảnh vào project và nhận media ID. |
 | `POST` | `/v1/images/generations` | Tạo ảnh mới, có hoặc không có ảnh tham chiếu. |
 | `POST` | `/v1/videos/generations` | Tạo image-to-video hoặc Omni video. |
+| `POST` | `/v1/jobs/status` | Đọc trạng thái image/video job từ DB theo `job_ids`. |
 | `POST` | `/v1/videos/status` | Kiểm tra trạng thái các video operation. |
 | `GET` | `/health/live` | Kiểm tra process API đang chạy. |
 | `GET` | `/health/ready` | Kiểm tra extension/tài khoản Flow sẵn sàng. |
@@ -58,17 +59,16 @@ Provider tự map model nội bộ theo loại request, gói account và thời 
 
 | Giá trị nghiệp vụ của backend | `model` gửi Provider | Ghi chú |
 |---|---|---|
-| `pro`, `nano-banana-pro` | `NANO_BANANA_PRO` | Mặc định; Provider map sang model ảnh Pro hiện hành. |
-| `v2`, `nano-banana-2` | `NANO_BANANA_2` | Provider map sang model ảnh v2 hiện hành. |
+| `pro` | `pro` | Mặc định; Provider map sang model ảnh Pro hiện hành. |
+| `v2` | `v2` | Provider map sang model ảnh v2 hiện hành. |
 
 | Tỷ lệ UI/backend | `aspect_ratio` gửi Provider |
 |---|---|
-| `1:1`, `square` | `IMAGE_ASPECT_RATIO_SQUARE` |
-| `16:9`, `landscape` | `IMAGE_ASPECT_RATIO_LANDSCAPE` |
-| `9:16`, `portrait` | `IMAGE_ASPECT_RATIO_PORTRAIT` |
+| `1:1`, `square` | `1:1` |
+| `16:9`, `landscape` | `16:9` |
+| `9:16`, `portrait` | `9:16` |
 
-Nếu bỏ `model`, mặc định là `NANO_BANANA_PRO`. Nếu bỏ `aspect_ratio`, mặc định
-là `IMAGE_ASPECT_RATIO_PORTRAIT`.
+Nếu bỏ `model`, mặc định là `pro`. Nếu bỏ `aspect_ratio`, mặc định là `9:16`.
 
 ### 3.2. Mapping image-to-video
 
@@ -85,12 +85,12 @@ Legacy `type: "image_to_video"` không nhận field `model`. Backend gửi `qual
 
 | Tỷ lệ UI/backend | `aspect_ratio` gửi Provider |
 |---|---|
-| `16:9`, `landscape` | `VIDEO_ASPECT_RATIO_LANDSCAPE` |
-| `9:16`, `portrait` | `VIDEO_ASPECT_RATIO_PORTRAIT` |
+| `16:9`, `landscape` | `16:9` |
+| `9:16`, `portrait` | `9:16` |
 
-Nếu bỏ `quality`, mặc định là `lite`. Nếu bỏ `aspect_ratio`, mặc định là
-`VIDEO_ASPECT_RATIO_LANDSCAPE` cho legacy `image_to_video`; `i2v` và `omni_i2v`
-mặc định là `VIDEO_ASPECT_RATIO_PORTRAIT` và chọn model theo `duration_seconds`.
+Nếu bỏ `quality`, mặc định là `lite`. Nếu bỏ `aspect_ratio`, legacy
+`image_to_video` mặc định `16:9`; `i2v` và `omni_i2v` mặc định `9:16` và chọn
+model theo `duration_seconds`.
 
 ### 3.3. Mapping Omni video
 
@@ -104,8 +104,7 @@ tự map sang Omni model tương ứng.
 | `8` | Omni 8 giây, mặc định |
 | `10` | Omni 10 giây |
 
-Omni nhận `VIDEO_ASPECT_RATIO_PORTRAIT` hoặc `VIDEO_ASPECT_RATIO_LANDSCAPE`;
-mặc định là portrait.
+Omni nhận `9:16` hoặc `16:9`; mặc định là `9:16`.
 
 ### 3.4. Hàm mapping TypeScript khuyến nghị
 
@@ -114,21 +113,7 @@ type UiImageModel = "pro" | "v2";
 type UiAspect = "1:1" | "16:9" | "9:16";
 type UiVideoQuality = "lite" | "fast" | "quality" | "lite_relaxed" | "fast_relaxed";
 
-const IMAGE_MODEL = {
-  pro: "NANO_BANANA_PRO",
-  v2: "NANO_BANANA_2"
-} as const;
-
-const IMAGE_ASPECT = {
-  "1:1": "IMAGE_ASPECT_RATIO_SQUARE",
-  "16:9": "IMAGE_ASPECT_RATIO_LANDSCAPE",
-  "9:16": "IMAGE_ASPECT_RATIO_PORTRAIT"
-} as const;
-
-const VIDEO_ASPECT = {
-  "16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE",
-  "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT"
-} as const;
+// Gửi trực tiếp enum nghiệp vụ; Provider tự map sang enum nội bộ của Flow.
 
 export function buildImageRequest(input: {
   prompt: string;
@@ -375,17 +360,17 @@ Không gửi `project_id`. Provider tự chọn extension ít tải, tạo hoặ
       "file_name": "product.jpg"
     }
   ],
-  "model": "NANO_BANANA_PRO",
-  "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT",
+  "model": "pro",
+  "aspect_ratio": "9:16",
   "variant_count": 1
 }
 ```
 
-Response có `X-Flow-Project-Id`. Nếu chỉ nhận ảnh cuối thì backend không cần điều hướng project; nếu ảnh sẽ tiếp tục làm reference hoặc tạo video, phải lưu cặp `X-Flow-Project-Id + media[i].name` để gửi ở request sau.
+Response `202` có `X-Flow-Project-Id` và `jobs[0].id`. Dùng job ID với `/v1/jobs/status`; khi `complete`, lấy `jobs[0].media[].id` để làm reference hoặc tạo video.
 
 Với luồng tách riêng `POST /v1/media` rồi `POST /v1/videos/generations`, caller phải gửi `required_credits` khi upload và chuyển `X-Flow-Project-Id` từ response upload thành `project_id` của request video. Điều này giữ cả hai call trên cùng Chrome extension/account trong triển khai đa account.
 
-Nếu cùng nội dung ảnh đã được upload vào đúng account/project, Provider dùng thẳng media ID trong DB mà không thêm request kiểm tra. Với request managed không truyền `project_id` hoặc routing scope, nếu media ID đã biết thuộc account khác thì Provider tự tải ảnh từ account gốc, upload sang project của account được chọn và thay media ID trước khi chạy job; bytes nguồn chỉ tồn tại trong bộ nhớ trong lúc xử lý. Nếu Google hiếm khi trả `404` vì media cũ, Provider xóa cache, upload lại và retry. Header `X-Flow-Media-Cache-Hits` cho biết số ảnh lấy từ cache trong request.
+Nếu cùng nội dung ảnh đã được upload vào đúng account/project, Provider dùng thẳng media ID trong DB. Nếu worker gặp `404` do cache cũ, job kết thúc `failed` và cache bị vô hiệu hóa; request mới sau đó sẽ upload lại ảnh. Header `X-Flow-Media-Cache-Hits` cho biết số ảnh lấy từ cache khi xếp hàng.
 
 ### Request không có ảnh tham chiếu
 
@@ -397,8 +382,8 @@ POST /v1/images/generations
 {
   "project_id": "978b0a04-9025-431e-aca8-544f37d0757c",
   "prompt": "A premium product photograph, soft studio lighting, no text",
-  "model": "NANO_BANANA_PRO",
-  "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT",
+  "model": "pro",
+  "aspect_ratio": "9:16",
   "reference_media_ids": [],
   "variant_count": 1
 }
@@ -410,8 +395,8 @@ POST /v1/images/generations
 {
   "project_id": "978b0a04-9025-431e-aca8-544f37d0757c",
   "prompt": "Preserve the referenced product identity and create a luxury advertising scene",
-  "model": "NANO_BANANA_PRO",
-  "aspect_ratio": "IMAGE_ASPECT_RATIO_PORTRAIT",
+  "model": "pro",
+  "aspect_ratio": "9:16",
   "reference_media_ids": [
     "d3fc46fb-ed33-4bf2-bd25-1bf88e3541dd"
   ],
@@ -425,68 +410,37 @@ POST /v1/images/generations
 |---|---:|---|
 | `project_id` | Không | Chỉ dùng cho chế độ tương thích; bỏ qua để Provider tự quản lý project. |
 | `prompt` | Có | 1–12.000 ký tự. |
-| `model` | Không | `NANO_BANANA_PRO` (mặc định), `NANO_BANANA_2`. |
-| `aspect_ratio` | Không | `IMAGE_ASPECT_RATIO_PORTRAIT` (mặc định), `IMAGE_ASPECT_RATIO_LANDSCAPE`, `IMAGE_ASPECT_RATIO_SQUARE`. |
+| `model` | Không | `pro` (mặc định), `v2`. Enum dài cũ vẫn được nhận trong giai đoạn chuyển tiếp. |
+| `aspect_ratio` | Không | `9:16` (mặc định), `16:9`, `1:1`. Enum dài cũ vẫn được nhận trong giai đoạn chuyển tiếp. |
 | `reference_media_ids` | Không | Tối đa 8 media ID trong cùng project. |
 | `input_images` | Không | Tối đa 8 ảnh Base64 để Provider tự upload; tổng cùng `reference_media_ids` không quá 8. |
 | `variant_count` | Không | Từ 1 đến 4, mặc định 1. |
 
-### Response `200`
+### Response tạo job `202`
 
-Ví dụ đã rút gọn từ response thực tế:
+Response tạo ảnh chỉ xác nhận job đã được lưu:
 
 ```json
 {
-  "media": [
-    {
-      "name": "b207ef8f-e3ce-44d3-9f2f-043dd0a61275",
-      "workflowId": "e22a35f4-518d-4104-b15b-0ed725a8e394",
-      "image": {
-        "generatedImage": {
-          "mediaId": "b207ef8f-e3ce-44d3-9f2f-043dd0a61275",
-          "modelNameType": "GEM_PIX_2",
-          "fifeUrl": "https://flow-content.google/image/...",
-          "aspectRatio": "IMAGE_ASPECT_RATIO_PORTRAIT",
-          "requestData": {
-            "imageGenerationRequestData": {
-              "imageGenerationImageInputs": [
-                {
-                  "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE",
-                  "mediaId": "d3fc46fb-ed33-4bf2-bd25-1bf88e3541dd"
-                }
-              ]
-            }
-          }
-        },
-        "dimensions": {
-          "width": 768,
-          "height": 1376
-        }
-      }
-    }
-  ],
-  "workflows": [
-    {
-      "name": "e22a35f4-518d-4104-b15b-0ed725a8e394",
-      "metadata": {
-        "primaryMediaId": "b207ef8f-e3ce-44d3-9f2f-043dd0a61275"
-      },
-      "projectId": "978b0a04-9025-431e-aca8-544f37d0757c"
-    }
-  ]
+  "jobs": [{
+    "id": "job_abc123",
+    "type": "image",
+    "status": "queued",
+    "media": [],
+    "error": null
+  }],
+  "metadata": {
+    "request_id": "req_123",
+    "project_id": "978b0a04-9025-431e-aca8-544f37d0757c",
+    "routing_scope": "opaque-token",
+    "poll_after_seconds": 5,
+    "counts": {"queued": 1, "running": 0, "complete": 0, "failed": 0},
+    "done": false
+  }
 }
 ```
 
-Với mỗi phần tử trong `media[]`, lấy:
-
-| Dữ liệu | JSON path |
-|---|---|
-| Media ID kết quả | `media[i].name` hoặc `media[i].image.generatedImage.mediaId` |
-| URL ảnh | `media[i].image.generatedImage.fifeUrl` |
-| Chiều rộng | `media[i].image.dimensions.width` |
-| Chiều cao | `media[i].image.dimensions.height` |
-
-Số phần tử `media[]` tương ứng với số biến thể Flow trả về. Không giả định luôn chỉ có một ảnh.
+Khi status là `complete`, media ID nằm ở `jobs[i].media[].id` và URL ở `jobs[i].media[].url`.
 
 ## 8. Tạo video từ khung hình (i2v / Image-to-Video)
 
@@ -504,7 +458,7 @@ POST /v1/videos/generations
   "prompt": "Slow cinematic camera movement around the product",
   "start_media_id": "media-id-khung-dau",
   "end_media_id": "media-id-khung-cuoi-tuy-chon",
-  "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
+  "aspect_ratio": "9:16",
   "duration_seconds": 8
 }
 ```
@@ -517,7 +471,7 @@ POST /v1/videos/generations
 | `start_media_id` | Có | ID ảnh làm khung hình xuất phát (hoặc 1 ảnh trong `input_images`). |
 | `end_media_id` | Không | ID ảnh làm khung hình kết thúc (tùy chọn: dùng để chuyển cảnh First+Last frame mượt mà). |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
-| `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_PORTRAIT` hoặc `VIDEO_ASPECT_RATIO_LANDSCAPE`. Mặc định: portrait (`9:16`) cho `i2v`/`omni_i2v`; landscape (`16:9`) cho legacy `image_to_video`. |
+| `aspect_ratio` | Không | `9:16` hoặc `16:9`. Mặc định `9:16` cho `i2v`/`omni_i2v`; `16:9` cho legacy `image_to_video`. |
 
 ## 9. Tạo video từ ảnh tham chiếu (r2v / Reference-to-Video)
 
@@ -530,7 +484,7 @@ Sử dụng Gemini Omni Flash (`abra_r2v_*`) nhận diện nhân vật / phong c
   "type": "r2v",
   "prompt": "Create a vertical cinematic product advertisement",
   "reference_media_ids": ["media-id-1", "media-id-2"],
-  "aspect_ratio": "VIDEO_ASPECT_RATIO_PORTRAIT",
+  "aspect_ratio": "9:16",
   "duration_seconds": 8
 }
 ```
@@ -542,166 +496,117 @@ Sử dụng Gemini Omni Flash (`abra_r2v_*`) nhận diện nhân vật / phong c
 | `prompt` | Có | 1–12.000 ký tự. |
 | `reference_media_ids` | Có | Danh sách 1 đến 8 ID ảnh tham chiếu (hoặc truyền qua `input_images`). |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
-| `aspect_ratio` | Không | `VIDEO_ASPECT_RATIO_PORTRAIT` (mặc định), `VIDEO_ASPECT_RATIO_LANDSCAPE`. |
+| `aspect_ratio` | Không | `9:16` (mặc định) hoặc `16:9`. |
 
 ### Response bắt đầu tạo video
 
-Response là body upstream của Flow và có hai shape thường gặp. Image-to-video có
-thể trả `operations[i].operation.name`; Omni thực tế thường trả
-`workflows[i].name` cùng `media[]`. Backend lưu các tên này để gửi vào
-`/v1/videos/status`:
+Provider lưu request vào database trước khi background worker gửi paid request tới Flow. Response trả Provider job ID ổn định:
+
+Nên gửi header `Idempotency-Key` không rỗng (tối đa 200 ký tự) cho mỗi yêu cầu
+nghiệp vụ. Gọi lại cùng key và cùng payload trả lại chính job đã lưu với HTTP
+`202`; dùng cùng key cho payload khác trả `409 IDEMPOTENCY_KEY_REUSED`.
 
 ```json
 {
-  "operations": [
-    {
-      "operation": {
-        "name": "operations/VIDEO_OPERATION_ID",
-        "done": false
-      }
-    }
-  ]
-}
-```
-
-```json
-{
-  "workflows": [
-    {
-      "name": "WORKFLOW_ID",
-      "projectId": "978b0a04-9025-431e-aca8-544f37d0757c"
-    }
-  ],
-  "media": [
-    {
-      "name": "VIDEO_MEDIA_ID",
-      "workflowId": "WORKFLOW_ID"
-    }
-  ]
-}
-```
-
-Hàm lấy poll name an toàn:
-
-```ts
-export function extractVideoPollNames(body: any): string[] {
-  const names = [
-    ...(body.operations ?? []).map((x: any) => x?.operation?.name ?? x?.name),
-    ...(body.workflows ?? []).map((x: any) => x?.name)
-  ].filter((x): x is string => typeof x === "string" && x.length > 0);
-
-  // Một số response không có operations/workflows; Provider route media.name.
-  if (names.length === 0) {
-    names.push(...(body.media ?? [])
-      .map((x: any) => x?.name)
-      .filter((x: any): x is string => typeof x === "string" && x.length > 0));
+  "jobs": [{
+    "id": "job_abc123",
+    "type": "video",
+    "status": "queued",
+    "media": [],
+    "error": null
+  }],
+  "metadata": {
+    "request_id": "req_123",
+    "project_id": "projects/123",
+    "poll_after_seconds": 5,
+    "counts": {"queued": 1, "running": 0, "complete": 0, "failed": 0},
+    "done": false
   }
-  return [...new Set(names)];
 }
 ```
 
-Giữ nguyên toàn bộ chuỗi poll name, kể cả prefix nếu Flow trả về. Không chỉ lấy
-`operations[]`, vì làm vậy sẽ bỏ sót response Omni dạng `workflows[]`.
-
-## 10. Kiểm tra trạng thái video
+## 10. Kiểm tra trạng thái job
 
 ### Request
 
 ```http
-POST /v1/videos/status
+POST /v1/jobs/status
 ```
 
 ```json
 {
-  "operation_names": [
-    "operations/VIDEO_OPERATION_ID"
+  "job_ids": [
+    "job_abc123"
   ]
 }
 ```
 
-`operation_names` nhận từ 1 đến 20 phần tử.
+`job_ids` nhận từ 1 đến 20 phần tử. Endpoint chỉ đọc database, không cần extension
+đang online và không trả routing scope của account. Hãy coi Provider job ID là
+opaque identifier và không dùng operation/workflow/media ID của Flow để polling.
+`metadata.counts` tổng hợp số job theo bốn trạng thái và `metadata.done` chỉ bằng
+`true` khi không còn job `queued` hoặc `running`.
 
 ### Response đang xử lý
 
 ```json
 {
-  "operations": [
-    {
-      "operation": {
-        "name": "operations/VIDEO_OPERATION_ID",
-        "done": false
-      }
-    }
-  ]
-}
-```
-
-Omni/media polling có thể trả shape sau thay cho `operations[]`:
-
-```json
-{
-  "media": [
-    {
-      "name": "VIDEO_MEDIA_ID",
-      "mediaMetadata": {
-        "mediaStatus": {
-          "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_SCHEDULED"
-        }
-      },
-      "video": {
-        "dimensions": { "length": "4s" }
-      }
-    }
-  ]
+  "jobs": [{
+    "id": "job_abc123",
+    "type": "video",
+    "status": "running",
+    "media": [],
+    "error": null
+  }],
+  "metadata": {
+    "request_id": "req_456",
+    "project_id": "projects/123",
+    "poll_after_seconds": 5,
+    "counts": {"queued": 0, "running": 1, "complete": 0, "failed": 0},
+    "done": false
+  }
 }
 ```
 
 ### Response hoàn tất
 
-Cấu trúc media chi tiết do Flow quyết định và có thể bổ sung field theo thời gian. Khi video hoàn tất, Provider dùng đúng extension/account đã route để đổi media ID thành signed URL video và thumbnail. Provider chỉ bổ sung hai field ở cấp media là `downloadUrl` và `thumbnailUrl`; các header `X-Flow-Video-Urls` và `X-Flow-Thumbnail-Urls` cho biết số URL đã lấy được. Field gốc mà Flow đã trả sẵn vẫn được giữ nguyên, nhưng Provider không tự tạo alias URL lặp trong `video.generatedVideo`. Signed URL có thời hạn nên backend cần tải/lưu video và thumbnail ngay nếu muốn lưu trữ lâu dài. Nếu Flow chưa cấp URL kịp, poll lại cùng operation thay vì tạo lại video:
+Worker đổi media ID thành signed URL và lưu kết quả vào database trước khi chuyển job sang `complete`:
 
 ```json
 {
-  "operations": [
-    {
-      "operation": {
-        "name": "operations/VIDEO_OPERATION_ID",
-        "done": true,
-        "response": {
-          "media": [
-            {
-              "name": "VIDEO_MEDIA_ID",
-              "downloadUrl": "https://flow-content.google/video/...",
-              "thumbnailUrl": "https://flow-content.google/thumbnail/...",
-              "video": {
-                "generatedVideo": {}
-              }
-            }
-          ]
-        }
-      }
-    }
-  ]
+  "jobs": [{
+    "id": "job_abc123",
+    "type": "video",
+    "status": "complete",
+    "media": [{
+      "id": "VIDEO_MEDIA_ID",
+      "type": "video",
+      "url": "https://flow-content.google/video/...",
+      "thumbnail_url": "https://flow-content.google/thumbnail/...",
+      "width": 1080,
+      "height": 1920,
+      "duration_seconds": 8
+    }],
+    "error": null
+  }],
+  "metadata": {
+    "request_id": "req_789",
+    "project_id": "projects/123",
+    "poll_after_seconds": null,
+    "counts": {"queued": 0, "running": 0, "complete": 1, "failed": 0},
+    "done": true
+  }
 }
 ```
 
-Nếu object operation có `error`, coi tác vụ thất bại và trả lỗi đó về ứng dụng. Không tạo lại mù quáng vì request đầu có thể đã được Flow nhận.
-
-Với response top-level `media[]`, hoàn tất khi
-`media[i].mediaMetadata.mediaStatus.mediaGenerationStatus` là
-`MEDIA_GENERATION_STATUS_SUCCESSFUL`. Khi đó đọc URL tại hai path chuẩn hóa:
-
-```text
-media[i].downloadUrl
-media[i].thumbnailUrl
-```
+Trạng thái public cố định: `queued`, `running`, `complete`, `failed`. Khi `failed`, đọc lỗi tại `jobs[i].error`. Không tạo lại mù quáng vì paid request có thể đã được Flow nhận.
 
 ### Khuyến nghị polling
 
 - Poll mỗi 5–10 giây; không gọi liên tục.
-- Dừng khi mọi operation có `done: true`, có `error`, hoặc mọi media có trạng thái `MEDIA_GENERATION_STATUS_SUCCESSFUL`.
+- Dừng khi mọi job có trạng thái `complete` hoặc `failed`.
 - Đặt timeout nghiệp vụ phù hợp, ví dụ 10 phút.
-- HTTP `200` của endpoint status chỉ có nghĩa request kiểm tra hợp lệ; vẫn phải đọc `done`/`error` hoặc `mediaGenerationStatus`.
+- HTTP `200` của endpoint status chỉ có nghĩa request kiểm tra hợp lệ; vẫn phải đọc `jobs[].status`.
 - API không trả header `Retry-After`; bên gọi tự quản lý nhịp polling.
 
 ## 11. HTTP status và lỗi
@@ -709,8 +614,13 @@ media[i].thumbnailUrl
 Backend phải xử lý ba nhóm lỗi độc lập:
 
 1. Provider từ chối request và trả error envelope chuẩn.
-2. Google Flow trả HTTP lỗi; Provider chuyển tiếp status/body gần như nguyên bản.
-3. Request poll video trả HTTP `200`, nhưng từng operation/media có trạng thái thất bại.
+2. Với các endpoint đồng bộ, Google Flow có thể trả HTTP lỗi và Provider chuyển đổi/chuyển tiếp lỗi đó.
+3. Với video async, worker lưu lỗi terminal vào DB; `/v1/videos/status` vẫn trả HTTP `200` và lỗi có cấu trúc tại `jobs[].error`.
+
+Các mã terminal video gồm `VIDEO_DISPATCH_FAILED`,
+`VIDEO_DISPATCH_OUTCOME_UNKNOWN`, `VIDEO_OPERATION_FAILED`,
+`VIDEO_MEDIA_FAILED` và `VIDEO_POLL_TIMEOUT`. Nếu `outcome_unknown: true`, phải
+reconcile paid request cũ và không tự động tạo request thay thế.
 
 ### 11.1. Lỗi do Provider phát sinh
 
@@ -905,6 +815,6 @@ Ví dụ `/health/ready`:
 - Lưu API key ở backend/secret manager.
 - Backend **không cần tạo hay quản lý `project_id`**; Provider sẽ tự động điều phối và gom nhóm tài nguyên.
 - Sau upload hoặc tạo ảnh, lưu `media.name` làm media ID để dùng cho các bước tiếp theo (video/reference).
-- Sau tạo video, dùng `extractVideoPollNames`: lưu `operation.name`, `workflow.name`, hoặc fallback `media.name`, rồi polling có khoảng nghỉ qua `/v1/videos/status`.
+- Sau tạo video, lưu `jobs[].id`, rồi đọc trạng thái có khoảng nghỉ qua `/v1/videos/status` bằng `job_ids`.
 - Lưu kết quả ảnh/video về storage của hệ thống tích hợp trước khi URL Flow hết hạn.
 - Ghi log `X-Request-Id`, HTTP status và `error.code`; không ghi API key hoặc URL signed đầy đủ vào log công khai.

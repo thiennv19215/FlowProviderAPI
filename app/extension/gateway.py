@@ -66,8 +66,6 @@ async def _serve(websocket:WebSocket):
         supplied_key=str(hello.get("connectorApiKey") or "")
         if expected_key and not hmac.compare_digest(expected_key,supplied_key):
             await websocket.close(4401,"extension authentication failed");return
-        if hello.get("simulationMode") is True and not runtime.settings.allow_simulation_mode:
-            await websocket.close(4403,"extension simulation mode is disabled");return
         installation=str(hello.get("installationId") or "").strip()
         if not installation:await websocket.close(4400,"installation id required");return
         if len(installation)>MAX_INSTALLATION_ID_CHARS:await websocket.close(4400,"installation id too long");return

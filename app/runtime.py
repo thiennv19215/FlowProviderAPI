@@ -22,6 +22,8 @@ class Runtime:
     media_locks: weakref.WeakValueDictionary = field(default_factory=weakref.WeakValueDictionary)
     media_transfer_slots: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(2))
     active_jobs: dict[str, int] = field(default_factory=dict)
+    active_image_jobs: dict[str, int] = field(default_factory=dict)
+    active_video_jobs: dict[str, int] = field(default_factory=dict)
     reserved_credits: dict[str, int] = field(default_factory=dict)
     worker: JobWorker | None = None
 
@@ -36,31 +38,60 @@ class Runtime:
             return None
         return connection.credits - self.reserved_credits.get(connection.id, 0)
 
-    def can_reserve(self, connection, credit_cost: int = 0) -> bool:
-        if self.connection_load(connection) >= connection.max_slots:
-            return False
+    def can_reserve(self, connection, credit_cost: int = 0, job_type: str | None = None) -> bool:
+        image_capacity = getattr(connection, "max_image_slots", getattr(self.settings, "account_image_slot_capacity", 4))
+        video_capacity = getattr(connection, "max_video_slots", getattr(self.settings, "account_video_slot_capacity", getattr(connection, "max_slots", 3)))
+
+        if job_type == "image":
+            if self.active_image_jobs.get(connection.id, 0) >= image_capacity:
+                return False
+        elif job_type == "video" or credit_cost > 0:
+            if self.active_video_jobs.get(connection.id, 0) >= video_capacity:
+                return False
+        else:
+            if self.connection_load(connection) >= getattr(connection, "max_slots", 3):
+                return False
+
         if credit_cost:
             available = self.available_credits(connection)
             if available is None or available < credit_cost:
                 return False
         return True
 
-    def reserve_connection(self, connection, credit_cost: int = 0) -> bool:
-        if not self.can_reserve(connection, credit_cost):
+    def reserve_connection(self, connection, credit_cost: int = 0, job_type: str | None = None) -> bool:
+        if not self.can_reserve(connection, credit_cost, job_type=job_type):
             return False
         self.active_jobs[connection.id] = self.active_jobs.get(connection.id, 0) + 1
+        if job_type == "image":
+            self.active_image_jobs[connection.id] = self.active_image_jobs.get(connection.id, 0) + 1
+        elif job_type == "video" or credit_cost > 0:
+            self.active_video_jobs[connection.id] = self.active_video_jobs.get(connection.id, 0) + 1
         if credit_cost:
             self.reserved_credits[connection.id] = (
                 self.reserved_credits.get(connection.id, 0) + credit_cost
             )
         return True
 
-    def release_connection(self, connection_id: str, credit_cost: int = 0) -> None:
+    def release_connection(self, connection_id: str, credit_cost: int = 0, job_type: str | None = None) -> None:
         remaining = self.active_jobs.get(connection_id, 0) - 1
         if remaining > 0:
             self.active_jobs[connection_id] = remaining
         else:
             self.active_jobs.pop(connection_id, None)
+
+        if job_type == "image":
+            rem_img = self.active_image_jobs.get(connection_id, 0) - 1
+            if rem_img > 0:
+                self.active_image_jobs[connection_id] = rem_img
+            else:
+                self.active_image_jobs.pop(connection_id, None)
+        elif job_type == "video" or credit_cost > 0:
+            rem_vid = self.active_video_jobs.get(connection_id, 0) - 1
+            if rem_vid > 0:
+                self.active_video_jobs[connection_id] = rem_vid
+            else:
+                self.active_video_jobs.pop(connection_id, None)
+
         if credit_cost:
             credits_remaining = self.reserved_credits.get(connection_id, 0) - credit_cost
             if credits_remaining > 0:
@@ -103,6 +134,8 @@ def build_runtime(settings) -> Runtime:
     bridge = FlowBridge(
         flow_api_key=settings.flow_api_key,
         slot_capacity=settings.account_slot_capacity,
+        image_slot_capacity=getattr(settings, "account_image_slot_capacity", 4),
+        video_slot_capacity=getattr(settings, "account_video_slot_capacity", 3),
         cooldown_seconds=settings.account_rate_limit_cooldown_seconds,
     )
     projects = ProjectStore(settings.project_store_path)

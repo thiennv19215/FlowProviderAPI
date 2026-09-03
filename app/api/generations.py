@@ -19,6 +19,8 @@ from app.api.schemas import (
     ImageToVideoGenerationRequest,
     ImageUploadRequest,
     InlineImageInput,
+    JobStatusRequest,
+    JobsResponse,
     OmniVideoGenerationRequest,
     VideoGenerationRequest,
     VideoStatusRequest,
@@ -112,9 +114,6 @@ def _connection(
 ):
     runtime = request.app.state.runtime
     available = runtime.bridge.ready_connections()
-    # Never route a business request to a simulated connector.  Production only
-    # serves responses produced by a real Google Flow account.
-    available = [item for item in available if not getattr(item, "simulation_mode", False)]
     if excluded_account_keys:
         available = [
             item for item in available if _account_key(item) not in excluded_account_keys
@@ -350,8 +349,7 @@ def _ready_connection_for_account(runtime, account_key: str):
         (
             item
             for item in runtime.bridge.ready_connections()
-            if not getattr(item, "simulation_mode", False)
-            and _account_key(item) == account_key
+            if _account_key(item) == account_key
         ),
         None,
     )
@@ -1163,404 +1161,228 @@ async def upload_image(
     return response
 
 
-@router.post("/v1/images/generations", response_model=None)
+def _normalize_job_media(job: Any) -> list[dict]:
+    media_list = []
+    if job and getattr(job, "result_data", None) and isinstance(job.result_data, dict):
+        raw_media = list(job.result_data.get("media") or [])
+        for op in job.result_data.get("operations") or []:
+            inner = op.get("operation") if isinstance(op, dict) and isinstance(op.get("operation"), dict) else op
+            if isinstance(inner, dict):
+                resp = inner.get("response")
+                if isinstance(resp, dict) and isinstance(resp.get("media"), list):
+                    raw_media.extend(resp["media"])
+        for m in raw_media:
+            if isinstance(m, dict) and m.get("name"):
+                mid = m["name"]
+                img = m.get("image") if isinstance(m.get("image"), dict) else {}
+                vid = m.get("video") if isinstance(m.get("video"), dict) else {}
+                gen_img = img.get("generatedImage") if isinstance(img.get("generatedImage"), dict) else {}
+                gen_vid = vid.get("generatedVideo") if isinstance(vid.get("generatedVideo"), dict) else {}
+                url = m.get("downloadUrl") or gen_img.get("fifeUrl") or gen_vid.get("fifeUrl") or gen_vid.get("url")
+                thumb = m.get("thumbnailUrl") or gen_img.get("thumbnailUrl") or gen_vid.get("thumbnailUrl")
+                dims = img.get("dimensions") or vid.get("dimensions") or {}
+                media_list.append({
+                    "id": mid,
+                    "type": "image" if img or getattr(job, "media_type", "") == "image" else "video",
+                    "url": url,
+                    "thumbnail_url": thumb,
+                    "width": dims.get("width"),
+                    "height": dims.get("height"),
+                    "duration_seconds": vid.get("durationSeconds"),
+                })
+    return media_list
+
+
+def _job_to_dict(job: Any) -> dict:
+    status_map = {
+        "queued": "queued",
+        "dispatching": "queued",
+        "running": "running",
+        "completed": "complete",
+        "complete": "complete",
+        "failed": "failed",
+    }
+    public_status = status_map.get(getattr(job, "status", "queued"), "queued")
+    err = None
+    if public_status == "failed" and getattr(job, "error_message", None):
+        err = {
+            "code": getattr(job, "error_code", None) or "JOB_FAILED",
+            "message": job.error_message,
+            "retryable": bool(getattr(job, "error_retryable", False)),
+            "outcome_unknown": bool(getattr(job, "outcome_unknown", False)),
+        }
+    return {
+        "id": getattr(job, "job_id", ""),
+        "type": getattr(job, "media_type", "image"),
+        "status": public_status,
+        "media": _normalize_job_media(job),
+        "error": err,
+    }
+
+
+def _job_response(
+    request: Request,
+    jobs: list[Any],
+    status_code: int = 200,
+    include_route: bool = False,
+) -> Response:
+    runtime = request.app.state.runtime
+    job_dicts = [_job_to_dict(j) for j in jobs]
+    counts = {"queued": 0, "running": 0, "complete": 0, "failed": 0}
+    for jd in job_dicts:
+        if jd["status"] in counts:
+            counts[jd["status"]] += 1
+    done = all(jd["status"] in {"complete", "failed"} for jd in job_dicts)
+    project_id = getattr(jobs[0], "google_project_id", None) if (jobs and include_route) else None
+    routing_scope = None
+    if include_route and jobs:
+        installation_id = getattr(jobs[0], "installation_id", None)
+        if installation_id:
+            routing_scope = _encode_routing_scope(runtime.settings, installation_id)
+
+    resp_data = {
+        "jobs": job_dicts,
+        "metadata": {
+            "request_id": getattr(request.state, "request_id", None),
+            "project_id": project_id,
+            "routing_scope": routing_scope,
+            "poll_after_seconds": None if done else 10,
+            "counts": counts,
+            "done": done,
+        },
+    }
+    response = Response(
+        content=json.dumps(resp_data, ensure_ascii=False),
+        status_code=status_code,
+        media_type="application/json",
+    )
+    if include_route and routing_scope:
+        response.headers[ROUTING_SCOPE_HEADER] = routing_scope
+    if include_route and project_id:
+        response.headers["X-Flow-Project-Id"] = project_id
+    return response
+
+
+@router.post("/v1/images/generations", response_model=JobsResponse, status_code=202)
 async def generate_image(
     payload: ImageGenerationRequest,
     request: Request,
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Response:
     runtime = request.app.state.runtime
-    known_media = _known_media(runtime, list(payload.reference_media_ids))
-    auto_transfer = _should_auto_transfer_media(
-        runtime, payload.project_id, routing_scope, known_media,
+    request_data = payload.model_dump(mode="json")
+    if idempotency_key is not None:
+        idempotency_key = idempotency_key.strip()
+        if not idempotency_key:
+            raise APIError(400, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must not be blank.")
+        if len(idempotency_key) > 200:
+            raise APIError(400, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must contain at most 200 characters.")
+        existing_job = runtime.projects.get_job_by_idempotency_key(idempotency_key)
+        if existing_job:
+            clean_stored = {k: v for k, v in existing_job.request_payload.items() if not k.startswith("_")}
+            clean_current = {k: v for k, v in request_data.items() if not k.startswith("_")}
+            if clean_stored != clean_current:
+                raise APIError(409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was already used with a different request payload.")
+            return _job_response(request, [existing_job], status_code=202, include_route=True)
+
+    job_id = f"job_{uuid.uuid4().hex}"
+    if idempotency_key:
+        request_data["_idempotency_key"] = idempotency_key
+
+    scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
+
+    job = runtime.projects.enqueue_job(
+        job_id=job_id,
+        generation_type="image",
+        media_type="image",
+        request_payload=request_data,
+        installation_id=scoped_account_key,
+        google_project_id=payload.project_id,
+        idempotency_key=idempotency_key,
     )
-    stored_route = (
-        None
-        if auto_transfer
-        else _stored_media_route(runtime, list(payload.reference_media_ids))
-    )
-    stored_account_key, stored_project_id = stored_route or (None, None)
-    if payload.project_id and stored_project_id and payload.project_id != stored_project_id:
-        raise APIError(
-            409,
-            "MEDIA_PROJECT_MISMATCH",
-            "Referenced media do not belong to the requested Google Flow project.",
-            field="project_id",
-        )
-    effective_project_id = payload.project_id or (None if auto_transfer else stored_project_id)
-    connection, client = _connection(
-        request,
-        routing_scope,
-        project_id=effective_project_id,
-        required_account_key=None if auto_transfer else stored_account_key,
-    )
-    managed = effective_project_id is None
-    account_key = _account_key(connection)
-    force_upload: set[str] = set()
-    project_recovered = False
-    for attempt in range(3):
-        project_id = effective_project_id or await _managed_project(runtime, connection, client)
-        reference_media_ids = await _rehydrate_media_ids(
-            runtime,
-            connection,
-            client,
-            list(payload.reference_media_ids),
-            project_id,
-            known_media,
-        )
-        cached_digests: list[str] = []
-        cache_hits = 0
-        stale_project = False
-        for image in payload.input_images:
-            digest = _image_digest(image.image_base64)
-            cached = None if digest in force_upload else runtime.projects.get_media(
-                account_key, project_id, digest,
-            )
-            if cached:
-                reference_media_ids.append(cached.google_media_id)
-                cached_digests.append(digest)
-                cache_hits += 1
-                continue
-            async with runtime.media_lock(account_key, project_id, digest):
-                cached = None if digest in force_upload else runtime.projects.get_media(
-                    account_key, project_id, digest,
-                )
-                if cached:
-                    reference_media_ids.append(cached.google_media_id)
-                    cached_digests.append(digest)
-                    cache_hits += 1
-                    continue
-                upload_result = await _api(
-                    client,
-                    url=UPLOAD_IMAGE_URL,
-                    body={
-                        "clientContext": {"projectId": project_id, "tool": "PINHOLE"},
-                        "fileName": image.file_name,
-                        "imageBytes": image.image_base64,
-                        "isHidden": False,
-                        "isUserUploaded": True,
-                        "mimeType": image.mime_type,
-                    },
-                )
-                if managed and upload_result.get("status") == 404 and not project_recovered:
-                    runtime.projects.invalidate(account_key)
-                    project_recovered = True
-                    force_upload.clear()
-                    stale_project = True
-                    break
-                media_id = extract_upload_media_id(upload_result)
-                if not media_id:
-                    raise _flow_failure(upload_result, "IMAGE_UPLOAD_FAILED", "Reference image upload failed.")
-                runtime.projects.put_media(
-                    account_key,
-                    project_id,
-                    digest,
-                    media_id,
-                    image.mime_type,
-                    image.file_name,
-                    upload_result.get("data") if isinstance(upload_result.get("data"), dict) else None,
-                    upload_result.get("status") if isinstance(upload_result.get("status"), int) else None,
-                    upload_result.get("headers") if isinstance(upload_result.get("headers"), dict) else None,
-                )
-            reference_media_ids.append(media_id)
-        if stale_project:
-            continue
-
-        ctx = client_context(project_id, connection.paygate_tier or "PAYGATE_TIER_ONE")
-        requests = []
-        for _ in range(payload.variant_count):
-            item = {
-                "clientContext": ctx,
-                "structuredPrompt": {"parts": [{"text": payload.prompt}]},
-                "imageAspectRatio": payload.aspect_ratio,
-                "imageModelName": resolve_image_model(payload.model),
-            }
-            if reference_media_ids:
-                item["imageInputs"] = [
-                    {"name": media_id, "imageInputType": "IMAGE_INPUT_TYPE_REFERENCE"}
-                    for media_id in reference_media_ids
-                ]
-            requests.append(item)
-        result = await _api(
-            client,
-            url=f"{FLOW_API_BASE}/v1/projects/{project_id}/flowMedia:batchGenerateImages",
-            body={
-                "clientContext": ctx,
-                "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
-                "useNewMedia": True,
-                "requests": requests,
-            },
-            captcha_action=CAPTCHA_IMAGE,
-        )
-        if result.get("status") == 404 and cached_digests and attempt < 2:
-            for digest in cached_digests:
-                runtime.projects.invalidate_media(account_key, project_id, digest)
-            force_upload.update(cached_digests)
-            continue
-        if managed and result.get("status") == 404 and not project_recovered and attempt < 2:
-            runtime.projects.invalidate(account_key)
-            project_recovered = True
-            force_upload.clear()
-            continue
-        _remember_project_on_success(runtime, connection, project_id, result)
-        _remember_generated_media(runtime, connection, project_id, result)
-        response = _scoped_response(result, runtime.settings, connection)
-        response.headers["X-Flow-Project-Id"] = project_id
-        response.headers["X-Flow-Media-Cache-Hits"] = str(cache_hits)
-        return response
-    raise APIError(502, "PROJECT_RECOVERY_FAILED", "Google Flow project recovery failed.", retryable=True)
+    return _job_response(request, [job], status_code=202, include_route=True)
 
 
-
-
-@router.post("/v1/videos/generations", response_model=None)
+@router.post("/v1/videos/generations", response_model=JobsResponse, status_code=202)
 async def generate_video(
     payload: VideoGenerationRequest,
     request: Request,
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Response:
     runtime = request.app.state.runtime
-    if isinstance(payload, OmniVideoGenerationRequest):
-        credit_cost = max(15, OMNI_FLASH_CREDIT_COST.get(payload.duration_seconds, 25))
-    else:
-        credit_cost = (
-            20 if payload.type == "image_to_video"
-            else OMNI_FLASH_CREDIT_COST.get(payload.duration_seconds, 20)
-        )
-    inline_images = list(payload.input_images)
-    if isinstance(payload, ImageToVideoGenerationRequest):
-        media_ids = [payload.start_media_id] if payload.start_media_id else []
-        if payload.end_media_id:
-            media_ids.append(payload.end_media_id)
-    else:
-        media_ids = list(payload.reference_media_ids)
-    requested_media_ids = list(media_ids)
-    known_media = _known_media(runtime, media_ids)
-    auto_transfer = _should_auto_transfer_media(
-        runtime, payload.project_id, routing_scope, known_media,
-    )
-    stored_route = (
-        None
-        if auto_transfer
-        else _stored_media_route(request.app.state.runtime, media_ids)
-    )
-    stored_account_key, stored_project_id = stored_route or (None, None)
-    if payload.project_id and stored_project_id and payload.project_id != stored_project_id:
-        raise APIError(
-            409,
-            "MEDIA_PROJECT_MISMATCH",
-            "Referenced media do not belong to the requested Google Flow project.",
-            field="project_id",
-        )
-    effective_project_id = payload.project_id or (None if auto_transfer else stored_project_id)
-    can_failover = bool(
-        not routing_scope
-        and (not requested_media_ids or all(
-            media_id in known_media for media_id in requested_media_ids
-        ))
-        and (inline_images or known_media)
-    )
-    preferred_account_key = (
-        runtime.projects.installation_for_project(payload.project_id)
-        if payload.project_id else stored_account_key
-    )
-    try:
-        connection, client = _connection(
-            request,
-            routing_scope,
-            min_credits=credit_cost,
-            project_id=effective_project_id,
-            required_account_key=None if auto_transfer else stored_account_key,
-        )
-    except APIError as exc:
-        recovered = False
-        if can_failover and exc.code in {
-            "VIDEO_ACCOUNT_UNAVAILABLE",
-            "MEDIA_ACCOUNT_UNAVAILABLE",
-            "PROJECT_ACCOUNT_UNAVAILABLE",
-        }:
-            try:
-                connection, client = _connection(
-                    request,
-                    min_credits=credit_cost,
-                    excluded_account_keys={preferred_account_key} if preferred_account_key else None,
-                )
-                effective_project_id = None
-                auto_transfer = True
-                recovered = True
-            except APIError:
-                pass
-        if not recovered:
-            # Video requests always carry provider-owned media IDs or inline
-            # image bytes.  Without an owning account/project, persisting the
-            # request for a later worker would either lose the media or risk
-            # submitting it to the wrong account.  Return the retryable
-            # routing error instead of claiming a queued-success response.
-            raise
-    if not auto_transfer and stored_account_key and _account_key(connection) != stored_account_key:
-        raise APIError(
-            409,
-            "MEDIA_ACCOUNT_MISMATCH",
-            "Referenced media do not belong to the selected Google Flow account.",
-        )
-    failover_attempted = False
-    stale_inline_retried = False
-    project_recovered = False
-    force_upload: set[str] = set()
-    while True:
-        resolved_project_id = effective_project_id or await _managed_project(runtime, connection, client)
-        media_ids = await _rehydrate_media_ids(
-            runtime,
-            connection,
-            client,
-            requested_media_ids,
-            resolved_project_id,
-            known_media,
-        )
-        try:
-            inline_media_ids, cached_digests, cache_hits = await _upload_inline_images(
-                runtime,
-                connection,
-                client,
-                resolved_project_id,
-                inline_images,
-                force_upload=force_upload,
-            )
-        except APIError as exc:
-            if effective_project_id is None and exc.status_code == 404 and not project_recovered:
-                runtime.projects.invalidate(_account_key(connection))
-                project_recovered = True
-                force_upload.clear()
-                continue
-            raise
-        media_ids.extend(inline_media_ids)
-        tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
-        ctx = client_context(resolved_project_id, tier)
-        if isinstance(payload, ImageToVideoGenerationRequest):
-            if payload.type == "image_to_video":
-                model = resolve_video_model(tier, payload.aspect_ratio, payload.quality)
-                if not model:
-                    raise APIError(422, "INVALID_VIDEO_QUALITY", "Unsupported video quality for this account.")
-            else:
-                model = payload.duration_model
-            if payload.start_media_id:
-                start_id = media_ids[0]
-                end_id = media_ids[1] if payload.end_media_id else None
-            else:
-                start_id = inline_media_ids[0]
-                end_id = media_ids[0] if payload.end_media_id else (
-                    inline_media_ids[1] if len(inline_media_ids) > 1 else None
-                )
-            req_item = {
-                "aspectRatio": payload.aspect_ratio,
-                "textInput": {"prompt": payload.prompt},
-                "videoModelKey": model,
-                "startImage": {"mediaId": start_id},
-                "metadata": {"sceneId": str(uuid.uuid4())},
-            }
-            target_url = VIDEO_I2V_URL
-            if end_id:
-                req_item["endImage"] = {"mediaId": end_id}
-                target_url = VIDEO_I2V_FL_URL
+    request_data = payload.model_dump(mode="json")
+    if idempotency_key is not None:
+        idempotency_key = idempotency_key.strip()
+        if not idempotency_key:
+            raise APIError(400, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must not be blank.")
+        if len(idempotency_key) > 200:
+            raise APIError(400, "IDEMPOTENCY_KEY_INVALID", "Idempotency-Key must contain at most 200 characters.")
+        existing_job = runtime.projects.get_job_by_idempotency_key(idempotency_key)
+        if existing_job:
+            clean_stored = {k: v for k, v in existing_job.request_payload.items() if not k.startswith("_")}
+            clean_current = {k: v for k, v in request_data.items() if not k.startswith("_")}
+            if clean_stored != clean_current:
+                raise APIError(409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was already used with a different request payload.")
+            return _job_response(request, [existing_job], status_code=202, include_route=True)
 
-            body = {
-                "clientContext": ctx,
-                "mediaGenerationContext": {"batchId": str(uuid.uuid4())},
-                "requests": [req_item],
-                "useV2ModelConfig": True,
-            }
-            result = await _api(client, url=target_url, body=body, captcha_action=CAPTCHA_VIDEO)
+    job_id = f"job_{uuid.uuid4().hex}"
+    if idempotency_key:
+        request_data["_idempotency_key"] = idempotency_key
+
+    scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
+
+    job = runtime.projects.enqueue_job(
+        job_id=job_id,
+        generation_type=payload.type,
+        media_type="video",
+        request_payload=request_data,
+        installation_id=scoped_account_key,
+        google_project_id=payload.project_id,
+        idempotency_key=idempotency_key,
+    )
+    return _job_response(request, [job], status_code=202, include_route=True)
+
+
+@router.post("/v1/jobs/status", response_model=JobsResponse, status_code=200)
+async def get_job_status(
+    payload: JobStatusRequest,
+    request: Request,
+) -> Response:
+    runtime = request.app.state.runtime
+    from types import SimpleNamespace
+    jobs = []
+    for jid in payload.job_ids:
+        job = runtime.projects.get_job(jid)
+        if job:
+            jobs.append(job)
         else:
-            body = {
-                "mediaGenerationContext": {
-                    "batchId": str(uuid.uuid4()),
-                    "audioFailurePreference": "BLOCK_SILENCED_VIDEOS",
-                },
-                "clientContext": ctx,
-                "requests": [{
-                    "aspectRatio": payload.aspect_ratio,
-                    "textInput": {"prompt": payload.prompt},
-                    "videoModelKey": payload.duration_model,
-                    "metadata": {},
-                    "referenceImages": [
-                        {"mediaId": media_id, "imageUsageType": "IMAGE_USAGE_TYPE_ASSET"}
-                        for media_id in media_ids
-                    ],
-                }],
-                "useV2ModelConfig": True,
-            }
-            result = await _api(client, url=VIDEO_OMNI_URL, body=body, captcha_action=CAPTCHA_VIDEO)
-        _refresh_paid_account(runtime, connection)
-        if _credit_exhaustion(result) and can_failover and not failover_attempted:
-            try:
-                connection, client = _connection(
-                    request,
-                    min_credits=credit_cost,
-                    excluded_account_keys={_account_key(connection)},
-                )
-            except APIError:
-                pass
-            else:
-                effective_project_id = None
-                auto_transfer = True
-                failover_attempted = True
-                force_upload.clear()
-                stale_inline_retried = False
-                project_recovered = False
-                continue
-        if result.get("status") == 404 and cached_digests and not stale_inline_retried:
-            account_key = _account_key(connection)
-            for digest in cached_digests:
-                runtime.projects.invalidate_media(account_key, resolved_project_id, digest)
-            force_upload.update(cached_digests)
-            stale_inline_retried = True
-            continue
-        if result.get("status") == 404 and effective_project_id is None and not project_recovered:
-            runtime.projects.invalidate(_account_key(connection))
-            project_recovered = True
-            force_upload.clear()
-            continue
-        _remember_project_on_success(runtime, connection, resolved_project_id, result)
-        _remember_operations(runtime, connection, resolved_project_id, result)
-
-        job_id = f"job_{uuid.uuid4().hex}"
-        op_name = None
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        for wf in data.get("workflows") or []:
-            if isinstance(wf, dict) and wf.get("name"):
-                op_name = wf["name"]
-                break
-        if not op_name:
-            for op in data.get("operations") or []:
-                inner = op.get("operation") if isinstance(op, dict) and isinstance(op.get("operation"), dict) else op
-                if isinstance(inner, dict) and inner.get("name"):
-                    op_name = inner["name"]
-                    break
-        if op_name and payload.project_id is None:
-            try:
-                runtime.projects.enqueue_job(job_id, payload.type, payload.model_dump(mode="json"))
-                runtime.projects.update_job_running(
-                    job_id,
-                    operation_name=op_name,
-                    installation_id=_account_key(connection),
-                    google_project_id=resolved_project_id,
-                    poll_name=op_name,
-                )
-            except Exception:
-                pass
-
-        response = _paid_scoped_response(result, runtime.settings, connection)
-        response.headers["X-Flow-Project-Id"] = resolved_project_id
-        response.headers["X-Flow-Media-Cache-Hits"] = str(cache_hits)
-        return response
+            jobs.append(SimpleNamespace(
+                job_id=jid,
+                provider="google_flow",
+                media_type="image",
+                status="failed",
+                result_data=None,
+                error_message="Job not found.",
+                error_code="JOB_NOT_FOUND",
+                error_retryable=False,
+                outcome_unknown=False,
+                google_project_id=None,
+                installation_id=None,
+            ))
+    return _job_response(request, jobs, status_code=200)
 
 
-@router.post("/v1/videos/status", response_model=None)
+@router.post("/v1/videos/status", response_model=JobsResponse, status_code=200)
 async def check_video_operations(
     payload: VideoStatusRequest,
     request: Request,
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
+    if payload.job_ids:
+        return await get_job_status(payload, request)
+
     runtime = request.app.state.runtime
     scoped_account_key = (
         _decode_routing_scope(runtime.settings, routing_scope)
@@ -1568,7 +1390,7 @@ async def check_video_operations(
     )
 
     db_jobs = [runtime.projects.get_job_by_operation(name) for name in payload.operation_names]
-    if all(j is not None and j.status == "completed" and j.result_data for j in db_jobs):
+    if db_jobs and any(j is not None for j in db_jobs) and all(j is not None and j.status in {"completed", "complete"} and j.result_data for j in db_jobs):
         if len(db_jobs) == 1:
             return _response({"status": 200, "data": db_jobs[0].result_data})
         merged: dict = {}
@@ -1633,7 +1455,6 @@ async def check_video_operations(
         )
 
     available = runtime.bridge.ready_connections()
-    available = [item for item in available if not getattr(item, "simulation_mode", False)]
     scoped_connection = None
     if scoped_account_key:
         scoped_connection = next(

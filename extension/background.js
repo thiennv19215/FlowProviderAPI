@@ -4,7 +4,6 @@ const SERVER_KEY = "flow-provider-server-url-v1";
 const SERVER_DEFAULT_VERSION_KEY = "flow-provider-server-default-version-v1";
 const INSTALLATION_KEY = "flow-provider-installation-id-v1";
 const PROFILE_KEY = "flow-provider-profile-id-v1";
-const SIMULATION_MODE_KEY = "flow-provider-simulation-mode-v1";
 const FLOW_TAB_ID_KEY = "flow-provider-flow-tab-id-v1";
 const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
@@ -29,7 +28,29 @@ let accountState = { email: null, credits: null, ready: false };
 let authSyncInFlight = null;
 let lastFlowTabOpenAttemptAt = 0;
 const inflightRpcControllers = new Map();
-let activityState = { activeCount: 0, current: null, logs: [] };
+const STATS_KEY = "flow_provider_job_stats";
+let activityState = { activeCount: 0, current: null, completedCount: 0, errorCount: 0, logs: [] };
+
+async function loadStats() {
+  try {
+    const stored = await chrome.storage.local.get(STATS_KEY);
+    if (stored?.[STATS_KEY]) {
+      activityState.completedCount = Number(stored[STATS_KEY].completedCount) || 0;
+      activityState.errorCount = Number(stored[STATS_KEY].errorCount) || 0;
+    }
+  } catch (_) {}
+}
+
+function saveStats() {
+  try {
+    chrome.storage.local.set({
+      [STATS_KEY]: {
+        completedCount: activityState.completedCount || 0,
+        errorCount: activityState.errorCount || 0,
+      }
+    }).catch?.(() => {});
+  } catch (_) {}
+}
 
 function sanitizeLogValue(value, key = "", depth = 0) {
   if (SENSITIVE_LOG_KEY.test(key)) return "[redacted]";
@@ -109,6 +130,12 @@ function beginActivity(message) {
 function finishActivity(activity, error = null) {
   activityState.activeCount = Math.max(0, activityState.activeCount - 1);
   if (!activityState.activeCount) activityState.current = null;
+  if (error) {
+    activityState.errorCount = (activityState.errorCount || 0) + 1;
+  } else {
+    activityState.completedCount = (activityState.completedCount || 0) + 1;
+  }
+  saveStats();
   const durationMs = Math.max(0, Date.now() - activity.startedAt);
   appendActivity(activity.label, error ? "error" : "done", error ? String(error).slice(0, 160) : `${durationMs} ms`);
 }
@@ -187,21 +214,6 @@ async function getProfileMeta() {
   let email = "";
   try { email = (await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }))?.email || ""; } catch (_) {}
   return { runtimeId, profileId, profileName: email || "Browser extension" };
-}
-
-async function getSimulationMode() {
-  const data = await chrome.storage.local.get(SIMULATION_MODE_KEY);
-  return data?.[SIMULATION_MODE_KEY] === true;
-}
-
-async function setSimulationMode(enabled) {
-  const simulationMode = enabled === true;
-  await chrome.storage.local.set({ [SIMULATION_MODE_KEY]: simulationMode });
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "simulation_mode_changed", simulationMode }));
-  }
-  appendActivity(simulationMode ? "Simulation mode enabled" : "Simulation mode disabled", "done");
-  return simulationMode;
 }
 
 function allowedFetchUrl(value) {
@@ -448,7 +460,7 @@ async function handleRpc(msg, signal) {
 
 async function connectionState() {
   const config = await getConnectionConfig();
-  return { serverUrl: config.serverUrl, connected: socket?.readyState === WebSocket.OPEN, account: accountState, activity: activityState, simulationMode: await getSimulationMode(), version: chrome.runtime.getManifest().version };
+  return { serverUrl: config.serverUrl, connected: socket?.readyState === WebSocket.OPEN, account: accountState, activity: activityState, version: chrome.runtime.getManifest().version };
 }
 
 function scheduleReconnect() {
@@ -486,8 +498,8 @@ async function connectOnce(epoch) {
   try {
     const config = await getConnectionConfig();
     if (epoch !== connectionEpoch) return;
-    const [installationId, simulationMode, meta] = await Promise.all([
-      getInstallationId(), getSimulationMode(), getProfileMeta(),
+    const [installationId, meta] = await Promise.all([
+      getInstallationId(), getProfileMeta(),
     ]);
     if (epoch !== connectionEpoch) return;
     const connectorApiKey = String(CONFIG.connectorApiKey || "").trim();
@@ -512,7 +524,6 @@ async function connectOnce(epoch) {
         installationId,
         protocolVersion: PROTOCOL_VERSION,
         connectionId: id("conn"),
-        simulationMode,
         ...(connectorApiKey ? { connectorApiKey } : {}),
         ...meta,
       }));
@@ -606,8 +617,23 @@ async function setupDnr() {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "FLOW_PROVIDER_GET_STATE") { connectionState().then(sendResponse); return true; }
-  if (msg?.type === "FLOW_PROVIDER_CLEAR_LOGS") { activityState.logs = []; sendResponse({ ok: true }); return true; }
-  if (msg?.type === "FLOW_PROVIDER_SET_SIMULATION_MODE") { setSimulationMode(msg.enabled).then((simulationMode) => sendResponse({ ok: true, simulationMode })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
+  if (msg?.type === "FLOW_PROVIDER_CLEAR_LOGS") {
+    activityState.logs = [];
+    if (msg.resetStats) {
+      activityState.completedCount = 0;
+      activityState.errorCount = 0;
+      saveStats();
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (msg?.type === "FLOW_PROVIDER_RESET_STATS") {
+    activityState.completedCount = 0;
+    activityState.errorCount = 0;
+    saveStats();
+    sendResponse({ ok: true });
+    return true;
+  }
   if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setConnectionConfig(msg.serverUrl).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_OPEN_FLOW") { openFlowHome().then((v) => sendResponse({ ok: true, ...v })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   return false;
@@ -616,6 +642,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 let initializationPromise = null;
 
 async function initialize() {
+  await loadStats();
   await setupDnr();
   try {
     chrome.alarms.create("keepAlive", { periodInMinutes: 0.4 });
