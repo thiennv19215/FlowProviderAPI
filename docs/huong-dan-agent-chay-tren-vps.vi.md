@@ -163,13 +163,19 @@ def run_agent_workflow():
     download_file(char_img_url, img_file)
     print(f"[✓] Ảnh nhân vật ID: {char_media_id}")
 
-    # BƯỚC 2: AGENT TẠO VIDEO OMNI FLASH 4S TỪ ẢNH TRÊN
-    print("\n=== BƯỚC 2: TẠO VIDEO OMNI FLASH TỪ ẢNH NHÂN VẬT ===")
-    # Chế độ: reference_to_video (AI sáng tạo phân cảnh mới dựa trên nhân vật)
+    # BƯỚC 2: AGENT TẠO VIDEO OMNI FLASH TỪ ẢNH NHÂN VẬT (CHUẨN BASE64 MULTI-ACCOUNT)
+    print("\n=== BƯỚC 2: TẠO VIDEO OMNI FLASH QUA BASE64 INPUT_IMAGES ===")
+    # Đọc file ảnh vừa tải thành chuỗi Base64 để tận dụng SHA-256 deduplication
+    # và tự động phân tải đều sang bất kỳ tài khoản Google nào còn credit:
+    with open(img_file, "rb") as f:
+        char_img_b64 = base64.b64encode(f.read()).decode("ascii")
+
     vid_payload = {
         "type": "reference_to_video",
         "prompt": "The cyberpunk warrior raises her high-tech plasma katana, slow motion rain dripping from the blade, dynamic camera pan",
-        "reference_media_ids": [char_media_id],
+        "input_images": [
+            {"image_base64": char_img_b64, "mime_type": "image/png"}
+        ],
         "duration_seconds": 4,
         "aspect_ratio": "9:16"
     }

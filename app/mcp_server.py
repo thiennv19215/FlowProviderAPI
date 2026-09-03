@@ -291,13 +291,16 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         description="Generate images and videos through authenticated Google Flow browser accounts.",
         version="1.0.0",
         instructions=(
-            "Use flow_generate_image for image creation. It automatically manages a Flow project when "
-            "project_id is omitted. Image and video generation both return Provider job ids; read them "
-            "with flow_get_job_status until status is complete or failed. For image-to-video, reuse the "
-            "completed image media id and project_id. Never create a second paid video "
-            "while a job is queued or running. For Character workflows, upload 1-3 images, create a Character, "
-            "then call the dedicated Character image/video tool; those tools snapshot references in the DB. "
-            "Generated URLs can expire, so download completed outputs promptly."
+            "Use flow_generate_image for image creation and flow_generate_video for video creation. "
+            "Always omit project_id to let the Provider manage accounts and projects automatically. "
+            "Always prefer passing local image files via image_paths instead of media_id; the system automatically "
+            "hashes images with SHA-256 for 0ms deduplication caching and dynamically load-balances across all "
+            "available Google accounts. For image-to-video or reference-to-video, pass the local image path or "
+            "downloaded image path directly in image_paths. Image and video generation both return Provider job ids; "
+            "read them with flow_get_job_status until status is complete or failed. Never create a second paid video "
+            "while a job is queued or running. For Character workflows, create a Character, then call the dedicated "
+            "Character image/video tool; those tools snapshot references in the DB. Generated URLs can expire, "
+            "so download completed outputs promptly."
         ),
         lifespan=lifespan,
     )
@@ -354,7 +357,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         project_id: str | None = None,
         routing_scope: str | None = None,
     ) -> FlowToolResult:
-        """Queue image generation and return a Provider job id for status checks."""
+        """Queue image generation and return a Provider job id for status checks. Prefer passing local file paths via image_paths for automatic SHA-256 caching and multi-account balancing."""
 
         paths = image_paths or []
         media_ids = reference_media_ids or []
@@ -508,7 +511,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         duration_seconds: Literal[4, 6, 8, 10] = 8,
         routing_scope: str | None = None,
     ) -> FlowToolResult:
-        """Start a video generation job (frames_to_video or reference_to_video) using Gemini Omni Flash."""
+        """Start a video generation job (frames_to_video or reference_to_video) using Gemini Omni Flash. Prefer passing local file paths via image_paths for automatic SHA-256 caching and multi-account load balancing."""
 
         is_frames = type in {"frames_to_video", "frames", "start_to_video", "image_to_video", "i2v", "omni_i2v"}
         paths = image_paths or []

@@ -35,8 +35,8 @@ The MCP adapter does not own Google cookies or tokens and does not expose a Stre
 2. Prefer managed projects by omitting `project_id` unless the caller needs an explicit project.
 3. For local image inputs, use paths inside `FLOW_PROVIDER_MCP_ALLOWED_ROOTS`. Prefer passing image paths (or inline Base64 in `input_images`) over `media_id` to leverage automatic SHA256 deduplication and multi-account load balancing.
 4. Preserve `metadata.x-flow-project-id` as `project_id` and `metadata.x-provider-routing-scope` as `routing_scope` when continuing an account/project-bound media workflow.
-5. For frames_to_video (start image to video), pass the source media ID as `start_media_id` (and optional `end_media_id`), or pass the image directly via `image_paths`/`input_images`.
-6. For reference_to_video (Omni video), pass 1-8 IDs as `reference_media_ids` (or inline Base64 in `input_images` / local paths in `image_paths`).
+5. For frames_to_video (start image to video), prefer passing the image directly via local file paths in `image_paths` (MCP) or Base64 in `input_images` (REST) to enable automatic SHA-256 deduplication and multi-account balancing. `start_media_id` is only for single-account workflows.
+6. For reference_to_video (Omni video), prefer passing 1-8 local file paths via `image_paths` (MCP) or inline Base64 in `input_images` (REST) instead of `reference_media_ids`.
 7. After `flow_generate_image` or `flow_generate_video`, preserve every Provider identifier returned in `jobs[].id` and its `type` (`image` or `video`) and `generation_type` (`image`, `frames_to_video`, or `reference_to_video`).
 8. Read the same identifiers with `flow_get_job_status`. `queued` and `running` are normal; status reads only the Provider database.
 9. Never start a second paid video merely because the first is queued/running or a timeout left acceptance uncertain.

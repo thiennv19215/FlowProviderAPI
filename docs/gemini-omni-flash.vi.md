@@ -40,21 +40,13 @@ Mỗi request tạo video sẽ tự động trừ trước số credit tương �
 
 ### 3.1. Chế độ `frames_to_video` (Khung hình ➔ Video)
 
-#### Cách 1: Sử dụng `start_media_id` (Ảnh có sẵn trên Provider)
-```http
-POST /v1/videos/generations
-Content-Type: application/json
+> [!IMPORTANT]
+> **Khuyến Nghị Chuẩn Toàn Hệ Thống (Multi-Account & Caching):**
+> Luôn ưu tiên truyền ảnh trực tiếp qua Base64 (`input_images`) hoặc file local qua MCP (`image_paths`).
+> - **Tự động Cache SHA-256 (0ms Deduplication)**: Backend tự động băm content hash và tra cứu trong database. Nếu cùng một ảnh được gửi nhiều lần, backend tái sử dụng ngay `google_media_id` đã có mà hoàn toàn không cần upload lại lên Google.
+> - **Tự do phân tải (Load Balancing)**: Khi truyền Base64, backend có thể phân bổ task cho bất kỳ tài khoản Google nào trong cụm còn nhiều credit hoặc rảnh slot nhất. Ngược lại, nếu dùng `start_media_id`, job bị trói cứng vào đúng 1 tài khoản đã tạo ảnh đó (dễ gây lỗi 404 khi chuyển sang tài khoản khác).
 
-{
-  "type": "frames_to_video",
-  "prompt": "The camera slowly pans around the character, rain drips in slow motion, cinematic lighting",
-  "start_media_id": "c61dffd2-2453-4a56-8aef-09c61f096e78",
-  "duration_seconds": 4,
-  "aspect_ratio": "9:16"
-}
-```
-
-#### Cách 2: Truyền trực tiếp ảnh Base64 vào `input_images` (Ảnh từ máy bạn)
+#### Cách 1 (Khuyên Dùng Chuẩn): Truyền trực tiếp ảnh Base64 vào `input_images`
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
@@ -73,7 +65,7 @@ Content-Type: application/json
 }
 ```
 
-#### Cách 3: Nối cảnh từ Khung hình đầu sang Khung hình cuối (`start_media_id` + `end_media_id`)
+#### Cách 2: Nối cảnh từ Khung hình đầu sang Khung hình cuối bằng Base64 (`input_images` 2 phần tử)
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
@@ -81,9 +73,33 @@ Content-Type: application/json
 {
   "type": "frames_to_video",
   "prompt": "Seamless cinematic transition from daytime Tokyo street into nighttime futuristic neon cybercity",
-  "start_media_id": "media_id_khung_bat_dau",
-  "end_media_id": "media_id_khung_ket_thuc",
+  "input_images": [
+    {
+      "image_base64": "iVBORw0KGgoAAAANSUhEUgAA... (Khung bat dau)",
+      "mime_type": "image/png"
+    },
+    {
+      "image_base64": "iVBORw0KGgoAAAANSUhEUgAA... (Khung ket thuc)",
+      "mime_type": "image/png"
+    }
+  ],
   "duration_seconds": 8,
+  "aspect_ratio": "9:16"
+}
+```
+
+#### Cách 3 (Tùy chọn đơn tài khoản): Sử dụng `start_media_id` (và tùy chọn `end_media_id`)
+*(Lưu ý: Chỉ dùng khi bạn biết chắc chắn video được tạo trên cùng tài khoản Google đã upload media ID này)*
+```http
+POST /v1/videos/generations
+Content-Type: application/json
+
+{
+  "type": "frames_to_video",
+  "prompt": "The camera slowly pans around the character, rain drips in slow motion, cinematic lighting",
+  "start_media_id": "c61dffd2-2453-4a56-8aef-09c61f096e78",
+  "end_media_id": "media-id-khung-cuoi-tuy-chon",
+  "duration_seconds": 4,
   "aspect_ratio": "9:16"
 }
 ```
@@ -92,23 +108,12 @@ Content-Type: application/json
 
 ### 3.2. Chế độ `reference_to_video` (Ảnh tham chiếu ➔ Video)
 
-#### Cách 1: Sử dụng danh sách `reference_media_ids` (1 đến 8 ảnh)
-```http
-POST /v1/videos/generations
-Content-Type: application/json
+> [!IMPORTANT]
+> **Khuyến Nghị Chuẩn Toàn Hệ Thống (Multi-Account & Caching):**
+> Luôn ưu tiên truyền 1 đến 8 ảnh qua Base64 (`input_images`) hoặc file local qua MCP (`image_paths`).
+> Nhờ đó backend tự động deduplicate qua SHA-256 và luân chuyển linh hoạt qua bất kỳ tài khoản Google nào còn credit.
 
-{
-  "type": "reference_to_video",
-  "prompt": "The cyberpunk samurai raises his glowing sword with dynamic action camera, cinematic slow motion",
-  "reference_media_ids": [
-    "c61dffd2-2453-4a56-8aef-09c61f096e78"
-  ],
-  "duration_seconds": 4,
-  "aspect_ratio": "9:16"
-}
-```
-
-#### Cách 2: Truyền trực tiếp danh sách ảnh Base64 vào `input_images` (1 đến 8 ảnh)
+#### Cách 1 (Khuyên Dùng Chuẩn): Truyền trực tiếp danh sách ảnh Base64 vào `input_images` (1 đến 8 ảnh)
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
@@ -127,6 +132,23 @@ Content-Type: application/json
     }
   ],
   "duration_seconds": 8,
+  "aspect_ratio": "9:16"
+}
+```
+
+#### Cách 2 (Tùy chọn đơn tài khoản): Sử dụng danh sách `reference_media_ids` (1 đến 8 ảnh)
+*(Lưu ý: Chỉ dùng khi các media ID cùng thuộc về một tài khoản Google cụ thể)*
+```http
+POST /v1/videos/generations
+Content-Type: application/json
+
+{
+  "type": "reference_to_video",
+  "prompt": "The cyberpunk samurai raises his glowing sword with dynamic action camera, cinematic slow motion",
+  "reference_media_ids": [
+    "c61dffd2-2453-4a56-8aef-09c61f096e78"
+  ],
+  "duration_seconds": 4,
   "aspect_ratio": "9:16"
 }
 ```

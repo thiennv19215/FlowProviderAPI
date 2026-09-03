@@ -532,9 +532,34 @@ Khi status là `complete`, media ID nằm ở `jobs[i].media[].id` và URL ở `
 
 ## 8. Tạo video từ khung hình (`frames_to_video` / Khung hình ➔ Video)
 
-Chế độ `frames_to_video` sử dụng Gemini Omni Flash (`abra_i2v_*`), bắt đầu diễn hoạt chính xác từ khung hình xuất phát (`start_media_id`), hỗ trợ cả tùy chọn khung hình kết thúc (`end_media_id`) để nối cảnh chuyển đổi First-and-Last frame liền mạch. Mặc định khung hình dọc (`9:16`).
+Chế độ `frames_to_video` sử dụng Gemini Omni Flash (`abra_i2v_*`), bắt đầu diễn hoạt chính xác từ khung hình xuất phát, hỗ trợ cả tùy chọn khung hình kết thúc để nối cảnh chuyển đổi First-and-Last frame liền mạch. Mặc định khung hình dọc (`9:16`).
 
-### Request mẫu
+> [!IMPORTANT]
+> **Chuẩn Khuyến Nghị Toàn Hệ Thống (Multi-Account & SHA-256 Deduplication):**
+> Luôn ưu tiên truyền ảnh qua Base64 (`input_images`) hoặc file path local qua MCP (`image_paths`).
+> - **Tự động Cache SHA-256 (0ms)**: Backend tự động băm SHA-256 kiểm tra cache. Nếu ảnh đã upload, hệ thống tái sử dụng ngay mà không upload lại.
+> - **Tự do Phân Tải (Multi-Account Balancing)**: Khi gửi Base64, backend có toàn quyền điều phối task sang bất kỳ tài khoản Google nào còn nhiều credit / rảnh slot nhất trong cụm tài khoản mà không lo lỗi Google API 404.
+
+### Request chuẩn (Khuyên dùng: Gửi Base64 qua `input_images`)
+```http
+POST /v1/videos/generations
+Content-Type: application/json
+
+{
+  "type": "frames_to_video",
+  "prompt": "Slow cinematic camera movement around the cyberpunk character",
+  "input_images": [
+    {
+      "image_base64": "iVBORw0KGgoAAAANSUhEUgAA...",
+      "mime_type": "image/png"
+    }
+  ],
+  "aspect_ratio": "9:16",
+  "duration_seconds": 4
+}
+```
+
+### Request tùy chọn: Dùng `start_media_id` (Đơn tài khoản)
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
@@ -553,16 +578,11 @@ Content-Type: application/json
 |---|---:|---|
 | `type` | Có | `"frames_to_video"` *(khuyên dùng)*, hoặc alias: `"frames"`, `"start_to_video"`, `"image_to_video"`, `"i2v"`. |
 | `prompt` | Có | 1–12.000 ký tự mô tả chuyển động. |
-| `start_media_id` | Có | ID ảnh làm khung hình xuất phát (hoặc truyền 1 ảnh Base64 vào `input_images`). |
+| `input_images` | Khuyên dùng | Mảng 1–2 ảnh Base64 (Ảnh 1 là Start Frame, Ảnh 2 là End Frame tùy chọn). |
+| `start_media_id` | Tùy chọn | ID ảnh làm khung hình xuất phát (chỉ dùng khi ở cùng tài khoản). |
 | `end_media_id` | Không | ID ảnh làm khung hình kết thúc (tùy chọn: dùng để chuyển cảnh First+Last frame mượt mà). |
-| `input_images` | Không | Mảng 1–2 ảnh Base64 (Ảnh 1 là Start Frame, Ảnh 2 là End Frame) nếu không dùng `start_media_id`. |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
 | `aspect_ratio` | Không | `"9:16"` (dọc - mặc định) hoặc `"16:9"` (ngang). |
-
-> [!TIP]
-> **Khuyến nghị tối ưu (Multi-Account & Caching):** Luôn ưu tiên truyền ảnh qua `input_images` (mảng Base64) thay vì `start_media_id`.
-> - **Tự động Cache SHA256**: Backend tự động băm content hash và lưu trong database. Nếu cùng 1 ảnh được gửi nhiều lần, backend sẽ tái sử dụng ngay `google_media_id` có sẵn mà không tốn công upload lại lên Google.
-> - **Tự do phân tải (Load Balancing)**: Khi truyền Base64, backend có thể phân bổ task cho bất kỳ tài khoản Google nào còn nhiều credit/rảnh slot nhất. Ngược lại, nếu dùng `start_media_id`, job sẽ bị trói cứng vào đúng 1 tài khoản đã tạo ra ảnh đó.
 
 ---
 
@@ -570,7 +590,32 @@ Content-Type: application/json
 
 Chế độ `reference_to_video` sử dụng Gemini Omni Flash (`abra_r2v_*`), học nhận diện nhân vật, trang phục, phong cách từ **1 đến 8 ảnh tham chiếu** để sáng tạo một phân cảnh hoàn toàn mới với góc máy tự do.
 
-### Request mẫu
+> [!IMPORTANT]
+> **Chuẩn Khuyến Nghị Toàn Hệ Thống (Multi-Account & SHA-256 Deduplication):**
+> Luôn ưu tiên truyền ảnh qua Base64 (`input_images`) hoặc file path local qua MCP (`image_paths`).
+> - **Tự động Cache SHA-256 (0ms)**: Backend tự động băm SHA-256 kiểm tra cache. Nếu ảnh đã upload, hệ thống tái sử dụng ngay mà không upload lại.
+> - **Tự do Phân Tải (Multi-Account Balancing)**: Khi gửi Base64, backend có toàn quyền điều phối task sang bất kỳ tài khoản Google nào còn nhiều credit / rảnh slot nhất trong cụm tài khoản mà không lo lỗi Google API 404.
+
+### Request chuẩn (Khuyên dùng: Gửi Base64 qua `input_images`)
+```http
+POST /v1/videos/generations
+Content-Type: application/json
+
+{
+  "type": "reference_to_video",
+  "prompt": "The cyberpunk samurai raises his glowing sword, dynamic cinematic camera",
+  "input_images": [
+    {
+      "image_base64": "iVBORw0KGgoAAAANSUhEUgAA... (Anh 1)",
+      "mime_type": "image/png"
+    }
+  ],
+  "aspect_ratio": "9:16",
+  "duration_seconds": 4
+}
+```
+
+### Request tùy chọn: Dùng `reference_media_ids` (Đơn tài khoản)
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
@@ -588,15 +633,10 @@ Content-Type: application/json
 |---|---:|---|
 | `type` | Có | `"reference_to_video"` *(khuyên dùng)*, hoặc alias: `"ingredients"`, `"references"`, `"omni"`, `"r2v"`. |
 | `prompt` | Có | 1–12.000 ký tự. |
-| `reference_media_ids` | Có | Danh sách từ **1 đến 8 ID ảnh** tham chiếu (hoặc truyền qua `input_images`). |
-| `input_images` | Không | Mảng từ 1 đến 8 ảnh Base64 để Provider tự động upload và gán tham chiếu. |
+| `input_images` | Khuyên dùng | Mảng từ **1 đến 8 ảnh Base64** để Provider tự động băm cache SHA-256 và phân tải tự do. |
+| `reference_media_ids` | Tùy chọn | Danh sách từ 1 đến 8 ID ảnh tham chiếu (chỉ dùng khi ở cùng tài khoản). |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
 | `aspect_ratio` | Không | `"9:16"` (dọc - mặc định) hoặc `"16:9"` (ngang). |
-
-> [!TIP]
-> **Khuyến nghị tối ưu (Multi-Account & Caching):** Luôn ưu tiên truyền ảnh qua `input_images` (mảng Base64) thay vì `reference_media_ids`.
-> - **Tự động Cache SHA256**: Nếu cùng các ảnh tham chiếu được gửi nhiều lần cho các prompt/video khác nhau, backend sẽ tái sử dụng ngay media ID có sẵn trong cache SQLite mà không tốn công upload lại lên Google.
-> - **Tự do phân tải (Load Balancing)**: Khi truyền Base64, backend có thể phân bổ task cho bất kỳ tài khoản Google nào còn nhiều credit/rảnh slot nhất trong cụm.
 
 ### Response bắt đầu tạo video
 

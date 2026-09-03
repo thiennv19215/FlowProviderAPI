@@ -158,12 +158,20 @@ def main():
     urllib.request.urlretrieve(img_url, "avatar_samurai.png")
     print(f"[✓] Đã tạo và tải ảnh về: avatar_samurai.png (Media ID: {media_id})")
 
-    # 3. TẠO VIDEO OMNI FLASH 4S TỪ ẢNH TRÊN
-    print("\n--- [Bước 2] Gửi yêu cầu tạo Video Omni Flash (Chế độ reference_to_video) ---")
+    # 3. TẠO VIDEO OMNI FLASH 4S TỪ ẢNH TRÊN (CHUẨN BASE64 MULTI-ACCOUNT)
+    # Khuyến nghị: Đọc ảnh vừa tạo thành Base64 và truyền qua input_images.
+    # Nhờ đó backend tự động băm SHA-256 và luân chuyển sang bất kỳ tài khoản Google nào
+    # còn credit trong cụm mà không bao giờ gặp lỗi 404!
+    print("\n--- [Bước 2] Gửi yêu cầu tạo Video Omni Flash qua Base64 input_images ---")
+    with open("avatar_samurai.png", "rb") as f:
+        img_b64 = base64.b64encode(f.read()).decode("ascii")
+
     vid_payload = {
         "type": "reference_to_video",
         "prompt": "The samurai raises her sword as neon rain drips in slow motion, cinematic 4k portrait",
-        "reference_media_ids": [media_id],
+        "input_images": [
+            {"image_base64": img_b64, "mime_type": "image/png"}
+        ],
         "duration_seconds": 4,
         "aspect_ratio": "9:16"
     }
