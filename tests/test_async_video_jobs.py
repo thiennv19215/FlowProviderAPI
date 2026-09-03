@@ -48,6 +48,8 @@ def test_video_is_enqueued_then_status_reads_database_only(monkeypatch):
     calls = []
 
     async def fake_api(_connection_id, **kwargs):
+        if "uploadImage" in kwargs.get("url", ""):
+            return {"status": 200, "data": {"media": {"name": "media/start"}}}
         calls.append(kwargs)
         return {
             "status": 200,
@@ -65,7 +67,10 @@ def test_video_is_enqueued_then_status_reads_database_only(monkeypatch):
                 "type": "image_to_video",
                 "project_id": "project-1",
                 "prompt": "move",
-                "start_media_id": "media/start",
+                "input_images": [{
+                    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+                    "mime_type": "image/png",
+                }],
                 "aspect_ratio": "16:9",
             },
         )
@@ -292,6 +297,8 @@ def test_worker_persists_complete_video_and_status_returns_normalized_media(monk
     phase = "dispatch"
 
     async def fake_api(_connection_id, **_kwargs):
+        if "uploadImage" in _kwargs.get("url", ""):
+            return {"status": 200, "data": {"media": {"name": "media/start"}}}
         if phase == "dispatch":
             return {
                 "status": 200,
@@ -324,7 +331,10 @@ def test_worker_persists_complete_video_and_status_returns_normalized_media(monk
                 "type": "image_to_video",
                 "project_id": "project-1",
                 "prompt": "move",
-                "start_media_id": "media/start",
+                "input_images": [{
+                    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+                    "mime_type": "image/png",
+                }],
             },
         )
         job_id = created.json()["jobs"][0]["id"]
@@ -353,7 +363,10 @@ def test_idempotency_key_returns_same_job_and_rejects_different_request(monkeypa
         "type": "image_to_video",
         "project_id": "project-1",
         "prompt": "move",
-        "start_media_id": "media/start",
+        "input_images": [{
+            "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+            "mime_type": "image/png",
+        }],
     }
     with TestClient(application) as client:
         first = client.post(
@@ -388,7 +401,10 @@ def test_blank_idempotency_key_is_rejected(monkeypatch):
                 "type": "image_to_video",
                 "project_id": "project-1",
                 "prompt": "move",
-                "start_media_id": "media/start",
+                "input_images": [{
+                    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+                    "mime_type": "image/png",
+                }],
             },
         )
 
@@ -461,7 +477,7 @@ def test_worker_marks_terminal_media_failure(monkeypatch):
     }
 
 
-def test_deterministic_credit_rejection_returns_job_to_queue(monkeypatch):
+def test_deterministic_credit_rejection_fails_job_with_credit_exhausted(monkeypatch):
     application = async_app()
     connect(application, monkeypatch)
     runtime = application.state.runtime
@@ -478,7 +494,9 @@ def test_deterministic_credit_rejection_returns_job_to_queue(monkeypatch):
 
     monkeypatch.setattr(runtime.bridge, "api_request", rejected)
     asyncio.run(JobWorker(runtime).process_queued_jobs())
-    assert runtime.projects.get_job("job-credit").status == "queued"
+    job = runtime.projects.get_job("job-credit")
+    assert job.status == "failed"
+    assert job.error_code == "CREDIT_EXHAUSTED"
 
 
 @pytest.mark.parametrize(
@@ -711,21 +729,10 @@ def test_multiple_queued_image_jobs_processed_in_parallel(monkeypatch):
             assert stored.status == "completed"
 
 
-def test_video_generation_auto_infers_route_from_start_media_id(monkeypatch):
+def test_video_generation_requires_base64_input_images():
     application = async_app()
-    connect(application, monkeypatch)
-    runtime = application.state.runtime
-    runtime.projects.put_media(
-        "installation-1",
-        "project-1",
-        "hash-123",
-        "media/auto-inferred-start",
-        "image/png",
-        "start.png",
-    )
-
     with TestClient(application) as client:
-        # Client calls without project_id and without routing_scope
+        # Request with start_media_id but missing input_images is rejected with 422
         response = client.post(
             "/v1/videos/generations",
             json={
@@ -735,9 +742,69 @@ def test_video_generation_auto_infers_route_from_start_media_id(monkeypatch):
                 "aspect_ratio": "9:16",
             },
         )
-        assert response.status_code == 202
-        job_id = response.json()["jobs"][0]["id"]
-        stored_job = runtime.projects.get_job(job_id)
+        assert response.status_code == 422
+
+        # Request with input_images is accepted
+        response_ok = client.post(
+            "/v1/videos/generations",
+            json={
+                "type": "image_to_video",
+                "prompt": "animate this image",
+                "input_images": [{
+                    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+                    "mime_type": "image/png",
+                }],
+                "aspect_ratio": "9:16",
+            },
+        )
+        assert response_ok.status_code == 202
+        job_id = response_ok.json()["jobs"][0]["id"]
+        # Notice that installation_id is None, enabling free multi-account load balancing!
+        stored_job = application.state.runtime.projects.get_job(job_id)
         assert stored_job is not None
-        assert stored_job.google_project_id == "project-1"
-        assert stored_job.installation_id == "installation-1"
+        assert stored_job.installation_id is None
+
+
+def test_job_dispatching_status_is_exposed_as_running():
+    application = async_app()
+    runtime = application.state.runtime
+    runtime.projects.enqueue_job(
+        "job-dispatch-run",
+        "image_to_video",
+        {"type": "image_to_video", "prompt": "move"},
+    )
+    # Claim job so its DB status becomes dispatching
+    claimed = runtime.projects.claim_next_queued_job()
+    assert claimed is not None
+    assert claimed.status == "dispatching"
+
+    with TestClient(application) as client:
+        res = client.post("/v1/jobs/status", json={"job_ids": ["job-dispatch-run"]})
+        assert res.status_code == 200
+        # Public status must be running!
+        assert res.json()["jobs"][0]["status"] == "running"
+
+
+def test_enqueue_wakes_worker_immediately():
+    application = async_app()
+    runtime = application.state.runtime
+    assert runtime.worker is not None
+    runtime.worker._wake_event.clear()
+    assert not runtime.worker._wake_event.is_set()
+
+    with TestClient(application) as client:
+        res = client.post(
+            "/v1/videos/generations",
+            json={
+                "type": "image_to_video",
+                "prompt": "animate this image",
+                "input_images": [{
+                    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+                    "mime_type": "image/png",
+                }],
+            },
+        )
+        assert res.status_code == 202
+        # Verify that wake_event was set immediately upon enqueue!
+        assert runtime.worker._wake_event.is_set()
+

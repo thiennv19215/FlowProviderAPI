@@ -384,3 +384,58 @@ def test_due_running_poll_is_claimed_once_across_workers():
             candidate = Path(f"{path}{suffix}")
             if candidate.exists():
                 candidate.unlink()
+
+
+def test_fail_expired_jobs_all_types():
+    store = ProjectStore(":memory:")
+    # 1. Image job that exceeded timeout
+    store.enqueue_job("img-stale", "image", {"prompt": "portrait"}, media_type="image")
+    store._db().execute(
+        "UPDATE provider_jobs SET created_at = datetime('now', '-3 minutes') WHERE job_id = 'img-stale'"
+    )
+    # 2. Video job stuck in queue past queue timeout
+    store.enqueue_job("vid-queue-stale", "frames_to_video", {"prompt": "anim"}, media_type="video")
+    store._db().execute(
+        "UPDATE provider_jobs SET created_at = datetime('now', '-5 minutes') WHERE job_id = 'vid-queue-stale'"
+    )
+    # 3. Video job running past running timeout
+    store.enqueue_job("vid-run-stale", "frames_to_video", {"prompt": "anim"}, media_type="video")
+    store._db().execute(
+        "UPDATE provider_jobs SET status = 'running', running_at = datetime('now', '-15 minutes') WHERE job_id = 'vid-run-stale'"
+    )
+    store._db().commit()
+
+    failed_count = store.fail_expired_jobs(
+        image_timeout_seconds=120,
+        video_queue_timeout_seconds=180,
+        video_running_timeout_seconds=600,
+    )
+    assert failed_count == 3
+
+    img = store.get_job("img-stale")
+    assert img is not None and img.status == "failed"
+    assert img.error_code == "IMAGE_TIMEOUT"
+
+    vid_q = store.get_job("vid-queue-stale")
+    assert vid_q is not None and vid_q.status == "failed"
+    assert vid_q.error_code == "QUEUE_TIMEOUT"
+
+    vid_r = store.get_job("vid-run-stale")
+    assert vid_r is not None and vid_r.status == "failed"
+    assert vid_r.error_code == "VIDEO_POLL_TIMEOUT"
+
+
+def test_get_job_immediate_timeout():
+    store = ProjectStore(":memory:")
+    store.enqueue_job("img-instant", "image", {"prompt": "portrait"}, media_type="image")
+    store._db().execute(
+        "UPDATE provider_jobs SET created_at = datetime('now', '-5 minutes') WHERE job_id = 'img-instant'"
+    )
+    store._db().commit()
+
+    # Querying get_job immediately catches and fails the job
+    job = store.get_job("img-instant", image_timeout_seconds=120)
+    assert job is not None
+    assert job.status == "failed"
+    assert job.error_code == "IMAGE_TIMEOUT"
+

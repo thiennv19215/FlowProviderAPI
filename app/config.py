@@ -28,8 +28,11 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
     worker_poll_max_backoff_seconds: int = Field(default=300, ge=10, le=3600)
     worker_poll_claim_lease_seconds: int = Field(default=120, ge=30, le=600)
-    worker_dispatch_lease_seconds: int = Field(default=900, ge=60, le=3600)
-    worker_running_timeout_seconds: int = Field(default=86400, ge=300, le=604800)
+    worker_dispatch_lease_seconds: int = Field(default=300, ge=60, le=3600)
+    worker_running_timeout_seconds: int = Field(default=600, ge=300, le=604800)
+    job_image_timeout_seconds: int = Field(default=120, ge=30, le=600)
+    job_video_queue_timeout_seconds: int = Field(default=180, ge=30, le=1800)
+    job_video_running_timeout_seconds: int = Field(default=600, ge=60, le=3600)
     worker_concurrency: int = Field(default=4, ge=1, le=16)
 
     @model_validator(mode="after")

@@ -41,12 +41,13 @@ Mỗi request tạo video sẽ tự động trừ trước số credit tương �
 ### 3.1. Chế độ `frames_to_video` (Khung hình ➔ Video)
 
 > [!IMPORTANT]
-> **Khuyến Nghị Chuẩn Toàn Hệ Thống (Multi-Account & Caching):**
-> Luôn ưu tiên truyền ảnh trực tiếp qua Base64 (`input_images`) hoặc file local qua MCP (`image_paths`).
+> **Quy Chuẩn Bắt Buộc (Enforced Multi-Account & Caching):**
+> Tất cả request tạo video đều **bắt buộc truyền ảnh trực tiếp qua Base64 (`input_images`)** hoặc file local qua MCP (`image_paths`).
 > - **Tự động Cache SHA-256 (0ms Deduplication)**: Backend tự động băm content hash và tra cứu trong database. Nếu cùng một ảnh được gửi nhiều lần, backend tái sử dụng ngay `google_media_id` đã có mà hoàn toàn không cần upload lại lên Google.
-> - **Tự do phân tải (Load Balancing)**: Khi truyền Base64, backend có thể phân bổ task cho bất kỳ tài khoản Google nào trong cụm còn nhiều credit hoặc rảnh slot nhất. Ngược lại, nếu dùng `start_media_id`, job bị trói cứng vào đúng 1 tài khoản đã tạo ảnh đó (dễ gây lỗi 404 khi chuyển sang tài khoản khác).
+> - **Tự do phân tải (Load Balancing)**: Khi truyền Base64, backend phân bổ task cho bất kỳ tài khoản Google nào trong cụm còn nhiều credit hoặc rảnh slot nhất.
+> - **Chống nghẽn queue**: Việc loại bỏ truyền trực tiếp `start_media_id` / `reference_media_ids` ngăn chặn triệt để tình trạng dồn toàn bộ task vào 1 tài khoản duy nhất gây cạn kiệt credit và treo hàng đợi.
 
-#### Cách 1 (Khuyên Dùng Chuẩn): Truyền trực tiếp ảnh Base64 vào `input_images`
+#### Cách 1: Khung hình bắt đầu bằng Base64 (`input_images`)
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
@@ -84,22 +85,6 @@ Content-Type: application/json
     }
   ],
   "duration_seconds": 8,
-  "aspect_ratio": "9:16"
-}
-```
-
-#### Cách 3 (Tùy chọn đơn tài khoản): Sử dụng `start_media_id` (và tùy chọn `end_media_id`)
-*(Lưu ý: Chỉ dùng khi bạn biết chắc chắn video được tạo trên cùng tài khoản Google đã upload media ID này)*
-```http
-POST /v1/videos/generations
-Content-Type: application/json
-
-{
-  "type": "frames_to_video",
-  "prompt": "The camera slowly pans around the character, rain drips in slow motion, cinematic lighting",
-  "start_media_id": "c61dffd2-2453-4a56-8aef-09c61f096e78",
-  "end_media_id": "media-id-khung-cuoi-tuy-chon",
-  "duration_seconds": 4,
   "aspect_ratio": "9:16"
 }
 ```

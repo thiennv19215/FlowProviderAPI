@@ -12,7 +12,9 @@ Scheduling selects the least-loaded ready extension, breaking ties by connection
 
 Video operation routes are stored by account/project. Status requests without a routing scope are split by owning account and merged, so polling cannot move to a different Google account.
 
-**Best Practice for Media Inputs (Multi-Account Balancing & SHA-256 Deduplication)**: Clients and AI agents should prefer passing raw image bytes via Base64 (`input_images`) or local file paths (`image_paths` in MCP) instead of Google `media_id`. The Provider automatically computes SHA-256 content hashes, deduplicates repeated uploads with 0ms SQLite cache hits, and freely load-balances generation jobs across all available Google accounts without cross-account API 404 errors.
+**Enforced Media Inputs for Video (Multi-Account Balancing & SHA-256 Deduplication)**: Video generation endpoints strictly require passing raw image bytes via Base64 (`input_images`) or local file paths (`image_paths` in MCP) instead of Google `media_id`. The Provider automatically computes SHA-256 content hashes, deduplicates repeated uploads with 0ms SQLite cache hits, and freely load-balances generation jobs across all available Google accounts without cross-account API 404 errors or account locks. Jobs immediately transition from `queued` to `running` upon worker dispatch, and fail with clear terminal errors if account credits are exhausted or accounts are unavailable.
+
+**Automatic Job Timeouts**: To avoid keeping users or agents waiting on hanging requests, the Provider enforces strict processing timeouts: image jobs fail after 120s (`IMAGE_TIMEOUT`), video queue wait fails after 180s (`QUEUE_TIMEOUT`), and active video rendering/polling fails after 600s (`VIDEO_POLL_TIMEOUT`). Timeouts are enforced both periodically by the background worker and instantaneously upon status queries.
 
 Character workflows are separate from the generic generation endpoints. Upload 1-3
 source images with `POST /v1/media`, register them with `POST /v1/characters`,

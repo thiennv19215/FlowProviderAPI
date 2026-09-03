@@ -1142,11 +1142,79 @@ class ProjectStore:
             db.commit()
         return updated
 
-    def get_job(self, job_id: str) -> ProviderJob | None:
+    def get_job(
+        self,
+        job_id: str,
+        *,
+        image_timeout_seconds: int = 120,
+        video_queue_timeout_seconds: int = 180,
+        video_running_timeout_seconds: int = 600,
+    ) -> ProviderJob | None:
         with self._lock:
-            row = self._db().execute(
+            db = self._db()
+            row = db.execute(
                 "SELECT * FROM provider_jobs WHERE job_id = ?", (job_id,)
             ).fetchone()
+            if row is not None and row["status"] in ("queued", "dispatching", "running") and row["created_at"]:
+                status = row["status"]
+                media_type = row["media_type"]
+                created_at = row["created_at"]
+                running_at = row["running_at"]
+                try:
+                    from datetime import datetime, timezone
+                    clean_ts = created_at.replace("Z", "").replace("T", " ")
+                    dt = datetime.fromisoformat(clean_ts).replace(tzinfo=timezone.utc)
+                    total_age = (datetime.now(timezone.utc) - dt).total_seconds()
+                    if running_at:
+                        clean_run_ts = running_at.replace("Z", "").replace("T", " ")
+                        run_dt = datetime.fromisoformat(clean_run_ts).replace(tzinfo=timezone.utc)
+                        run_age = (datetime.now(timezone.utc) - run_dt).total_seconds()
+                    else:
+                        run_age = total_age
+                except Exception:
+                    total_age = 0.0
+                    run_age = 0.0
+
+                timed_out = False
+                err_code = "JOB_TIMEOUT"
+                err_msg = "Job exceeded processing time limit."
+                outcome_unknown = False
+
+                if media_type == "image" and total_age > image_timeout_seconds:
+                    timed_out = True
+                    err_code = "IMAGE_TIMEOUT"
+                    err_msg = f"Image generation timed out after {int(total_age)}s limit."
+                elif media_type == "video":
+                    if status == "queued" and total_age > video_queue_timeout_seconds:
+                        timed_out = True
+                        err_code = "QUEUE_TIMEOUT"
+                        err_msg = f"Video job timed out waiting in queue after {int(total_age)}s limit."
+                    elif status in ("dispatching", "running") and run_age > video_running_timeout_seconds:
+                        timed_out = True
+                        err_code = "VIDEO_POLL_TIMEOUT"
+                        err_msg = f"Video generation timed out after {int(run_age)}s limit."
+                        outcome_unknown = True
+
+                if timed_out:
+                    db.execute(
+                        """
+                        UPDATE provider_jobs
+                        SET status = 'failed',
+                            error_message = ?,
+                            error_code = ?,
+                            error_retryable = 0,
+                            outcome_unknown = ?,
+                            updated_at = CURRENT_TIMESTAMP,
+                            completed_at = CURRENT_TIMESTAMP
+                        WHERE job_id = ? AND status IN ('queued', 'dispatching', 'running')
+                        """,
+                        (err_msg, err_code, int(outcome_unknown), job_id),
+                    )
+                    db.commit()
+                    row = db.execute(
+                        "SELECT * FROM provider_jobs WHERE job_id = ?", (job_id,)
+                    ).fetchone()
+
         return _row_to_job(row) if row is not None else None
 
     def get_job_by_operation(self, operation_name: str) -> ProviderJob | None:
@@ -1363,6 +1431,87 @@ class ProjectStore:
             ).rowcount
             self._db().commit()
         return updated
+
+    def fail_expired_jobs(
+        self,
+        *,
+        image_timeout_seconds: int = 120,
+        video_queue_timeout_seconds: int = 180,
+        video_running_timeout_seconds: int = 600,
+    ) -> int:
+        """Move any stale queued, dispatching, or running jobs to an explicit terminal failure."""
+        total = 0
+        with self._lock:
+            db = self._db()
+            # 1. Expired image jobs (queued, dispatching, running)
+            img_count = db.execute(
+                """
+                UPDATE provider_jobs
+                SET status = 'failed',
+                    error_message = ?,
+                    error_code = 'IMAGE_TIMEOUT',
+                    error_retryable = 0,
+                    outcome_unknown = 0,
+                    updated_at = CURRENT_TIMESTAMP,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE media_type = 'image'
+                  AND status IN ('queued', 'dispatching', 'running')
+                  AND created_at <= datetime('now', ?)
+                """,
+                (
+                    f"Image generation timed out after exceeding {image_timeout_seconds}s limit.",
+                    f"-{max(1, image_timeout_seconds)} seconds",
+                ),
+            ).rowcount
+            total += img_count
+
+            # 2. Expired queued video jobs
+            vid_q_count = db.execute(
+                """
+                UPDATE provider_jobs
+                SET status = 'failed',
+                    error_message = ?,
+                    error_code = 'QUEUE_TIMEOUT',
+                    error_retryable = 0,
+                    outcome_unknown = 0,
+                    updated_at = CURRENT_TIMESTAMP,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE media_type = 'video'
+                  AND status = 'queued'
+                  AND created_at <= datetime('now', ?)
+                """,
+                (
+                    f"Video job timed out waiting in queue after exceeding {video_queue_timeout_seconds}s limit.",
+                    f"-{max(1, video_queue_timeout_seconds)} seconds",
+                ),
+            ).rowcount
+            total += vid_q_count
+
+            # 3. Expired running video jobs
+            vid_r_count = db.execute(
+                """
+                UPDATE provider_jobs
+                SET status = 'failed',
+                    error_message = ?,
+                    error_code = 'VIDEO_POLL_TIMEOUT',
+                    error_retryable = 0,
+                    outcome_unknown = 1,
+                    updated_at = CURRENT_TIMESTAMP,
+                    completed_at = CURRENT_TIMESTAMP
+                WHERE media_type = 'video'
+                  AND status IN ('dispatching', 'running')
+                  AND COALESCE(running_at, created_at) <= datetime('now', ?)
+                """,
+                (
+                    f"Video generation timed out after exceeding {video_running_timeout_seconds}s limit.",
+                    f"-{max(1, video_running_timeout_seconds)} seconds",
+                ),
+            ).rowcount
+            total += vid_r_count
+
+            if total > 0:
+                db.commit()
+        return total
 
     def schedule_job_poll(
         self,

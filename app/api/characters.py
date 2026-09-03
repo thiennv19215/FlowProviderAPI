@@ -257,6 +257,7 @@ async def _enqueue_character_job(
         installation_id=scoped_account_key,
         google_project_id=body.get("project_id"),
     )
+    runtime.wake_worker()
     return _job_response(request, [job], status_code=202, include_route=True)
 
 

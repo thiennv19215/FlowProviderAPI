@@ -75,7 +75,7 @@ async def _serve(websocket:WebSocket):
             try:await prior.ws.close(4000,"superseded_by_new_connection")
             except Exception:pass
             bridge.clear(connection_id=prior.id)
-        conn=bridge.register(adapter,hello);manager.connected(conn);await bridge.handle_message(hello,adapter)
+        conn=bridge.register(adapter,hello);manager.connected(conn);runtime.wake_worker();await bridge.handle_message(hello,adapter)
         heartbeat_task=asyncio.create_task(heartbeat_loop(conn,bridge,manager,runtime.settings),name=f"extension-heartbeat-{conn.id}")
         logger.info("provider extension connected installation=%s",installation)
         while True:

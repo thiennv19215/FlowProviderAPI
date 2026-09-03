@@ -1187,7 +1187,7 @@ def _normalize_generation_type(gen_type: str | None, media_type: str | None) -> 
 def _job_to_dict(job: Any) -> dict:
     status_map = {
         "queued": "queued",
-        "dispatching": "queued",
+        "dispatching": "running",
         "running": "running",
         "completed": "complete",
         "complete": "complete",
@@ -1294,7 +1294,7 @@ async def generate_image(
 
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
 
-    if payload.reference_media_ids:
+    if payload.reference_media_ids and not inline_images:
         inferred_route = _stored_media_route(runtime, payload.reference_media_ids)
         if inferred_route:
             inferred_account, inferred_project = inferred_route
@@ -1328,6 +1328,7 @@ async def generate_image(
         google_project_id=payload.project_id,
         idempotency_key=idempotency_key,
     )
+    runtime.wake_worker()
     return _job_response(request, [job], status_code=202, include_route=True)
 
 
@@ -1375,7 +1376,7 @@ async def generate_video(
     if getattr(payload, "reference_media_ids", None):
         referenced_media.extend(payload.reference_media_ids)
 
-    if referenced_media:
+    if referenced_media and not inline_images:
         inferred_route = _stored_media_route(runtime, referenced_media)
         if inferred_route:
             inferred_account, inferred_project = inferred_route
@@ -1409,6 +1410,7 @@ async def generate_video(
         google_project_id=payload.project_id,
         idempotency_key=idempotency_key,
     )
+    runtime.wake_worker()
     return _job_response(request, [job], status_code=202, include_route=True)
 
 
@@ -1421,7 +1423,12 @@ async def get_job_status(
     from types import SimpleNamespace
     jobs = []
     for jid in payload.job_ids:
-        job = runtime.projects.get_job(jid)
+        job = runtime.projects.get_job(
+            jid,
+            image_timeout_seconds=int(getattr(runtime.settings, "job_image_timeout_seconds", 120)),
+            video_queue_timeout_seconds=int(getattr(runtime.settings, "job_video_queue_timeout_seconds", 180)),
+            video_running_timeout_seconds=int(getattr(runtime.settings, "job_video_running_timeout_seconds", 600)),
+        )
         if job:
             jobs.append(job)
         else:

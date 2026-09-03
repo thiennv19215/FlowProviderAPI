@@ -538,9 +538,9 @@ Chế độ `frames_to_video` sử dụng Gemini Omni Flash (`abra_i2v_*`), bắ
 > **Chuẩn Khuyến Nghị Toàn Hệ Thống (Multi-Account & SHA-256 Deduplication):**
 > Luôn ưu tiên truyền ảnh qua Base64 (`input_images`) hoặc file path local qua MCP (`image_paths`).
 > - **Tự động Cache SHA-256 (0ms)**: Backend tự động băm SHA-256 kiểm tra cache. Nếu ảnh đã upload, hệ thống tái sử dụng ngay mà không upload lại.
-> - **Tự do Phân Tải (Multi-Account Balancing)**: Khi gửi Base64, backend có toàn quyền điều phối task sang bất kỳ tài khoản Google nào còn nhiều credit / rảnh slot nhất trong cụm tài khoản mà không lo lỗi Google API 404.
+> - **Tự do Phân Tải (Multi-Account Balancing)**: Khi gửi Base64, backend có toàn quyền điều phối task sang bất kỳ tài khoản Google nào còn nhiều credit / rảnh slot nhất trong cụm tài khoản mà không lo lỗi Google API 404 hay dồn tải gây nghẽn queue.
 
-### Request chuẩn (Khuyên dùng: Gửi Base64 qua `input_images`)
+### Request tạo video bằng Base64 (`input_images`)
 ```http
 POST /v1/videos/generations
 Content-Type: application/json
@@ -559,28 +559,11 @@ Content-Type: application/json
 }
 ```
 
-### Request tùy chọn: Dùng `start_media_id` (Đơn tài khoản)
-```http
-POST /v1/videos/generations
-Content-Type: application/json
-
-{
-  "type": "frames_to_video",
-  "prompt": "Slow cinematic camera movement around the cyberpunk character",
-  "start_media_id": "c61dffd2-2453-4a56-8aef-09c61f096e78",
-  "end_media_id": "media-id-khung-cuoi-tuy-chon",
-  "aspect_ratio": "9:16",
-  "duration_seconds": 4
-}
-```
-
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
 | `type` | Có | `"frames_to_video"` *(khuyên dùng)*, hoặc alias: `"frames"`, `"start_to_video"`, `"image_to_video"`, `"i2v"`. |
 | `prompt` | Có | 1–12.000 ký tự mô tả chuyển động. |
-| `input_images` | Khuyên dùng | Mảng 1–2 ảnh Base64 (Ảnh 1 là Start Frame, Ảnh 2 là End Frame tùy chọn). |
-| `start_media_id` | Tùy chọn | ID ảnh làm khung hình xuất phát (chỉ dùng khi ở cùng tài khoản). |
-| `end_media_id` | Không | ID ảnh làm khung hình kết thúc (tùy chọn: dùng để chuyển cảnh First+Last frame mượt mà). |
+| `input_images` | Có | Mảng 1–2 ảnh Base64 (Ảnh 1 là Start Frame, Ảnh 2 là End Frame tùy chọn nối cảnh). |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
 | `aspect_ratio` | Không | `"9:16"` (dọc - mặc định) hoặc `"16:9"` (ngang). |
 
@@ -615,26 +598,11 @@ Content-Type: application/json
 }
 ```
 
-### Request tùy chọn: Dùng `reference_media_ids` (Đơn tài khoản)
-```http
-POST /v1/videos/generations
-Content-Type: application/json
-
-{
-  "type": "reference_to_video",
-  "prompt": "The cyberpunk samurai raises his glowing sword, dynamic cinematic camera",
-  "reference_media_ids": ["c61dffd2-2453-4a56-8aef-09c61f096e78"],
-  "aspect_ratio": "9:16",
-  "duration_seconds": 4
-}
-```
-
 | Field | Bắt buộc | Giá trị hợp lệ |
 |---|---:|---|
 | `type` | Có | `"reference_to_video"` *(khuyên dùng)*, hoặc alias: `"ingredients"`, `"references"`, `"omni"`, `"r2v"`. |
 | `prompt` | Có | 1–12.000 ký tự. |
-| `input_images` | Khuyên dùng | Mảng từ **1 đến 8 ảnh Base64** để Provider tự động băm cache SHA-256 và phân tải tự do. |
-| `reference_media_ids` | Tùy chọn | Danh sách từ 1 đến 8 ID ảnh tham chiếu (chỉ dùng khi ở cùng tài khoản). |
+| `input_images` | Có | Mảng từ **1 đến 8 ảnh Base64** để Provider tự động băm cache SHA-256 và phân tải tự do sang các tài khoản Google Flow sẵn sàng. |
 | `duration_seconds` | Không | `4`, `6`, `8` (mặc định), `10` giây. |
 | `aspect_ratio` | Không | `"9:16"` (dọc - mặc định) hoặc `"16:9"` (ngang). |
 
@@ -759,8 +727,23 @@ Backend phải xử lý ba nhóm lỗi độc lập:
 
 Các mã terminal video gồm `VIDEO_DISPATCH_FAILED`,
 `VIDEO_DISPATCH_OUTCOME_UNKNOWN`, `VIDEO_OPERATION_FAILED`,
-`VIDEO_MEDIA_FAILED` và `VIDEO_POLL_TIMEOUT`. Nếu `outcome_unknown: true`, phải
+`VIDEO_MEDIA_FAILED`, `QUEUE_TIMEOUT`, `VIDEO_POLL_TIMEOUT`, và `IMAGE_TIMEOUT`. Nếu `outcome_unknown: true`, phải
 reconcile paid request cũ và không tự động tạo request thay thế.
+
+### 11.0. Cơ chế Timeout và Ngắt Job Tự Động (Tránh Treo Request)
+
+Mỗi job đều có hạn mức thời gian xử lý tối đa để đảm bảo người dùng và AI Agent không bị bắt chờ đợi lâu:
+
+| Loại Job | Giai đoạn | Hạn mức thời gian | Mã lỗi khi hết giờ (`error.code`) |
+|---|---|:---:|---|
+| **Ảnh (`image`)** | Toàn bộ quá trình tạo ảnh | **120 giây (2 phút)** | `IMAGE_TIMEOUT` |
+| **Video (`video`)** | Chờ xếp hàng (`queued`) | **180 giây (3 phút)** | `QUEUE_TIMEOUT` |
+| **Video (`video`)** | Đang render & polling (`running`) | **600 giây (10 phút)** | `VIDEO_POLL_TIMEOUT` |
+
+> [!TIP]
+> Hệ thống áp dụng cơ chế **Dual Timeout Detection**:
+> 1. **Worker định kỳ**: Worker quét mỗi lượt và tự động đánh dấu `failed` cho các job quá hạn.
+> 2. **Kiểm tra tức thì (Instant Check)**: Khi client gọi `POST /v1/jobs/status`, nếu job đã vượt quá hạn mức, hệ thống sẽ lập tức cập nhật trạng thái `failed` trong database và trả kết quả lỗi ngay lập tức, không bắt client phải chờ thêm bất kỳ giây nào.
 
 ### 11.1. Lỗi do Provider phát sinh
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import time
 import uuid
 from typing import Any
 
@@ -82,13 +83,27 @@ class JobWorker:
         self.runtime = runtime
         self._running = False
         self._task: asyncio.Task | None = None
+        self._wake_event = asyncio.Event()
+
+    def wake(self) -> None:
+        """Wake up the worker immediately to process queued jobs without waiting for poll_seconds."""
+        if hasattr(self, "_wake_event") and self._wake_event is not None:
+            try:
+                loop = getattr(self._wake_event, "_loop", None)
+                if loop and loop.is_running():
+                    loop.call_soon_threadsafe(self._wake_event.set)
+                else:
+                    self._wake_event.set()
+            except Exception:
+                pass
 
     async def start(self) -> None:
         if not getattr(self.runtime.settings, "worker_enabled", True):
             logger.info("JobWorker disabled by configuration.")
             return
+        self._wake_event = asyncio.Event()
         abandoned = self.runtime.projects.fail_abandoned_dispatches(
-            int(getattr(self.runtime.settings, "worker_dispatch_lease_seconds", 900))
+            int(getattr(self.runtime.settings, "worker_dispatch_lease_seconds", 300))
         )
         if abandoned:
             logger.warning("Marked %s abandoned paid dispatch(es) as outcome unknown", abandoned)
@@ -98,6 +113,7 @@ class JobWorker:
 
     async def stop(self) -> None:
         self._running = False
+        self.wake()
         if self._task and not self._task.done():
             self._task.cancel()
             await asyncio.gather(self._task, return_exceptions=True)
@@ -108,13 +124,15 @@ class JobWorker:
         while self._running:
             try:
                 self.runtime.projects.fail_abandoned_dispatches(
-                    int(getattr(self.runtime.settings, "worker_dispatch_lease_seconds", 900))
+                    int(getattr(self.runtime.settings, "worker_dispatch_lease_seconds", 300))
                 )
-                expired = self.runtime.projects.fail_expired_running_jobs(
-                    int(getattr(self.runtime.settings, "worker_running_timeout_seconds", 86400))
+                expired = self.runtime.projects.fail_expired_jobs(
+                    image_timeout_seconds=int(getattr(self.runtime.settings, "job_image_timeout_seconds", 120)),
+                    video_queue_timeout_seconds=int(getattr(self.runtime.settings, "job_video_queue_timeout_seconds", 180)),
+                    video_running_timeout_seconds=int(getattr(self.runtime.settings, "job_video_running_timeout_seconds", 600)),
                 )
                 if expired:
-                    logger.warning("Marked %s video job(s) failed after polling timeout", expired)
+                    logger.warning("Marked %s job(s) failed after timeout limit", expired)
                 await self.process_queued_jobs()
                 await self.poll_running_jobs()
             except asyncio.CancelledError:
@@ -122,19 +140,24 @@ class JobWorker:
             except Exception:
                 logger.exception("Unexpected error in JobWorker loop")
             try:
-                await asyncio.sleep(poll_interval)
+                await asyncio.wait_for(self._wake_event.wait(), timeout=poll_interval)
+                self._wake_event.clear()
+            except asyncio.TimeoutError:
+                pass
             except asyncio.CancelledError:
                 break
 
     async def process_queued_jobs(self, max_concurrent: int = 20) -> None:
-        """Pick queued jobs and dispatch them concurrently to available accounts."""
-        tasks = []
-        while len(tasks) < max_concurrent:
-            job = self.runtime.projects.claim_next_queued_job()
-            if not job or job.status != "dispatching":
+        """Pick queued jobs and dispatch them concurrently to available accounts until queue is empty or busy."""
+        while True:
+            tasks = []
+            while len(tasks) < max_concurrent:
+                job = self.runtime.projects.claim_next_queued_job()
+                if not job or job.status != "dispatching":
+                    break
+                tasks.append(asyncio.create_task(self._dispatch_job(job)))
+            if not tasks:
                 break
-            tasks.append(asyncio.create_task(self._dispatch_job(job)))
-        if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _dispatch_job(self, job: Any) -> None:
@@ -147,7 +170,13 @@ class JobWorker:
         duration = job.request_payload.get("duration_seconds", 8)
         cost = _job_credit_cost(job.generation_type, duration)
 
-        if not job.google_project_id or not job.installation_id:
+        has_inline_assets = bool(
+            payload.get("input_image_hashes")
+            or payload.get("input_images")
+            or job.job_id in self.runtime.inline_images
+            or payload.get("reference_asset_hashes")
+        )
+        if not has_inline_assets and (not job.google_project_id or not job.installation_id):
             referenced = []
             if payload.get("start_media_id"):
                 referenced.append(payload["start_media_id"])
@@ -174,9 +203,10 @@ class JobWorker:
             else None
         )
 
+        ready_conns = self.runtime.bridge.ready_connections()
         available = [
             conn
-            for conn in self.runtime.bridge.ready_connections()
+            for conn in ready_conns
             if (
                 not job.installation_id
                 or _account_key(conn) == job.installation_id
@@ -190,7 +220,81 @@ class JobWorker:
             and self.runtime.can_reserve(conn, cost, job_type=job.media_type)
         ]
         if not available:
-            # All accounts are currently busy or lacking credits; leave in queue
+            from datetime import datetime, timezone
+            job_age_seconds = 0.0
+            if getattr(job, "created_at", None):
+                try:
+                    dt = datetime.fromisoformat(job.created_at.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    job_age_seconds = (datetime.now(timezone.utc) - dt).total_seconds()
+                except Exception:
+                    job_age_seconds = 0.0
+
+            target_inst = job.installation_id or project_owner
+            if target_inst:
+                matching_conns = [
+                    c for c in ready_conns
+                    if _account_key(c) == target_inst or c.installation_id == target_inst
+                ]
+                if not matching_conns:
+                    self.runtime.projects.update_job_failed(
+                        job.job_id,
+                        f"Assigned account '{target_inst}' is not connected.",
+                        claim_token,
+                        error_code="ACCOUNT_OFFLINE",
+                    )
+                    return
+                target_conn = matching_conns[0]
+                avail = self.runtime.available_credits(target_conn)
+                if avail is not None and cost > 0 and avail < cost:
+                    self.runtime.projects.update_job_failed(
+                        job.job_id,
+                        f"Assigned account has insufficient credits ({avail} available, {cost} required).",
+                        claim_token,
+                        error_code="INSUFFICIENT_CREDITS",
+                    )
+                    return
+                if job_age_seconds > 300:
+                    self.runtime.projects.update_job_failed(
+                        job.job_id,
+                        f"Job timed out waiting for assigned account '{target_inst}' to become free.",
+                        claim_token,
+                        error_code="QUEUE_TIMEOUT",
+                    )
+                    return
+            else:
+                if not ready_conns:
+                    if job_age_seconds > 30:
+                        self.runtime.projects.update_job_failed(
+                            job.job_id,
+                            "No Google Flow extension accounts are currently connected.",
+                            claim_token,
+                            error_code="NO_CONNECTED_ACCOUNTS",
+                        )
+                        return
+                else:
+                    accounts_with_credits = [
+                        c for c in ready_conns
+                        if (self.runtime.available_credits(c) is None or self.runtime.available_credits(c) >= cost)
+                    ]
+                    if not accounts_with_credits and cost > 0:
+                        self.runtime.projects.update_job_failed(
+                            job.job_id,
+                            f"All {len(ready_conns)} connected accounts have insufficient credits for this job ({cost} credits required).",
+                            claim_token,
+                            error_code="INSUFFICIENT_CREDITS",
+                        )
+                        return
+                    if job_age_seconds > 300:
+                        self.runtime.projects.update_job_failed(
+                            job.job_id,
+                            "Job timed out waiting for an available account slot.",
+                            claim_token,
+                            error_code="QUEUE_TIMEOUT",
+                        )
+                        return
+
             self.runtime.projects.release_job_claim(job.job_id, claim_token)
             return
 
@@ -466,8 +570,14 @@ class JobWorker:
             if not isinstance(status, int) or status >= 400 or result.get("error"):
                 error_msg = str(result.get("error") or f"HTTP {status}")
                 if isinstance(status, int) and _credit_exhaustion(result):
-                    logger.info("Job %s was rejected for credits and returned to its safe route", job.job_id)
-                    self.runtime.projects.release_job_claim(job.job_id, claim_token)
+                    logger.warning("Job %s was rejected for credits by Flow API", job.job_id)
+                    self.runtime.projects.update_job_failed(
+                        job.job_id,
+                        f"Google Flow rejected request due to credit exhaustion: {error_msg}",
+                        claim_token,
+                        error_code="CREDIT_EXHAUSTED",
+                        retryable=False,
+                    )
                     return
                 if paid_attempted and (
                     not isinstance(status, int) or status in {408, 425, 500, 502, 503, 504}
@@ -595,6 +705,15 @@ class JobWorker:
                     "Running video job has no owning account or poll identifier.",
                     error_code="VIDEO_POLL_ROUTE_MISSING",
                 )
+                continue
+
+            if getattr(job, "poll_error_count", 0) >= 10:
+                self.runtime.projects.update_job_failed(
+                    job.job_id,
+                    f"Video polling failed after 10 consecutive attempts: {job.last_poll_error or 'Owning extension account is unavailable.'}",
+                    error_code="VIDEO_POLL_MAX_ERRORS",
+                )
+                logger.warning("Job %s marked failed after 10 consecutive poll errors", job.job_id)
                 continue
 
             # Find connection for this job's account

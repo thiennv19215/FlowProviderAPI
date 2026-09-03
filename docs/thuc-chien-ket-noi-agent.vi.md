@@ -73,7 +73,7 @@ Tạo file `.cursor/mcp.json` trong thư mục code trên máy tính của bạn
   > *"Hãy dùng tool `flow_generate_video` với type `frames_to_video`, lấy ảnh `C:\Users\nguye\Pictures\character.png` làm khung hình bắt đầu, prompt: 'Camera zoom chậm vào gương mặt, mưa rơi hiệu ứng slow motion', thời lượng 4s. Sau đó theo dõi trạng thái cho đến khi có link video hoàn thành."*
 
 - **Tạo video từ ảnh tham chiếu (Omni Video)**:
-  > *"Hãy lấy ID ảnh vừa sinh ra ở trên, gọi `flow_generate_video` với type `reference_to_video`, prompt: 'Nhân vật múa kiếm plasma trong thành phố neon', thời lượng 4s dọc 9:16."*
+  > *"Hãy lấy file ảnh vừa tải về ở trên (truyền qua `image_paths`), gọi `flow_generate_video` với type `reference_to_video`, prompt: 'Nhân vật múa kiếm plasma trong thành phố neon', thời lượng 4s dọc 9:16."*
 
 ---
 

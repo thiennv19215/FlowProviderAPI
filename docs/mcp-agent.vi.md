@@ -135,15 +135,12 @@ Tạo hoặc sửa file `.cursor/mcp.json` trong thư mục dự án hoặc cấ
   - **`"frames_to_video"`** (hoặc `"frames"`): Video chuyển động từ **Khung hình bắt đầu**.
   - **`"reference_to_video"`** (hoặc `"ingredients"`): Video dựng từ **Ảnh tham chiếu nhân vật/phong cách**.
 - **`prompt`** *(bắt buộc)*: Mô tả hành động, chuyển động camera (1 - 12.000 ký tự).
+- **`image_paths`** *(bắt buộc)*: Danh sách đường dẫn file ảnh cục bộ trên máy để làm ảnh đầu vào:
+  - Với `frames_to_video`: 1 hoặc 2 file (ảnh xuất phát và tùy chọn ảnh kết thúc nối cảnh).
+  - Với `reference_to_video`: từ 1 đến 8 file ảnh tham chiếu.
+  - *Lưu ý*: Không truyền trực tiếp `media_id` nữa. Việc bắt buộc truyền file ảnh cục bộ giúp hệ thống tự động băm SHA-256, tự động upload khi cần, và **tự do phân tải (load balancing) sang bất kỳ tài khoản Google Flow nào còn đủ credits**, loại bỏ triệt để hiện tượng dồn tải và nghẽn queue.
 - **`duration_seconds`** *(tùy chọn)*: `4`, `6`, `8` (mặc định), `10` giây (tương ứng 15, 20, 25, 30 credits).
 - **`aspect_ratio`** *(tùy chọn)*: `"9:16"` (dọc - mặc định) hoặc `"16:9"` (ngang).
-- **Đầu vào cho `frames_to_video`**:
-  - `start_media_id`: ID khung hình xuất phát.
-  - `end_media_id` *(tùy chọn)*: ID khung hình kết thúc (dùng khi nối cảnh First+Last frame).
-  - Hoặc `image_paths`: Danh sách 1–2 file ảnh cục bộ.
-- **Đầu vào cho `reference_to_video`**:
-  - `reference_media_ids`: Danh sách từ 1 đến 8 ID ảnh tham chiếu.
-  - Hoặc `image_paths`: Danh sách từ 1 đến 8 file ảnh cục bộ.
 
 ### 4.3. `flow_get_job_status` (Kiểm tra trạng thái tác vụ)
 - **`job_ids`** *(bắt buộc)*: Mảng từ 1 đến 20 mã `job_id` nhận được từ lệnh tạo.

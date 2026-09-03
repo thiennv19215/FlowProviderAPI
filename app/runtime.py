@@ -100,6 +100,12 @@ class Runtime:
             else:
                 self.reserved_credits.pop(connection_id, None)
 
+        self.wake_worker()
+
+    def wake_worker(self) -> None:
+        if self.worker is not None and hasattr(self.worker, "wake"):
+            self.worker.wake()
+
     def select_connection(self, available):
         return min(
             available,

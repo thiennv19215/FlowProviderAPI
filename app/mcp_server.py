@@ -138,6 +138,7 @@ class FlowProviderClient:
             },
             timeout=self.settings.timeout_seconds,
             transport=transport,
+            trust_env=False,
         )
 
     async def close(self) -> None:
@@ -511,17 +512,23 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         duration_seconds: Literal[4, 6, 8, 10] = 8,
         routing_scope: str | None = None,
     ) -> FlowToolResult:
-        """Start a video generation job (frames_to_video or reference_to_video) using Gemini Omni Flash. Prefer passing local file paths via image_paths for automatic SHA-256 caching and multi-account load balancing."""
+        """Start a video generation job (frames_to_video or reference_to_video) using Gemini Omni Flash. Passing local file paths via image_paths is required for automatic Base64 encoding, SHA-256 caching, and multi-account load balancing."""
+
+        if start_media_id or reference_media_ids:
+            raise ToolError("Direct media_id is not supported for video generation; pass local image_paths instead to enable Base64 encoding and automatic multi-account load balancing.")
+
+        paths = image_paths or []
+        if not paths:
+            raise ToolError("image_paths is required for video generation. Pass local image paths to enable Base64 encoding, SHA-256 caching, and multi-account balancing.")
+
+        encoded_images = await _encode_images(paths, provider.settings.allowed_root_paths)
+        if not encoded_images:
+            raise ToolError("image_paths must contain at least one valid readable image.")
 
         is_frames = type in {"frames_to_video", "frames", "start_to_video", "image_to_video", "i2v", "omni_i2v"}
-        paths = image_paths or []
-        encoded_images = await _encode_images(paths, provider.settings.allowed_root_paths) if paths else []
-
         if is_frames:
-            if not start_media_id and not encoded_images:
-                raise ToolError("start_media_id is required (or provide local image_paths)")
-            if reference_media_ids:
-                raise ToolError("reference_media_ids is only valid for reference_to_video")
+            if len(encoded_images) > 2:
+                raise ToolError("frames_to_video accepts at most 2 image paths (start image and optional end image)")
             default_aspect = "16:9" if type == "image_to_video" else "9:16"
             body: dict[str, Any] = {
                 "type": type,
@@ -529,28 +536,17 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
                 "prompt": prompt,
                 "aspect_ratio": aspect_ratio or default_aspect,
                 "duration_seconds": duration_seconds,
+                "input_images": encoded_images,
             }
-            if start_media_id:
-                body["start_media_id"] = start_media_id
-            if end_media_id:
-                body["end_media_id"] = end_media_id
-            if encoded_images:
-                body["input_images"] = encoded_images
             if quality and type == "image_to_video":
                 body["quality"] = quality
         else:
-            media_ids = reference_media_ids or []
-            if not media_ids and not encoded_images:
-                raise ToolError("reference_media_ids is required (or provide local image_paths)")
-            if len(media_ids) + len(encoded_images) > 8:
-                raise ToolError("Use at most 8 reference media IDs and image files in total")
-            if start_media_id or end_media_id:
-                raise ToolError("start_media_id and end_media_id are only valid for frames_to_video")
+            if not (1 <= len(encoded_images) <= 8):
+                raise ToolError("reference_to_video accepts 1 to 8 image paths")
             body = {
                 "type": type,
                 "project_id": project_id,
                 "prompt": prompt,
-                "reference_media_ids": media_ids,
                 "input_images": encoded_images,
                 "aspect_ratio": aspect_ratio or "9:16",
                 "duration_seconds": duration_seconds,

@@ -192,7 +192,7 @@ class ImageToVideoGenerationRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=12000)
     start_media_id: str | None = Field(default=None, min_length=1, max_length=500)
     end_media_id: str | None = Field(default=None, min_length=1, max_length=500)
-    input_images: list[InlineImageInput] = Field(default_factory=list, max_length=2)
+    input_images: list[InlineImageInput] = Field(min_length=1, max_length=2)
     aspect_ratio: Literal[
         "16:9", "9:16", "VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"
     ] = Field(default="9:16", json_schema_extra={"enum": ["16:9", "9:16"]})
@@ -217,12 +217,14 @@ class ImageToVideoGenerationRequest(BaseModel):
             self.aspect_ratio = "VIDEO_ASPECT_RATIO_LANDSCAPE"
         if self.type not in {"image_to_video", "start_to_video", "frames_to_video", "frames"} and self.quality is not None:
             raise ValueError("quality is only valid for legacy image_to_video")
-        if self.start_media_id is not None and self.input_images:
-            raise ValueError("provide exactly one start_media_id or input_images item")
-        if not self.start_media_id and not self.input_images:
-            raise ValueError("provide exactly one start_media_id or input_images item")
+        if not self.input_images:
+            raise ValueError("input_images (Base64 encoded image) is required for video generation to support multi-account load balancing")
+        if self.start_media_id is not None:
+            raise ValueError("start_media_id is not allowed; provide Base64 input_images for automatic multi-account balancing")
         if self.end_media_id is not None and len(self.input_images) > 1:
             raise ValueError("provide at most one inline start image when end_media_id is set")
+        if sum(len(image.image_base64) for image in self.input_images) > MAX_BASE64_TOTAL_CHARS:
+            raise ValueError("input_images may contain at most 64 MiB of Base64 data in total")
         return self
 
 
@@ -235,7 +237,7 @@ class OmniVideoGenerationRequest(BaseModel):
     project_id: str | None = Field(default=None, min_length=1, max_length=500)
     prompt: str = Field(min_length=1, max_length=12000)
     reference_media_ids: list[str] = Field(default_factory=list, max_length=8)
-    input_images: list[InlineImageInput] = Field(default_factory=list, max_length=8)
+    input_images: list[InlineImageInput] = Field(min_length=1, max_length=8)
     aspect_ratio: Literal[
         "16:9", "9:16", "VIDEO_ASPECT_RATIO_LANDSCAPE", "VIDEO_ASPECT_RATIO_PORTRAIT"
     ] = Field(default="9:16", json_schema_extra={"enum": ["16:9", "9:16"]})
@@ -255,9 +257,12 @@ class OmniVideoGenerationRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_references(self):
-        count = len(self.reference_media_ids) + len(self.input_images)
-        if not 1 <= count <= 8:
-            raise ValueError("reference_media_ids and input_images must contain 1 to 8 images in total")
+        if not self.input_images or len(self.input_images) < 1:
+            raise ValueError("input_images (Base64 encoded images) is required for reference_to_video generation")
+        if self.reference_media_ids:
+            raise ValueError("reference_media_ids is not allowed; provide Base64 input_images for automatic multi-account balancing")
+        if not 1 <= len(self.input_images) <= 8:
+            raise ValueError("input_images must contain 1 to 8 images")
         if sum(len(image.image_base64) for image in self.input_images) > MAX_BASE64_TOTAL_CHARS:
             raise ValueError("input_images may contain at most 64 MiB of Base64 data in total")
         return self

@@ -166,7 +166,7 @@ async def test_video_tool_validates_type_specific_fields_before_http_call():
         )
 
     assert result.is_error is True
-    assert "start_media_id is required" in result.content[0].text
+    assert "image_paths is required" in result.content[0].text
     assert called is False
 
 
@@ -177,25 +177,29 @@ async def test_video_tool_uses_type_specific_default_aspect_ratios():
         bodies.append(json.loads(request.content))
         return httpx.Response(200, json={"operations": []})
 
-    server = build_mcp_server(mock_client(handler))
-    async with Client(server) as client:
-        image_to_video = await client.call_tool(
-            "flow_generate_video",
-            {
-                "type": "image_to_video",
-                "prompt": "move slowly",
-                "start_media_id": "media/start",
-                "quality": "fast",
-            },
-        )
-        omni = await client.call_tool(
-            "flow_generate_video",
-            {
-                "type": "omni",
-                "prompt": "combine references",
-                "reference_media_ids": ["media/reference"],
-            },
-        )
+    with tempfile.TemporaryDirectory() as td:
+        img = Path(td) / "frame.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82")
+
+        server = build_mcp_server(mock_client(handler, allowed_roots=td))
+        async with Client(server) as client:
+            image_to_video = await client.call_tool(
+                "flow_generate_video",
+                {
+                    "type": "image_to_video",
+                    "prompt": "move slowly",
+                    "image_paths": [str(img)],
+                    "quality": "fast",
+                },
+            )
+            omni = await client.call_tool(
+                "flow_generate_video",
+                {
+                    "type": "omni",
+                    "prompt": "combine references",
+                    "image_paths": [str(img)],
+                },
+            )
 
     assert image_to_video.is_error is False
     assert omni.is_error is False
@@ -212,35 +216,40 @@ async def test_video_tool_supports_canonical_image_to_video_and_omni():
         bodies.append(json.loads(request.content))
         return httpx.Response(200, json={"operations": []})
 
-    server = build_mcp_server(mock_client(handler))
-    async with Client(server) as client:
-        i2v_res = await client.call_tool(
-            "flow_generate_video",
-            {
-                "type": "image_to_video",
-                "prompt": "move slowly",
-                "start_media_id": "media/start",
-                "end_media_id": "media/end",
-                "duration_seconds": 6,
-            },
-        )
-        r2v_res = await client.call_tool(
-            "flow_generate_video",
-            {
-                "type": "omni",
-                "prompt": "combine references",
-                "reference_media_ids": ["media/ref-1", "media/ref-2"],
-                "duration_seconds": 10,
-            },
-        )
+    with tempfile.TemporaryDirectory() as td:
+        img1 = Path(td) / "frame1.png"
+        img1.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82")
+        img2 = Path(td) / "frame2.png"
+        img2.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15c4\x00\x00\x00\nIDATx\x9cc`\x00\x00\x00\x02\x00\x01H\xaf\xa4q\x00\x00\x00\x00IEND\xaeB`\x82")
+
+        server = build_mcp_server(mock_client(handler, allowed_roots=td))
+        async with Client(server) as client:
+            i2v_res = await client.call_tool(
+                "flow_generate_video",
+                {
+                    "type": "image_to_video",
+                    "prompt": "move slowly",
+                    "image_paths": [str(img1), str(img2)],
+                    "duration_seconds": 6,
+                },
+            )
+            r2v_res = await client.call_tool(
+                "flow_generate_video",
+                {
+                    "type": "omni",
+                    "prompt": "combine references",
+                    "image_paths": [str(img1), str(img2)],
+                    "duration_seconds": 10,
+                },
+            )
 
     assert i2v_res.is_error is False
     assert r2v_res.is_error is False
     assert bodies[0]["type"] == "image_to_video"
-    assert bodies[0]["end_media_id"] == "media/end"
+    assert len(bodies[0]["input_images"]) == 2
     assert bodies[0]["duration_seconds"] == 6
     assert bodies[1]["type"] == "omni"
-    assert bodies[1]["reference_media_ids"] == ["media/ref-1", "media/ref-2"]
+    assert len(bodies[1]["input_images"]) == 2
     assert bodies[1]["duration_seconds"] == 10
 
 
