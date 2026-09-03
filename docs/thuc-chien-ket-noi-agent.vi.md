@@ -1,61 +1,32 @@
 # Sổ Tay Thực Chiến: Kết Nối AI Agent Với FlowProviderAPI & MCP
 
-Tài liệu này hướng dẫn cách kết nối **bất kỳ AI Agent nào** (Cursor, Claude Desktop, Antigravity, OpenAI/LangChain Agent, script Python/Node.js độc lập) tới hệ thống Google Flow thông qua **FlowProviderAPI** và **MCP (Model Context Protocol)**.
+Tài liệu này hướng dẫn cách kết nối **bất kỳ AI Agent nào** (Cursor IDE, Claude Desktop, Windsurf, Python script, Node.js bot, AutoGen, CrewAI, LangChain,...) tới **FlowProviderAPI** chạy trên VPS để tự động tạo ảnh và video Google Flow.
 
 ---
 
-## 1. Bản đồ kết nối (Kiến trúc thực tế)
-
-Tùy thuộc vào loại Agent của bạn, chọn 1 trong 2 mô hình sau:
+## 1. Hai Mô Hình Kết Nối Thực Tế
 
 ```text
-[Mô hình A: Agent hỗ trợ MCP (Cursor, Claude, IDEs, Cline, v.v.)]
-AI Agent (MCP Host) ---> [MCP Server: python -m app.mcp_server] ---> [FlowProviderAPI] ---> [Chrome Extension] ---> [Google Flow]
-
-[Mô hình B: Agent tùy biến bằng Code (LangChain, AutoGen, CrewAI, Fastify, v.v.)]
-Custom AI Agent Code ---> [FlowProviderAPI + Job Queue] ---> [Background Worker] ---> [Chrome Extension] ---> [Google Flow]
-```
-
-### 1.1. Cơ chế Hàng Đợi (Job Queue) & Dispatcher Worker tự động
-- **Retry an toàn khi nghẽn:** Video luôn gắn với media/account cụ thể. Khi extension đang bận hoặc chưa đủ credit, API trả lỗi `503` có thể retry thay vì tạo queued-success không bảo đảm route media; hãy retry cùng request sau khi account sẵn sàng.
-- **Background Worker (`JobWorker`):** Chạy ngầm liên tục trên VPS, tự động dò tìm tài khoản có đủ credit (`>= 20-25 credits`) và điều phối tạo video ngay khi có slot trống.
-- **Đọc trực tiếp từ Database SQLite (1ms):** Khi video render xong, worker tải trước các URL tải video và lưu vào bảng `provider_jobs`. Agent gọi `POST /v1/jobs/status` sẽ nhận kết quả tức thì từ database local mà không gây quá tải hoặc chiếm dụng slot của Chrome Extension.
-
----
-
-## 2. Kịch bản 1: Kết nối Agent qua MCP (Claude Desktop, Cursor, Antigravity)
-
-### 2.1. Cài đặt môi trường cho MCP Adapter
-
-Tại máy chạy Agent, bạn chỉ cần Python >= 3.10:
-
-```bash
-# Cách A: Cài đặt từ repo local
-pip install "C:\path\to\FlowProviderAPI"
-
-# Cách B: Cài đặt trực tiếp qua Git
-pip install "git+https://github.com/thiennv19215/FlowProviderAPI.git"
+========================================================================================
+MÔ HÌNH A: GỌI TỪ XA (Remote Machine - Laptop / PC / Server khác ➔ VPS)
+[Máy tính của bạn (Laptop/PC)] ──────── Internet (HTTP / Base64) ────────► [VPS Provider]
+• MCP Adapter chạy trên máy tính để đọc file ảnh local: C:\Users\...
+• Endpoint Provider: http://54.255.80.16:8000 (hoặc domain HTTPS)
+• Nhận link CDN Google và tải thẳng file MP4 về Laptop của bạn.
+========================================================================================
+MÔ HÌNH B: GỌI NỘI BỘ (Local on VPS - Agent chạy trực tiếp trên VPS)
+[Ubuntu VPS: Agent Script / Worker] ────── Localhost (127.0.0.1:8000) ──────► [Docker API]
+• Độ trễ 0ms, không tốn băng thông Internet công cộng.
+• Tự động lưu file MP4 vào thư mục /home/ubuntu/media/.
+========================================================================================
 ```
 
 ---
 
-### 2.2. Cấu hình cho Codex Desktop/CLI
+## 2. Mô Hình A: Kết Nối Từ Máy Tính Cá Nhân (Remote Client)
 
-Project này cung cấp MCP qua `stdio`, không phải Streamable HTTP. Sau khi cài package, chạy:
-
-```powershell
-codex mcp add flow-provider `
-  --env FLOW_PROVIDER_MCP_BASE_URL=https://api.shopcongngheso5.io.vn `
-  --env FLOW_PROVIDER_MCP_ALLOWED_ROOTS=C:\Users\nguye\Documents `
-  -- python -m app.mcp_server
-```
-
-Kiểm tra bằng `codex mcp list`, restart Codex Desktop, rồi dùng `/mcp` trong Codex CLI/TUI. Trong Codex Desktop có thể cấu hình tương đương tại **Settings → MCP servers → Add server**, chọn **STDIO**, command `python`, args `-m` và `app.mcp_server`.
-
-Không truyền `FLOW_PROVIDER_EXTENSION_API_KEY` cho agent. Secret đó chỉ thuộc kết nối riêng giữa FlowProviderAPI và Chrome extension. MCP adapter hiện không có biến `FLOW_PROVIDER_MCP_API_KEY`.
-
-### 2.3. Cấu hình cho Cursor IDE
-Tạo hoặc sửa file `.cursor/mcp.json` trong project của bạn:
+### 2.1. Cấu hình MCP cho Cursor IDE trên máy tính (`.cursor/mcp.json`)
+Tạo file `.cursor/mcp.json` trong thư mục code trên máy tính của bạn:
 
 ```json
 {
@@ -65,355 +36,219 @@ Tạo hoặc sửa file `.cursor/mcp.json` trong project của bạn:
       "args": ["-m", "app.mcp_server"],
       "cwd": "C:\\Users\\nguye\\Documents\\FlowProviderAPI",
       "env": {
-        "FLOW_PROVIDER_MCP_BASE_URL": "https://api.shopcongngheso5.io.vn",
-        "FLOW_PROVIDER_MCP_ALLOWED_ROOTS": "C:\\Users\\nguye\\Documents\\MyAgentProject"
+        "FLOW_PROVIDER_MCP_BASE_URL": "http://54.255.80.16:8000",
+        "FLOW_PROVIDER_MCP_ALLOWED_ROOTS": "C:\\Users\\nguye"
       }
     }
   }
 }
 ```
 
----
-
-### 2.4. Cấu hình cho Claude Desktop
-Mở file cấu hình Claude Desktop (`%APPDATA%\Claude\claude_desktop_config.json` trên Windows hoặc `~/Library/Application Support/Claude/claude_desktop_config.json` trên macOS):
+### 2.2. Cấu hình MCP cho Claude Desktop trên máy tính (`claude_desktop_config.json`)
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 
 ```json
 {
   "mcpServers": {
     "flow-provider": {
-      "command": "flow-provider-mcp",
+      "command": "python",
+      "args": ["-m", "app.mcp_server"],
+      "cwd": "C:\\Users\\nguye\\Documents\\FlowProviderAPI",
       "env": {
-        "FLOW_PROVIDER_MCP_BASE_URL": "https://api.shopcongngheso5.io.vn",
-        "FLOW_PROVIDER_MCP_ALLOWED_ROOTS": "C:\\images;C:\\projects"
+        "FLOW_PROVIDER_MCP_BASE_URL": "http://54.255.80.16:8000",
+        "FLOW_PROVIDER_MCP_ALLOWED_ROOTS": "C:\\Users\\nguye"
       }
     }
   }
 }
 ```
 
+### 2.3. Mẫu Chat/Prompt Thực Tế Ra Lệnh Cho Agent
+
+- **Tạo ảnh từ Prompt**:
+  > *"Hãy dùng tool `flow_generate_image` tạo 1 ảnh chân dung nữ chiến binh Cyberpunk, tỷ lệ 9:16, model v2."*
+
+- **Tạo video từ file ảnh trên máy tính của bạn**:
+  > *"Hãy dùng tool `flow_generate_video` với type `frames_to_video`, lấy ảnh `C:\Users\nguye\Pictures\character.png` làm khung hình bắt đầu, prompt: 'Camera zoom chậm vào gương mặt, mưa rơi hiệu ứng slow motion', thời lượng 4s. Sau đó theo dõi trạng thái cho đến khi có link video hoàn thành."*
+
+- **Tạo video từ ảnh tham chiếu (Omni Video)**:
+  > *"Hãy lấy ID ảnh vừa sinh ra ở trên, gọi `flow_generate_video` với type `reference_to_video`, prompt: 'Nhân vật múa kiếm plasma trong thành phố neon', thời lượng 4s dọc 9:16."*
+
 ---
 
-### 2.5. Mẫu Prompt thực tế ra lệnh cho Agent
+## 3. Code Mẫu Python: Gọi API Từ Xa Hoặc Cục Bộ
 
-Khi MCP đã kết nối, bạn có thể chat tự nhiên với Agent:
-
-> **Prompt tạo ảnh:**
-> *"Hãy dùng tool `flow_generate_image` tạo cho tôi 1 bức ảnh concept siêu xe phong cách tương lai Cyberpunk, tỷ lệ 16:9, model pro."*
-
-> **Prompt tạo video từ ảnh:**
-> *"Lấy ảnh vừa tạo ở trên, dùng tool `flow_generate_video` với type `image_to_video` để làm chuyển động camera lướt qua xe trong đêm mưa neon. Sau đó poll status cho đến khi có link video tải về."*
-
----
-
-## 3. Kịch bản 2: AI Agent viết bằng Python (Gọi REST API trực tiếp)
-
-Đây là script hoàn chỉnh từ **Tạo ảnh -> Lấy Media ID -> Tạo Video Veo -> Polling kết quả -> Tải file MP4 về máy**.
+Đoạn code Python độc lập dưới đây có thể **chạy trên bất kỳ máy tính nào** (chỉ cần đổi `PROVIDER_URL`):
 
 ```python
-import os
 import time
-import requests
+import json
+import base64
+import urllib.request
+from pathlib import Path
 
-BASE_URL = os.getenv("FLOW_PROVIDER_BASE_URL", "https://api.shopcongngheso5.io.vn")
-headers = {
-    "Content-Type": "application/json"
-}
+# Cấu hình địa chỉ VPS (hoặc http://127.0.0.1:8000 nếu chạy ngay trên VPS)
+PROVIDER_URL = "http://54.255.80.16:8000"
 
-def extract_video_poll_names(body):
-    """Hỗ trợ response dạng operations, workflows và media của Flow."""
-    names = []
-    for item in body.get("operations", []):
-        operation = item.get("operation") or item
-        if isinstance(operation, dict) and operation.get("name"):
-            names.append(operation["name"])
-    names.extend(
-        item["name"] for item in body.get("workflows", [])
-        if isinstance(item, dict) and item.get("name")
-    )
-    if not names:
-        names.extend(
-            item["name"] for item in body.get("media", [])
-            if isinstance(item, dict) and item.get("name")
-        )
-    return list(dict.fromkeys(names))
 
-def extract_first_media_id(body):
-    """Ưu tiên shape media[] hiện tại, giữ fallback images[] để tương thích."""
-    for item in body.get("media", []):
-        media_id = item.get("name") or item.get("image", {}).get("generatedImage", {}).get("mediaId")
-        if media_id:
-            return media_id
-    for item in body.get("images", []):
-        media_id = item.get("media_id") or item.get("name")
-        if media_id:
-            return media_id
-    return None
+def call_api(endpoint: str, payload: dict | None = None) -> dict:
+    url = f"{PROVIDER_URL}{endpoint}"
+    data = json.dumps(payload).encode("utf-8") if payload else None
+    headers = {"Content-Type": "application/json"} if payload else {}
+    req = urllib.request.Request(url, data=data, headers=headers)
+    with urllib.request.urlopen(req) as resp:
+        return json.load(resp)
 
-def find_download_url(value):
-    """Tìm URL hoàn tất mà không phụ thuộc vị trí lồng trong upstream response."""
-    if isinstance(value, dict):
-        for key in ("downloadUrl", "videoUrl", "video_url", "download_url", "fifeUrl", "url"):
-            if isinstance(value.get(key), str):
-                return value[key]
-        for child in value.values():
-            url = find_download_url(child)
-            if url:
-                return url
-    elif isinstance(value, list):
-        for child in value:
-            url = find_download_url(child)
-            if url:
-                return url
-    return None
 
-def find_media_statuses(value):
-    statuses = []
-    if isinstance(value, dict):
-        for key in ("mediaGenerationStatus", "status"):
-            status = value.get(key)
-            if isinstance(status, str) and status.startswith("MEDIA_GENERATION_STATUS_"):
-                statuses.append(status)
-        for child in value.values():
-            statuses.extend(find_media_statuses(child))
-    elif isinstance(value, list):
-        for child in value:
-            statuses.extend(find_media_statuses(child))
-    return statuses
+def encode_local_image_base64(file_path: str) -> str:
+    """Đọc file ảnh từ ổ cứng máy tính và chuyển sang chuỗi Base64"""
+    with open(file_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("ascii")
 
-def generate_full_flow():
-    # 1. Kiểm tra trạng thái hệ thống
-    health = requests.get(f"{BASE_URL}/health/ready", headers=headers).json()
-    print("Health Status:", health)
+
+def wait_for_job_completion(job_id: str, max_wait_seconds: int = 180) -> dict:
+    """Polling trạng thái từ Database của Provider (0 slot, 0 token)"""
+    print(f"[*] Theo dõi Job ID: {job_id}")
+    start = time.time()
+    while time.time() - start < max_wait_seconds:
+        res = call_api("/v1/jobs/status", {"job_ids": [job_id]})
+        job = res["jobs"][0]
+        status = job["status"]
+        print(f"    -> Trạng thái hiện tại: {status}")
+        
+        if status == "complete":
+            return job
+        if status == "failed":
+            error_info = job.get("error", {})
+            raise RuntimeError(f"Tác vụ thất bại: {error_info.get('message', 'Unknown error')}")
+            
+        time.sleep(5)
+    raise TimeoutError("Quá thời gian chờ hoàn thành job!")
+
+
+# =====================================================================
+# KỊCH BẢN TỰ ĐỘNG HÓA HOÀN CHỈNH
+# =====================================================================
+def main():
+    # 1. Kiểm tra sẵn sàng
+    health = call_api("/health/ready")
+    print(f"[*] Trạng thái Provider: {health['status']} | Số account sẵn sàng: {health.get('provider_accounts', 0)}")
     if health.get("status") != "ready":
-        raise SystemError("FlowProvider hoặc Browser Account chưa sẵn sàng!")
+        print("[!] Provider chưa sẵn sàng, vui lòng kiểm tra lại Chrome Extension.")
+        return
 
-    # 2. Tạo ảnh mẫu
-    print("\n--- [Bước 1] Đang tạo ảnh từ prompt ---")
-    img_resp = requests.post(
-        f"{BASE_URL}/v1/images/generations",
-        headers=headers,
-        json={
-            "prompt": "Cinematic shot of a warrior robot standing on a cliff at sunrise, photorealistic, 8k",
-            "model": "pro",
-            "aspect_ratio": "16:9",
-            "variant_count": 1
-        }
-    )
-    img_resp.raise_for_status()
-    img_job_id = img_resp.json()["jobs"][0]["id"]
+    # 2. TẠO ẢNH CHÂN DUNG (Model v2 / Tỷ lệ dọc 9:16)
+    print("\n--- [Bước 1] Gửi yêu cầu tạo ảnh ---")
+    img_payload = {
+        "prompt": "A futuristic female cyberpunk samurai with glowing katana in rain, neon city lights, 8k portrait",
+        "model": "v2",
+        "aspect_ratio": "9:16"
+    }
+    img_res = call_api("/v1/images/generations", img_payload)
+    img_job_id = img_res["jobs"][0]["id"]
     
-    # Lấy routing_scope và project_id từ header/response để đảm bảo nhất quán tài khoản
-    routing_scope = img_resp.headers.get("X-Provider-Routing-Scope")
-    project_id = img_resp.headers.get("X-Flow-Project-Id")
+    # Chờ hoàn thành ảnh (10-15s)
+    completed_img = wait_for_job_completion(img_job_id)
+    img_media = completed_img["media"][0]
+    media_id = img_media["id"]
+    img_url = img_media["url"]
     
-    for _ in range(60):
-        time.sleep(2)
-        img_data = requests.post(
-            f"{BASE_URL}/v1/jobs/status", json={"job_ids": [img_job_id]}
-        ).json()
-        image_job = img_data["jobs"][0]
-        if image_job["status"] == "failed":
-            raise RuntimeError(f"Lỗi tạo ảnh: {image_job['error']}")
-        if image_job["status"] == "complete":
-            break
-    media_id = image_job["media"][0]["id"]
-    if not media_id:
-        raise RuntimeError("Flow không trả về media ID của ảnh")
-    image_url = find_download_url(img_data)
-    print(f"Ảnh đã tạo thành công! Media ID: {media_id}")
-    print(f"URL ảnh: {image_url}")
+    # Tải ảnh về máy tính
+    urllib.request.urlretrieve(img_url, "avatar_samurai.png")
+    print(f"[✓] Đã tạo và tải ảnh về: avatar_samurai.png (Media ID: {media_id})")
 
-    # 3. Tạo Video từ ảnh (Image-to-Video)
-    print("\n--- [Bước 2] Đang kích hoạt tạo video Veo ---")
-    vid_headers = dict(headers)
-    if routing_scope:
-        vid_headers["X-Provider-Routing-Scope"] = routing_scope
-
-    vid_resp = requests.post(
-        f"{BASE_URL}/v1/videos/generations",
-        headers=vid_headers,
-        json={
-            "type": "image_to_video",
-            "project_id": project_id,
-            "prompt": "Camera slowly pushes in towards the robot as sunlight flares into the lens",
-            "start_media_id": media_id,
-            "aspect_ratio": "16:9",
-            "quality": "lite"
-        }
-    )
-    vid_resp.raise_for_status()
-    vid_data = vid_resp.json()
-    job_ids = [job["id"] for job in vid_data["jobs"]]
-    print(f"Provider job IDs: {job_ids}")
-
-    # 4. Polling trạng thái Video
-    print("\n--- [Bước 3] Đang polling trạng thái video (mỗi 10s) ---")
-    download_url = None
-    for attempt in range(60):  # Chờ tối đa 10 phút
-        time.sleep(10)
-        status_resp = requests.post(
-            f"{BASE_URL}/v1/jobs/status",
-            json={"job_ids": job_ids}
-        )
-        status_resp.raise_for_status()
-        status_data = status_resp.json()
-
-        job = status_data["jobs"][0]
-        if job["status"] == "failed":
-            raise RuntimeError(f"Lỗi tạo video: {job['error']}")
-        if job["status"] == "complete":
-            download_url = job["media"][0]["url"]
-            break
-        print(f"Poll #{attempt+1}: status={job['status']}")
-
-    if not download_url:
-        raise TimeoutError("Hết thời gian chờ video hoàn tất!")
-
-    print(f"\n Video hoàn thành! URL tải về: {download_url}")
+    # 3. TẠO VIDEO OMNI FLASH 4S TỪ ẢNH TRÊN
+    print("\n--- [Bước 2] Gửi yêu cầu tạo Video Omni Flash (Chế độ reference_to_video) ---")
+    vid_payload = {
+        "type": "reference_to_video",
+        "prompt": "The samurai raises her sword as neon rain drips in slow motion, cinematic 4k portrait",
+        "reference_media_ids": [media_id],
+        "duration_seconds": 4,
+        "aspect_ratio": "9:16"
+    }
+    vid_res = call_api("/v1/videos/generations", vid_payload)
+    vid_job_id = vid_res["jobs"][0]["id"]
     
-    # 5. Tải file video về máy
-    video_bytes = requests.get(download_url).content
-    with open("output_video.mp4", "wb") as f:
-        f.write(video_bytes)
-    print("Đã lưu video về file: output_video.mp4")
+    # Chờ render video (20-35s)
+    completed_vid = wait_for_job_completion(vid_job_id)
+    video_media = completed_vid["media"][0]
+    video_url = video_media["url"]
+    
+    # Tải video MP4 trực tiếp từ Google CDN về máy
+    urllib.request.urlretrieve(video_url, "samurai_video_4s.mp4")
+    print(f"\n[✓] THÀNH CÔNG RỰC RỠ! Đã tải video MP4 về: samurai_video_4s.mp4")
+
 
 if __name__ == "__main__":
-    generate_full_flow()
+    main()
 ```
 
 ---
 
-## 4. Kịch bản 3: AI Agent viết bằng Node.js / TypeScript
+## 4. Code Mẫu Node.js / TypeScript: Gọi API Từ Xa
 
-```typescript
-import axios from 'axios';
+```javascript
+import fs from 'fs';
+import https from 'https';
 
-const BASE_URL = process.env.FLOW_PROVIDER_BASE_URL || 'https://api.shopcongngheso5.io.vn';
-const client = axios.create({
-  baseURL: BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
+const PROVIDER_URL = 'http://54.255.80.16:8000';
 
-function extractFirstMediaId(body: any): string | undefined {
-  for (const item of body.media ?? []) {
-    const id = item?.name ?? item?.image?.generatedImage?.mediaId;
-    if (typeof id === 'string' && id.length > 0) return id;
-  }
-  for (const item of body.images ?? []) {
-    const id = item?.media_id ?? item?.name;
-    if (typeof id === 'string' && id.length > 0) return id;
-  }
+async function postJson(endpoint, data) {
+  const res = await fetch(`${PROVIDER_URL}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data)
+  });
+  return await res.json();
 }
 
-function extractVideoPollNames(body: any): string[] {
-  const names = [
-    ...(body.operations ?? []).map((x: any) => x?.operation?.name ?? x?.name),
-    ...(body.workflows ?? []).map((x: any) => x?.name),
-  ].filter((x): x is string => typeof x === 'string' && x.length > 0);
-
-  if (names.length === 0) {
-    names.push(...(body.media ?? [])
-      .map((x: any) => x?.name)
-      .filter((x: any): x is string => typeof x === 'string' && x.length > 0));
+async function waitForJob(jobId) {
+  console.log(`[*] Đang theo dõi Job: ${jobId}`);
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 5000));
+    const statusRes = await postJson('/v1/jobs/status', { job_ids: [jobId] });
+    const job = statusRes.jobs[0];
+    console.log(`    -> Trạng thái: ${job.status}`);
+    if (job.status === 'complete') return job;
+    if (job.status === 'failed') throw new Error(job.error?.message || 'Job failed');
   }
-  return [...new Set(names)];
+  throw new Error('Timeout!');
 }
 
-function findDownloadUrl(value: any): string | undefined {
-  if (Array.isArray(value)) {
-    for (const child of value) {
-      const url = findDownloadUrl(child);
-      if (url) return url;
-    }
-  } else if (value && typeof value === 'object') {
-    for (const key of ['downloadUrl', 'videoUrl', 'video_url', 'download_url']) {
-      if (typeof value[key] === 'string') return value[key];
-    }
-    for (const child of Object.values(value)) {
-      const url = findDownloadUrl(child);
-      if (url) return url;
-    }
-  }
+async function downloadFile(url, destPath) {
+  return new Promise((resolve, reject) => {
+    const file = fs.createWriteStream(destPath);
+    https.get(url, (response) => {
+      response.pipe(file);
+      file.on('finish', () => { file.close(); resolve(); });
+    }).on('error', (err) => { fs.unlink(destPath, () => {}); reject(err); });
+  });
 }
 
-function findMediaStatuses(value: any): string[] {
-  const statuses: string[] = [];
-  if (Array.isArray(value)) {
-    for (const child of value) statuses.push(...findMediaStatuses(child));
-  } else if (value && typeof value === 'object') {
-    for (const key of ['mediaGenerationStatus', 'status']) {
-      if (typeof value[key] === 'string' && value[key].startsWith('MEDIA_GENERATION_STATUS_')) {
-        statuses.push(value[key]);
-      }
-    }
-    for (const child of Object.values(value)) statuses.push(...findMediaStatuses(child));
-  }
-  return statuses;
-}
-
-async function runFlow() {
-  // 1. Sinh ảnh
-  const imgRes = await client.post('/v1/images/generations', {
-    prompt: 'A cute red panda wearing astronaut suit in space, 3D render',
-    model: 'pro',
-    aspect_ratio: '1:1',
-    variant_count: 1,
+async function run() {
+  // 1. Tạo video từ khung hình (frames_to_video) với ảnh Base64
+  console.log('[1] Gửi request tạo video Omni Flash 4s...');
+  const base64Image = fs.readFileSync('input.png').toString('base64');
+  
+  const vidRes = await postJson('/v1/videos/generations', {
+    type: 'frames_to_video',
+    prompt: 'Cinematic slow motion pan across the scene',
+    input_images: [{ image_base64: base64Image, mime_type: 'image/png' }],
+    duration_seconds: 4,
+    aspect_ratio: '9:16'
   });
 
-  const routingScope = imgRes.headers['x-provider-routing-scope'];
-  const projectScope = imgRes.headers['x-flow-project-id'];
-  const imageJobId = imgRes.data.jobs[0].id;
-  let imageJob;
-  while (true) {
-    await new Promise((r) => setTimeout(r, 2000));
-    imageJob = (await client.post('/v1/jobs/status', { job_ids: [imageJobId] })).data.jobs[0];
-    if (imageJob.status === 'failed') throw new Error(JSON.stringify(imageJob.error));
-    if (imageJob.status === 'complete') break;
-  }
-  const mediaId = imageJob.media[0]?.id;
-  if (!mediaId) throw new Error('Flow không trả về media ID của ảnh');
-  console.log(`Media ID: ${mediaId}`);
+  const jobId = vidRes.jobs[0].id;
+  const completedJob = await waitForJob(jobId);
+  const videoUrl = completedJob.media[0].url;
 
-  // 2. Sinh video
-  const vidRes = await client.post(
-    '/v1/videos/generations',
-    {
-      type: 'image_to_video',
-      project_id: projectScope,
-      prompt: 'Floating in zero gravity with earth in background',
-      start_media_id: mediaId,
-      aspect_ratio: '9:16',
-      quality: 'lite',
-    },
-    {
-      headers: routingScope ? { 'X-Provider-Routing-Scope': routingScope } : {},
-    }
-  );
-
-  const jobIds = vidRes.data.jobs.map((job: any) => job.id);
-
-  // 3. Poll
-  while (true) {
-    await new Promise((r) => setTimeout(r, 10000));
-    const statusRes = await client.post(
-      '/v1/jobs/status',
-      { job_ids: jobIds },
-    );
-    const job = statusRes.data.jobs[0];
-    if (job.status === 'failed') throw new Error(JSON.stringify(job.error));
-    if (job.status === 'complete') {
-      const downloadUrl = job.media[0]?.url;
-      console.log(`Video sẵn sàng: ${downloadUrl}`);
-      break;
-    }
-    console.log('Đang xử lý video...');
-  }
+  console.log('[2] Đang tải video MP4 về máy...');
+  await downloadFile(videoUrl, 'output_video.mp4');
+  console.log('[✓] Đã lưu: output_video.mp4');
 }
 
-runFlow().catch(console.error);
+run().catch(console.error);
 ```
 
 ---
