@@ -5,6 +5,7 @@ services:
     environment:
       FLOW_PROVIDER_ACCOUNT_SLOT_CAPACITY: 3
       FLOW_PROVIDER_PROJECT_STORE_PATH: /data/projects.db
+      FLOW_PROVIDER_ASSET_STORE_PATH: /data/assets
     ports:
       - "8000:8000"
     volumes:

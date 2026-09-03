@@ -12,6 +12,14 @@ Scheduling selects the least-loaded ready extension, breaking ties by connection
 
 Video operation routes are stored by account/project. Status requests without a routing scope are split by owning account and merged, so polling cannot move to a different Google account.
 
+Character workflows are separate from the generic generation endpoints. Upload 1-3
+source images with `POST /v1/media`, register them with `POST /v1/characters`,
+then call `/v1/characters/{id}/images/generations` or
+`/v1/characters/{id}/videos/generations`. Character image jobs call Flow's
+`batchGenerateImages` once; Character video jobs use R2V/Omni and enter the
+durable worker poller. Source bytes are retained under
+`FLOW_PROVIDER_ASSET_STORE_PATH`; Character output never replaces its references.
+
 ## Configuration
 
 Required production values:

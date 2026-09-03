@@ -219,7 +219,7 @@ refresh();
 
 // Lightweight polling interval
 const timer = setInterval(() => {
-  refresh().catch(() => {});
+  refresh().catch(() => { });
 }, 1000);
 
 window.addEventListener("unload", () => {

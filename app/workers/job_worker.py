@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import uuid
 from typing import Any
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 def _job_credit_cost(generation_type: str, duration_seconds: int) -> int:
-    if generation_type == "image":
+    if generation_type in {"image", "character_image"}:
         return 0
     if generation_type == "image_to_video":
         return 20
@@ -33,7 +34,7 @@ def _job_credit_cost(generation_type: str, duration_seconds: int) -> int:
 
 
 def _is_omni_generation(generation_type: str) -> bool:
-    return generation_type in {"omni", "r2v", "omni_r2v", "reference_to_video", "ingredients", "references"}
+    return generation_type in {"omni", "r2v", "omni_r2v", "reference_to_video", "ingredients", "references", "character_video"}
 
 
 _is_omni_job_type = _is_omni_generation
@@ -45,7 +46,22 @@ def _is_frames_generation(generation_type: str) -> bool:
 
 def _job_aspect_ratio(generation_type: str, payload: dict) -> str:
     default = "VIDEO_ASPECT_RATIO_LANDSCAPE" if generation_type == "image_to_video" else "VIDEO_ASPECT_RATIO_PORTRAIT"
-    return payload.get("aspect_ratio", default)
+    value = payload.get("aspect_ratio", default)
+    if generation_type == "character_video":
+        return {
+            "16:9": "VIDEO_ASPECT_RATIO_LANDSCAPE",
+            "9:16": "VIDEO_ASPECT_RATIO_PORTRAIT",
+        }.get(value, value)
+    return value
+
+
+def _image_aspect_ratio(payload: dict) -> str:
+    value = payload.get("aspect_ratio", "IMAGE_ASPECT_RATIO_PORTRAIT")
+    return {
+        "1:1": "IMAGE_ASPECT_RATIO_SQUARE",
+        "16:9": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+        "9:16": "IMAGE_ASPECT_RATIO_PORTRAIT",
+    }.get(value, value)
 
 
 def _account_key(connection: Any) -> str:
@@ -130,6 +146,11 @@ class JobWorker:
         payload = job.request_payload
         duration = job.request_payload.get("duration_seconds", 8)
         cost = _job_credit_cost(job.generation_type, duration)
+        project_owner = (
+            self.runtime.projects.installation_for_project(job.google_project_id)
+            if job.google_project_id
+            else None
+        )
 
         available = [
             conn
@@ -138,6 +159,11 @@ class JobWorker:
                 not job.installation_id
                 or _account_key(conn) == job.installation_id
                 or conn.installation_id == job.installation_id
+            )
+            and (
+                not project_owner
+                or _account_key(conn) == project_owner
+                or conn.installation_id == project_owner
             )
             and self.runtime.can_reserve(conn, cost, job_type=job.media_type)
         ]
@@ -172,6 +198,51 @@ class JobWorker:
             ctx = client_context(resolved_project_id, tier)
 
             reference_media_ids = list(payload.get("reference_media_ids") or [])
+            if job.generation_type in {"character_image", "character_video"}:
+                reference_media_ids = []
+                missing_assets = []
+                from app.api.schemas import InlineImageInput
+                # Character references are snapshotted separately from
+                # optional per-request references. Preserve Character order,
+                # then append the caller's extra images without duplicates.
+                reference_hashes = list(payload.get("reference_asset_hashes") or [])
+                reference_hashes.extend(payload.get("additional_reference_asset_hashes") or [])
+                seen_hashes: set[str] = set()
+                for digest in reference_hashes:
+                    digest = str(digest)
+                    if digest in seen_hashes:
+                        continue
+                    seen_hashes.add(digest)
+                    asset_mime, asset_file_name = self.runtime.projects.get_asset_info(digest)
+                    stored_asset = self.runtime.projects.asset_store.read(
+                        digest, asset_mime,
+                    )
+                    if stored_asset is None:
+                        missing_assets.append(digest)
+                        continue
+                    raw_bytes, mime_type = stored_asset
+                    reference_media_ids.append(
+                        InlineImageInput(
+                            image_base64=base64.b64encode(raw_bytes).decode("ascii"),
+                            mime_type=mime_type,
+                            file_name=asset_file_name or f"character-{digest[:12]}.png",
+                        )
+                    )
+                if missing_assets:
+                    self.runtime.projects.update_job_failed(
+                        job.job_id,
+                        "One or more Character reference assets are unavailable.",
+                        claim_token,
+                        error_code="CHARACTER_ASSET_MISSING",
+                    )
+                    return
+                from app.api.generations import _upload_inline_images
+                uploaded_ids, cached_digests, _hits = await _upload_inline_images(
+                    self.runtime, connection, client, resolved_project_id, reference_media_ids,
+                )
+                reference_media_ids = uploaded_ids
+                payload["_cached_digests"] = list(cached_digests)
+                payload["reference_media_ids"] = uploaded_ids
             inline_images = self.runtime.inline_images.pop(job.job_id, None) or payload.get("input_images")
             if inline_images:
                 from app.api.generations import _upload_inline_images
@@ -180,18 +251,22 @@ class JobWorker:
                     InlineImageInput(**img) if isinstance(img, dict) else img
                     for img in inline_images
                 ]
-                uploaded_ids, cached_digests, hits = await _upload_inline_images(
+                uploaded_ids, cached_digests, _hits = await _upload_inline_images(
                     self.runtime, connection, client, resolved_project_id, raw_images
+                )
+                payload["_cached_digests"] = list(
+                    dict.fromkeys(
+                        list(payload.get("_cached_digests") or []) + cached_digests
+                    )
                 )
                 if job.media_type == "image":
                     reference_media_ids.extend(uploaded_ids)
                 elif _is_omni_generation(job.generation_type):
                     payload["reference_media_ids"] = list(payload.get("reference_media_ids") or []) + uploaded_ids
-                elif _is_frames_generation(job.generation_type):
-                    if not payload.get("start_media_id") and uploaded_ids:
-                        payload["start_media_id"] = uploaded_ids[0]
-                        if len(uploaded_ids) > 1 and not payload.get("end_media_id"):
-                            payload["end_media_id"] = uploaded_ids[1]
+                elif _is_frames_generation(job.generation_type) and not payload.get("start_media_id") and uploaded_ids:
+                    payload["start_media_id"] = uploaded_ids[0]
+                    if len(uploaded_ids) > 1 and not payload.get("end_media_id"):
+                        payload["end_media_id"] = uploaded_ids[1]
 
             if job.media_type == "image":
                 requests = []
@@ -199,9 +274,7 @@ class JobWorker:
                     item = {
                         "clientContext": ctx,
                         "structuredPrompt": {"parts": [{"text": payload.get("prompt", "")}]},
-                        "imageAspectRatio": payload.get(
-                            "aspect_ratio", "IMAGE_ASPECT_RATIO_PORTRAIT"
-                        ),
+                        "imageAspectRatio": _image_aspect_ratio(payload),
                         "imageModelName": resolve_image_model(payload.get("model", "pro")),
                     }
                     if reference_media_ids:

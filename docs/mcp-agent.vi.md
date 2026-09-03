@@ -11,9 +11,9 @@
 
 ---
 
-## 1. 5 Tool Tối Ưu Hóa Dành Riêng Cho AI Agent
+## 1. Tool Tối Ưu Hóa Dành Riêng Cho AI Agent
 
-Toàn bộ nghiệp vụ đã được cô đọng thành đúng 5 tool mạnh mẽ, không có dư thừa:
+Các tool được tách theo hai nhóm: workflow tổng quát và workflow Character.
 
 | Tên Tool | Loại thao tác | Chức năng & Tối ưu cho Agent |
 | :--- | :---: | :--- |
@@ -22,6 +22,11 @@ Toàn bộ nghiệp vụ đã được cô đọng thành đúng 5 tool mạnh m
 | **`flow_generate_video`** | Paid Mutating | Tạo video Gemini Omni Flash siêu tốc (10-25s). Hỗ trợ cả 2 chế độ: **`frames_to_video`** (Start Frame) và **`reference_to_video`** (Ảnh tham chiếu). Cho phép truyền trực tiếp file ảnh local qua `image_paths`. |
 | **`flow_upload_image`** | Mutating | Đọc file ảnh local và upload trước để lấy `media_id` dùng cho nhiều video liên tiếp. |
 | **`flow_get_job_status`** | Read-only | Đọc trạng thái tác vụ (`queued`, `running`, `complete`, `failed`) trực tiếp từ Database của Provider (0 slot, 0 credit). |
+| **`flow_create_character`** | Mutating | Tạo catalog Character/location/asset với tối đa 3 ảnh reference đã upload. |
+| **`flow_get_character`** / **`flow_list_characters`** | Read-only | Đọc catalog Character đang hoạt động. |
+| **`flow_update_character`** / **`flow_delete_character`** | Mutating | Cập nhật metadata/thay reference hoặc soft-delete Character. |
+| **`flow_generate_character_image`** | Mutating | Tạo ảnh mới bằng reference của một Character, có thể thêm ảnh tham chiếu cho riêng lần sinh. |
+| **`flow_generate_character_video`** | Paid Mutating | Tạo video R2V/Omni bằng 1 Character và 1-3 reference ảnh. |
 
 ---
 
@@ -36,10 +41,23 @@ Khi xây dựng Agent prompt hoặc System Instructions, tuân thủ 5 nguyên t
      `image_paths: ["./character.png"]`
    - MCP Server sẽ tự động kiểm tra bảo mật trong `FLOW_PROVIDER_MCP_ALLOWED_ROOTS`, đọc file và mã hóa tự động.
 4. **Quy trình Polling an toàn**:
-   - Sau khi gọi `flow_generate_image` hoặc `flow_generate_video`, Agent nhận về `job_id`.
+   - Sau khi gọi `flow_generate_image`, `flow_generate_video` hoặc một tool Character, Agent nhận về `job_id`.
    - Agent gọi `flow_get_job_status(job_ids=[job_id])` mỗi 5-10 giây cho đến khi `status == "complete"` hoặc `"failed"`.
    - **Tuyệt đối không gửi lặp lại request tạo video** khi job đang ở trạng thái `queued` hoặc `running`.
 5. **Tải về URL ngay**: `media[].url` là signed CDN URL có hạn sử dụng, Agent cần tải file về lưu trữ lâu dài.
+
+### Workflow Character
+
+1. Gọi `flow_upload_image` một đến ba lần cho các ảnh của cùng Character.
+2. Gọi `flow_create_character` với các `reference_media_ids` trả về.
+3. Dùng `flow_generate_character_image` hoặc `flow_generate_character_video`.
+   Tool ảnh có thể nhận thêm `reference_media_ids`/`image_paths` cho riêng lần
+   sinh; tool video chỉ dùng reference của Character.
+4. Poll cùng Provider job ID bằng `flow_get_job_status`. Ảnh Character hoàn tất
+   trong một lượt worker; video Character đi qua video poller.
+
+Ảnh output không thay thế ảnh reference. Nếu cần thay toàn bộ reference, dùng
+`flow_update_character`; Character đã soft-delete vẫn giữ lịch sử job/status.
 
 ---
 
@@ -129,6 +147,30 @@ Tạo hoặc sửa file `.cursor/mcp.json` trong thư mục dự án hoặc cấ
 
 ### 4.3. `flow_get_job_status` (Kiểm tra trạng thái tác vụ)
 - **`job_ids`** *(bắt buộc)*: Mảng từ 1 đến 20 mã `job_id` nhận được từ lệnh tạo.
+
+### 4.4. `flow_create_character` và `flow_update_character`
+
+- `name`, `entity_type`, `description`, `voice_description`: metadata tùy chọn
+  theo catalog.
+- `reference_media_ids`: tối đa 3 ảnh đã upload qua `flow_upload_image`.
+- `flow_update_character` thay toàn bộ danh sách reference khi field này được
+  truyền; truyền `[]` để xóa reference.
+
+### 4.5. `flow_generate_character_image`
+
+- `character_id`, `prompt` là bắt buộc.
+- `model`: `pro` hoặc `v2`; `aspect_ratio`: `1:1`, `16:9`, `9:16`;
+  `variant_count`: 1-4.
+- Có thể truyền thêm `reference_media_ids` hoặc `image_paths` cho riêng lần
+  sinh này. Provider luôn tự kèm reference của Character; tổng số ảnh duy nhất
+  (Character + ảnh thêm) tối đa 8. Ảnh thêm không làm thay đổi catalog Character.
+
+### 4.6. `flow_generate_character_video`
+
+- `character_id`, `prompt` là bắt buộc; một request chỉ dùng một Character.
+- `aspect_ratio`: `16:9` hoặc `9:16`; `duration_seconds`: 4, 6, 8 hoặc 10.
+- `dialogue` mặc định `false`; khi bật, Provider nối `voice_description` vào
+  prompt snapshot. Tool không có `start_media_id` vì đây là R2V, không phải I2V.
 
 ---
 

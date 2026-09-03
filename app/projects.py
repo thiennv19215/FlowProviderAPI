@@ -7,6 +7,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.assets import AssetStore
+
 # A dispatch claim is held only during one worker attempt. The lease is longer
 # than the bridge's maximum paid-request timeout. An expired claim is failed as
 # outcome-unknown for reconciliation; it is never automatically paid again.
@@ -72,6 +74,24 @@ class ProviderJob:
     completed_at: str | None = None
     claim_token: str | None = None
     idempotency_key: str | None = None
+    character_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderCharacter:
+    character_id: str
+    name: str
+    entity_type: str
+    description: str | None
+    image_prompt: str | None
+    voice_description: str | None
+    image_model: str
+    aspect_ratio: str | None
+    reference_asset_hashes: list[str]
+    reference_media_ids: list[str]
+    deleted_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 def _row_to_job(row: sqlite3.Row) -> ProviderJob:
@@ -88,7 +108,7 @@ def _row_to_job(row: sqlite3.Row) -> ProviderJob:
         media_type=(
             row["media_type"]
             if "media_type" in columns and row["media_type"]
-            else ("image" if row["generation_type"] == "image" else "video")
+            else ("image" if row["generation_type"] in {"image", "character_image"} else "video")
         ),
         generation_type=row["generation_type"],
         status=row["status"],
@@ -113,16 +133,18 @@ def _row_to_job(row: sqlite3.Row) -> ProviderJob:
         completed_at=str(row["completed_at"]) if row["completed_at"] else None,
         claim_token=row["claim_token"] if "claim_token" in columns else None,
         idempotency_key=row["idempotency_key"] if "idempotency_key" in columns else None,
+        character_id=row["character_id"] if "character_id" in columns else None,
     )
 
 
 class ProjectStore:
     """Small durable mapping between a Chrome installation and its Flow project."""
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, *, asset_store_path: str | None = None):
         self.path = path
         self._lock = threading.RLock()
         self._connection: sqlite3.Connection | None = None
+        self.asset_store = AssetStore(asset_store_path or ".data/assets")
 
     def _db(self) -> sqlite3.Connection:
         with self._lock:
@@ -267,6 +289,7 @@ class ProjectStore:
                         error_retryable INTEGER NOT NULL DEFAULT 0,
                         outcome_unknown INTEGER NOT NULL DEFAULT 0,
                         idempotency_key TEXT,
+                        character_id TEXT,
                         running_at TEXT,
                         next_poll_at TEXT,
                         last_poll_at TEXT,
@@ -340,6 +363,10 @@ class ProjectStore:
                     self._connection.execute(
                         "ALTER TABLE provider_jobs ADD COLUMN provider TEXT NOT NULL DEFAULT 'google_flow'"
                     )
+                if "character_id" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN character_id TEXT"
+                    )
                 self._connection.execute(
                     """
                     UPDATE provider_jobs
@@ -360,9 +387,64 @@ class ProjectStore:
                     "CREATE INDEX IF NOT EXISTS idx_jobs_operation ON provider_jobs (operation_name)"
                 )
                 self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_jobs_character_status ON provider_jobs (character_id, status, created_at)"
+                )
+                self._connection.execute(
                     "CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_key "
                     "ON provider_jobs (idempotency_key) WHERE idempotency_key IS NOT NULL"
                 )
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS provider_assets (
+                        content_sha256 TEXT PRIMARY KEY,
+                        mime_type TEXT NOT NULL,
+                        size_bytes INTEGER NOT NULL,
+                        file_name TEXT,
+                        status TEXT NOT NULL DEFAULT 'active',
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        last_referenced_at TEXT,
+                        orphaned_at TEXT
+                    )
+                    """
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assets_reference ON provider_assets (status, last_referenced_at)"
+                )
+                self._connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS provider_characters (
+                        character_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        entity_type TEXT NOT NULL DEFAULT 'character',
+                        description TEXT,
+                        image_prompt TEXT,
+                        voice_description TEXT,
+                        image_model TEXT NOT NULL DEFAULT 'pro',
+                        aspect_ratio TEXT,
+                        reference_asset_hashes_json TEXT NOT NULL DEFAULT '[]',
+                        reference_media_ids_json TEXT NOT NULL DEFAULT '[]',
+                        deleted_at TEXT,
+                        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                self._connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_characters_active ON provider_characters (deleted_at, created_at)"
+                )
+                character_columns = {
+                    row["name"]
+                    for row in self._connection.execute("PRAGMA table_info(provider_characters)")
+                }
+                if "image_model" not in character_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_characters ADD COLUMN image_model TEXT NOT NULL DEFAULT 'pro'"
+                    )
+                if "aspect_ratio" not in character_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_characters ADD COLUMN aspect_ratio TEXT"
+                    )
                 self._connection.commit()
             return self._connection
 
@@ -685,7 +767,7 @@ class ProjectStore:
             row["route_kind"], row["poll_name"],
         )
 
-    def prune(self, *, operation_days: int = 30, media_days: int = 90) -> None:
+    def prune(self, *, operation_days: int = 30, media_days: int = 90, asset_retention_days: int = 30) -> None:
         """Bound durable cache growth without touching active project ownership."""
         with self._lock:
             self._db().execute(
@@ -704,6 +786,53 @@ class ProjectStore:
                 """,
                 (f"-{media_days} days",),
             )
+            # Keep source bytes while any live Character or job still references them.
+            rows = self._db().execute(
+                "SELECT content_sha256, orphaned_at FROM provider_assets WHERE status = 'active'"
+            ).fetchall()
+            referenced: set[str] = set()
+            for row in self._db().execute(
+                "SELECT reference_asset_hashes_json, deleted_at FROM provider_characters"
+            ).fetchall():
+                try:
+                    values = json.loads(row["reference_asset_hashes_json"] or "[]")
+                    hashes = [str(value) for value in values if isinstance(value, str)]
+                    if not row["deleted_at"]:
+                        referenced.update(hashes)
+                except (TypeError, ValueError):
+                    continue
+            for row in self._db().execute(
+                "SELECT request_payload_json FROM provider_jobs WHERE status IN ('queued', 'dispatching', 'running')"
+            ).fetchall():
+                try:
+                    payload = json.loads(row["request_payload_json"] or "{}")
+                    for key in ("reference_asset_hashes", "additional_reference_asset_hashes"):
+                        values = payload.get(key, [])
+                        referenced.update(str(value) for value in values if isinstance(value, str))
+                except (TypeError, ValueError):
+                    continue
+            for row in rows:
+                digest = row["content_sha256"]
+                if digest in referenced:
+                    self._db().execute(
+                        "UPDATE provider_assets SET last_referenced_at = CURRENT_TIMESTAMP, orphaned_at = NULL WHERE content_sha256 = ?",
+                        (digest,),
+                    )
+                elif row["orphaned_at"] is None:
+                    self._db().execute(
+                        "UPDATE provider_assets SET orphaned_at = CURRENT_TIMESTAMP WHERE content_sha256 = ?",
+                        (digest,),
+                    )
+            old_assets = self._db().execute(
+                "SELECT content_sha256 FROM provider_assets WHERE status = 'active' AND orphaned_at IS NOT NULL AND orphaned_at <= datetime('now', ?)",
+                (f"-{max(1, asset_retention_days)} days",),
+            ).fetchall()
+            for row in old_assets:
+                self.asset_store.delete(row["content_sha256"])
+                self._db().execute(
+                    "UPDATE provider_assets SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE content_sha256 = ?",
+                    (row["content_sha256"],),
+                )
             self._db().commit()
 
     def enqueue_job(
@@ -718,10 +847,11 @@ class ProjectStore:
         installation_id: str | None = None,
         google_project_id: str | None = None,
         idempotency_key: str | None = None,
+        character_id: str | None = None,
     ) -> ProviderJob:
         gen_type = generation_type or job_type or "image"
         payload = request_payload or {}
-        media_type = media_type or ("image" if gen_type == "image" else "video")
+        media_type = media_type or ("image" if gen_type in {"image", "character_image"} else "video")
         if media_type not in {"image", "video"}:
             raise ValueError("media_type must be 'image' or 'video'")
         clean_payload = {k: v for k, v in payload.items() if k != "input_images"}
@@ -732,9 +862,9 @@ class ProjectStore:
                     """
                     INSERT INTO provider_jobs (
                         job_id, provider, media_type, generation_type, status, request_payload_json,
-                        installation_id, google_project_id, idempotency_key
+                        installation_id, google_project_id, idempotency_key, character_id
                     )
-                    VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
                     """,
                     (
                         job_id,
@@ -745,6 +875,7 @@ class ProjectStore:
                         installation_id,
                         google_project_id,
                         idempotency_key,
+                        character_id,
                     ),
                 )
                 self._db().commit()
@@ -766,6 +897,208 @@ class ProjectStore:
                 "SELECT * FROM provider_jobs WHERE idempotency_key = ?",
                 (idempotency_key,),
             ).fetchone()
+        return _row_to_job(row) if row is not None else None
+
+    @staticmethod
+    def _row_to_character(row: sqlite3.Row) -> ProviderCharacter:
+        columns = set(row.keys())
+
+        def decode(name: str) -> list[str]:
+            try:
+                value = json.loads(row[name] or "[]")
+            except (TypeError, ValueError):
+                value = []
+            return [str(item) for item in value] if isinstance(value, list) else []
+
+        return ProviderCharacter(
+            character_id=row["character_id"],
+            name=row["name"],
+            entity_type=row["entity_type"],
+            description=row["description"],
+            image_prompt=row["image_prompt"],
+            voice_description=row["voice_description"],
+            image_model=row["image_model"] if "image_model" in columns else "pro",
+            aspect_ratio=row["aspect_ratio"] if "aspect_ratio" in columns else None,
+            reference_asset_hashes=decode("reference_asset_hashes_json"),
+            reference_media_ids=decode("reference_media_ids_json"),
+            deleted_at=row["deleted_at"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def record_asset(self, digest: str, mime_type: str, size_bytes: int, file_name: str) -> None:
+        with self._lock:
+            self._db().execute(
+                """
+                INSERT INTO provider_assets (content_sha256, mime_type, size_bytes, file_name, last_referenced_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(content_sha256) DO UPDATE SET
+                    mime_type = excluded.mime_type,
+                    size_bytes = excluded.size_bytes,
+                    file_name = excluded.file_name,
+                    status = 'active',
+                    last_referenced_at = CURRENT_TIMESTAMP,
+                    orphaned_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (digest, mime_type, size_bytes, file_name),
+            )
+            self._db().commit()
+
+    def touch_assets(self, digests: list[str]) -> None:
+        if not digests:
+            return
+        with self._lock:
+            placeholders = ",".join("?" for _ in digests)
+            self._db().execute(
+                f"UPDATE provider_assets SET last_referenced_at = CURRENT_TIMESTAMP, orphaned_at = NULL, status = 'active' WHERE content_sha256 IN ({placeholders})",
+                digests,
+            )
+            self._db().commit()
+
+    def get_asset_mime(self, digest: str) -> str | None:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT mime_type FROM provider_assets WHERE content_sha256 = ? AND status = 'active'",
+                (digest,),
+            ).fetchone()
+        return str(row["mime_type"]) if row is not None else None
+
+    def get_asset_info(self, digest: str) -> tuple[str | None, str | None]:
+        with self._lock:
+            row = self._db().execute(
+                "SELECT mime_type, file_name FROM provider_assets WHERE content_sha256 = ? AND status = 'active'",
+                (digest,),
+            ).fetchone()
+        if row is None:
+            return None, None
+        return str(row["mime_type"] or "") or None, str(row["file_name"] or "") or None
+
+    def get_character(self, character_id: str, *, include_deleted: bool = False) -> ProviderCharacter | None:
+        with self._lock:
+            sql = "SELECT * FROM provider_characters WHERE character_id = ?"
+            params: tuple[object, ...] = (character_id,)
+            if not include_deleted:
+                sql += " AND deleted_at IS NULL"
+            row = self._db().execute(sql, params).fetchone()
+        return self._row_to_character(row) if row is not None else None
+
+    def list_characters(self, *, entity_type: str | None = None, limit: int = 50, offset: int = 0) -> list[ProviderCharacter]:
+        with self._lock:
+            if entity_type:
+                rows = self._db().execute(
+                    "SELECT * FROM provider_characters WHERE deleted_at IS NULL AND entity_type = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (entity_type, limit, offset),
+                ).fetchall()
+            else:
+                rows = self._db().execute(
+                    "SELECT * FROM provider_characters WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
+        return [self._row_to_character(row) for row in rows]
+
+    def create_character(
+        self,
+        *,
+        name: str,
+        entity_type: str = "character",
+        description: str | None = None,
+        image_prompt: str | None = None,
+        voice_description: str | None = None,
+        image_model: str = "pro",
+        aspect_ratio: str | None = None,
+        reference_asset_hashes: list[str] | None = None,
+        reference_media_ids: list[str] | None = None,
+    ) -> ProviderCharacter:
+        if len(reference_asset_hashes or []) > 3 or len(reference_media_ids or []) > 3:
+            raise ValueError("A Character accepts at most three reference images")
+        if len(reference_asset_hashes or []) != len(reference_media_ids or []):
+            raise ValueError("Character asset and media references must be paired")
+        character_id = f"char_{uuid.uuid4().hex}"
+        with self._lock:
+            self._db().execute(
+                """
+                INSERT INTO provider_characters (
+                    character_id, name, entity_type, description, image_prompt, voice_description,
+                    image_model, aspect_ratio, reference_asset_hashes_json, reference_media_ids_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    character_id, name, entity_type, description, image_prompt, voice_description,
+                    image_model, aspect_ratio,
+                    json.dumps(reference_asset_hashes or [], ensure_ascii=False),
+                    json.dumps(reference_media_ids or [], ensure_ascii=False),
+                ),
+            )
+            self._db().commit()
+        return self.get_character(character_id, include_deleted=True)  # type: ignore[return-value]
+
+    def update_character(self, character_id: str, **updates: object) -> ProviderCharacter | None:
+        allowed = {
+            "name", "entity_type", "description", "image_prompt", "voice_description",
+            "image_model", "aspect_ratio",
+            "reference_asset_hashes", "reference_media_ids",
+        }
+        updates = {key: value for key, value in updates.items() if key in allowed}
+        if "reference_asset_hashes" in updates:
+            hashes = updates["reference_asset_hashes"] or []
+            if not isinstance(hashes, list) or len(hashes) > 3:
+                raise ValueError("A Character accepts at most three reference images")
+        if "reference_media_ids" in updates:
+            media_ids = updates["reference_media_ids"] or []
+            if not isinstance(media_ids, list) or len(media_ids) > 3:
+                raise ValueError("A Character accepts at most three reference images")
+        if (
+            "reference_asset_hashes" in updates
+            and "reference_media_ids" in updates
+            and len(updates["reference_asset_hashes"] or [])
+            != len(updates["reference_media_ids"] or [])
+        ):
+            raise ValueError("Character asset and media references must be paired")
+        if not updates:
+            return self.get_character(character_id)
+        assignments: list[str] = []
+        values: list[object] = []
+        for key, value in updates.items():
+            column = {
+                "reference_asset_hashes": "reference_asset_hashes_json",
+                "reference_media_ids": "reference_media_ids_json",
+            }.get(key, key)
+            if key in {"reference_asset_hashes", "reference_media_ids"}:
+                value = json.dumps(value or [], ensure_ascii=False)
+            assignments.append(f"{column} = ?")
+            values.append(value)
+        assignments.append("updated_at = CURRENT_TIMESTAMP")
+        values.append(character_id)
+        with self._lock:
+            updated = self._db().execute(
+                f"UPDATE provider_characters SET {', '.join(assignments)} WHERE character_id = ? AND deleted_at IS NULL",
+                values,
+            ).rowcount
+            self._db().commit()
+        return self.get_character(character_id, include_deleted=True) if updated else None
+
+    def soft_delete_character(self, character_id: str) -> bool:
+        with self._lock:
+            updated = self._db().execute(
+                "UPDATE provider_characters SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE character_id = ? AND deleted_at IS NULL",
+                (character_id,),
+            ).rowcount
+            self._db().commit()
+        return updated == 1
+
+    def get_active_character_job(
+        self, character_id: str, generation_types: tuple[str, ...] | None = None,
+    ) -> ProviderJob | None:
+        with self._lock:
+            sql = "SELECT * FROM provider_jobs WHERE character_id = ? AND status IN ('queued', 'dispatching', 'running')"
+            params: list[object] = [character_id]
+            if generation_types:
+                placeholders = ",".join("?" for _ in generation_types)
+                sql += f" AND generation_type IN ({placeholders})"
+                params.extend(generation_types)
+            sql += " ORDER BY created_at DESC LIMIT 1"
+            row = self._db().execute(sql, params).fetchone()
         return _row_to_job(row) if row is not None else None
 
     def fail_abandoned_dispatches(self, lease_seconds: int = JOB_CLAIM_LEASE_SECONDS) -> int:

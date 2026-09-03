@@ -341,6 +341,97 @@ if (!response.ok) throw new Error(JSON.stringify(body));
 const mediaId = body.media.name;
 ```
 
+## 6A. Character reference và endpoint tạo riêng
+
+Character là catalog độc lập. Giai đoạn này chỉ nhận ảnh upload làm reference;
+Provider không tự sinh ảnh reference từ hồ sơ chữ. Ảnh gốc được lưu bền vững
+trong `FLOW_PROVIDER_ASSET_STORE_PATH` theo SHA-256, còn `media_id` của Flow chỉ
+là mapping theo từng account/project.
+
+Upload từ một đến ba ảnh của cùng một Character qua `POST /v1/media`, sau đó
+gắn các media ID vào catalog:
+
+```http
+POST /v1/characters
+Content-Type: application/json
+
+{
+  "name": "Luna",
+  "entity_type": "character",
+  "description": "Cô gái trẻ tóc bạc",
+  "voice_description": "Soft curious young female voice",
+  "reference_media_ids": ["media-front", "media-side"]
+}
+```
+
+`reference_media_ids` tối đa ba phần tử và phải là ảnh đã upload qua Provider.
+Có thể tạo Character rỗng rồi thay toàn bộ reference bằng:
+
+```http
+PATCH /v1/characters/{character_id}
+```
+
+```json
+{"reference_media_ids": ["media-new-front", "media-new-side"]}
+```
+
+Ảnh gốc bền vững có thể đọc bằng
+`GET /v1/characters/{character_id}/reference-images/{index}` (index bắt đầu từ
+`0`), kể cả khi signed URL của Flow đã hết hạn. Xóa Character là soft delete;
+job và status cũ vẫn đọc được.
+
+### Tạo ảnh với Character
+
+```http
+POST /v1/characters/{character_id}/images/generations
+```
+
+```json
+{
+  "prompt": "Luna walking through a neon market at night",
+  "model": "pro",
+  "aspect_ratio": "9:16",
+  "variant_count": 1,
+  "reference_media_ids": ["scene-style-reference"]
+}
+```
+
+`reference_media_ids` và `input_images` là tùy chọn, dùng để thêm ảnh tham
+chiếu ngoài cho riêng request này. Provider vẫn tự lấy 1-3 ảnh của Character
+và ghép vào cùng request; tổng số ảnh duy nhất tối đa 8. Các ảnh thêm không
+được ghi vào Character.
+
+Provider snapshot Character, các asset hash, prompt và cấu hình vào job rồi trả
+`202` với Provider job ID. Worker tự resolve/upload reference vào project đích và
+gọi Flow `flowMedia:batchGenerateImages` với
+`IMAGE_INPUT_TYPE_REFERENCE`. Ảnh output là media mới, không thay reference của
+Character.
+
+### Tạo video với Character
+
+```http
+POST /v1/characters/{character_id}/videos/generations
+```
+
+```json
+{
+  "prompt": "Luna walks through the neon market and looks at the signs",
+  "aspect_ratio": "9:16",
+  "duration_seconds": 8,
+  "dialogue": true
+}
+```
+
+Đây là R2V/Omni với một Character và một đến ba ảnh reference; không nhận
+`start_media_id`. Khi `dialogue=true`, `voice_description` được snapshot và nối
+vào prompt; mặc định `dialogue=false`. Video đi qua worker poller Flow, còn
+`POST /v1/jobs/status` chỉ đọc trạng thái trong DB.
+
+Hai endpoint Character luôn trả job có `generation_type` lần lượt là
+`character_image` và `character_video`. Endpoint chung
+`/v1/images/generations` và `/v1/videos/generations` không nhận
+`character_ids`; chúng chỉ dùng các field media/input hiện có.
+
 ## 7. Tạo ảnh
 
 ### Chế độ tự động (khuyến nghị)

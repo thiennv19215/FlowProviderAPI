@@ -139,8 +139,8 @@ def build_runtime(settings) -> Runtime:
         video_slot_capacity=getattr(settings, "account_video_slot_capacity", 3),
         cooldown_seconds=settings.account_rate_limit_cooldown_seconds,
     )
-    projects = ProjectStore(settings.project_store_path)
-    projects.prune()
+    projects = ProjectStore(settings.project_store_path, asset_store_path=settings.asset_store_path)
+    projects.prune(asset_retention_days=settings.asset_retention_days)
     runtime = Runtime(
         settings,
         bridge,

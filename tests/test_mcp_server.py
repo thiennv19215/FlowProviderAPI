@@ -1,8 +1,7 @@
 import base64
 import json
-from pathlib import Path
-
 import tempfile
+from pathlib import Path
 
 import httpx
 from mcp import Client
@@ -32,6 +31,13 @@ async def test_mcp_lists_business_tools():
         "flow_generate_video",
         "flow_get_job_status",
         "flow_get_video_status",
+        "flow_create_character",
+        "flow_list_characters",
+        "flow_get_character",
+        "flow_update_character",
+        "flow_delete_character",
+        "flow_generate_character_image",
+        "flow_generate_character_video",
     }
 
 
@@ -79,6 +85,39 @@ async def test_generate_image_encodes_local_reference_and_maps_agent_values():
             "file_name": image_path.name,
         }]
         assert result.structured_content["metadata"]["x-flow-project-id"] == "projects/managed"
+
+
+async def test_character_tools_use_dedicated_provider_routes():
+    requests = []
+
+    def handler(request: httpx.Request):
+        requests.append((request.method, request.url.path, json.loads(request.content) if request.content else None))
+        return httpx.Response(202, json={"jobs": []})
+
+    server = build_mcp_server(mock_client(handler))
+    async with Client(server) as client:
+        image = await client.call_tool(
+            "flow_generate_character_image",
+            {
+                "character_id": "char_1",
+                "prompt": "portrait",
+                "variant_count": 2,
+                "reference_media_ids": ["scene-style"],
+            },
+        )
+        video = await client.call_tool(
+            "flow_generate_character_video",
+            {"character_id": "char_1", "prompt": "walk", "dialogue": True},
+        )
+
+    assert image.is_error is False
+    assert video.is_error is False
+    assert requests[0][1] == "/v1/characters/char_1/images/generations"
+    assert requests[0][2]["variant_count"] == 2
+    assert requests[0][2]["reference_media_ids"] == ["scene-style"]
+    assert requests[0][2]["input_images"] == []
+    assert requests[1][1] == "/v1/characters/char_1/videos/generations"
+    assert "start_media_id" not in requests[1][2]
 
 
 async def test_provider_error_is_returned_as_model_visible_tool_error():

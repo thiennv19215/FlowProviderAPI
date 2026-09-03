@@ -7,7 +7,7 @@ const PROFILE_KEY = "flow-provider-profile-id-v1";
 const FLOW_TAB_ID_KEY = "flow-provider-flow-tab-id-v1";
 const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
-const ALLOWED_FETCH_HOSTS = ["labs.google", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
+const ALLOWED_FETCH_HOSTS = ["labs.google", "flow.google", "flow.google.com", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
 const AUTH_REFRESH_MS = 5 * 60 * 1000;
 const FLOW_TAB_OPEN_COOLDOWN_MS = 60 * 1000;
 const MAX_ACTIVITY_LOGS = 50;
@@ -38,7 +38,7 @@ async function loadStats() {
       activityState.completedCount = Number(stored[STATS_KEY].completedCount) || 0;
       activityState.errorCount = Number(stored[STATS_KEY].errorCount) || 0;
     }
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function saveStats() {
@@ -48,8 +48,8 @@ function saveStats() {
         completedCount: activityState.completedCount || 0,
         errorCount: activityState.errorCount || 0,
       }
-    }).catch?.(() => {});
-  } catch (_) {}
+    }).catch?.(() => { });
+  } catch (_) { }
 }
 
 function sanitizeLogValue(value, key = "", depth = 0) {
@@ -212,7 +212,7 @@ async function getProfileMeta() {
   }
   const runtimeId = globalThis.navigator?.brave ? "brave" : "chrome";
   let email = "";
-  try { email = (await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }))?.email || ""; } catch (_) {}
+  try { email = (await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }))?.email || ""; } catch (_) { }
   return { runtimeId, profileId, profileName: email || "Browser extension" };
 }
 
@@ -231,7 +231,7 @@ async function fetchLabsSession({ expectedGeneration = null } = {}) {
   const session = await resp.json();
   if (!session?.access_token) throw new Error("labs_access_token_missing");
   let profileEmail = "";
-  try { profileEmail = (await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }))?.email || ""; } catch (_) {}
+  try { profileEmail = (await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" }))?.email || ""; } catch (_) { }
   const sessionEmail = session?.user?.email || "";
   if (profileEmail && sessionEmail && profileEmail.toLowerCase() !== sessionEmail.toLowerCase()) throw new Error("browser_profile_email_mismatch");
   if (requestSequence !== authFetchSequence || (expectedGeneration != null && (requestGeneration !== authGeneration || expectedGeneration !== authGeneration))) return null;
@@ -278,12 +278,37 @@ async function syncAuth(targetSocket = socket) {
   }
 }
 
-async function waitForTab(tabId, timeoutMs = 15000) {
+function isFlowUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  return /^https:\/\/(?:[a-z0-9-]+\.)*(?:labs|flow)\.google(?:\.com)?(\/|$)/i.test(url);
+}
+
+async function waitForTab(tabId, timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs;
+  let reloaded = false;
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (!tab) throw new Error("flow_tab_closed");
-    if (tab.status === "complete" && /^https:\/\/(labs|flow)\.google\//.test(tab.url || "")) return tab;
+    if (tab.discarded && !reloaded && typeof chrome?.tabs?.reload === "function") {
+      reloaded = true;
+      await chrome.tabs.reload(tabId).catch(() => {});
+    }
+    const currentUrl = tab.url || tab.pendingUrl || "";
+    if (isFlowUrl(currentUrl)) {
+      if (tab.status === "complete") return tab;
+      if (chrome?.scripting?.executeScript) {
+        try {
+          const ping = await chrome.scripting.executeScript({
+            target: { tabId },
+            func: () => document.readyState,
+          }).catch(() => null);
+          const state = ping?.[0]?.result;
+          if (state === "interactive" || state === "complete") {
+            return tab;
+          }
+        } catch (_) {}
+      }
+    }
     await new Promise((r) => setTimeout(r, 400));
   }
   throw new Error("flow_tab_timeout");
@@ -292,9 +317,9 @@ async function waitForTab(tabId, timeoutMs = 15000) {
 let openFlowHomeInFlight = null;
 
 async function findOrOpenFlowHome() {
-  const tabs = await chrome.tabs.query({ url: ["https://labs.google/fx/*tools/flow*", "https://flow.google/*"] });
+  const tabs = await chrome.tabs.query({ url: ["https://labs.google/fx/*", "https://labs.google/*flow*", "https://flow.google/*", "https://flow.google.com/*"] });
   const existing = tabs
-    .filter((tab) => tab.id)
+    .filter((tab) => tab.id && isFlowUrl(tab.url || tab.pendingUrl))
     .sort((left, right) => Number(right.status === "complete") - Number(left.status === "complete")
       || Number(right.active) - Number(left.active)
       || Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
@@ -360,50 +385,82 @@ async function openFlowHome({ respectCooldown = false } = {}) {
 }
 
 async function inject(tabId, operation, payload = {}) {
-  await waitForTab(tabId);
-  const results = await chrome.scripting.executeScript({
-    target: { tabId }, world: "MAIN", args: [{ operation, payload }],
-    func: async ({ operation, payload }) => {
-      if (operation === "recaptcha") {
-        let siteKey = payload.fallbackKey;
-        for (const script of document.querySelectorAll('script[src*="recaptcha"]')) {
-          const match = script.src.match(/[?&]render=([^&]+)/);
-          if (match && match[1] !== "explicit") { siteKey = match[1]; break; }
-        }
-        if (!siteKey) throw new Error("recaptcha_site_key_missing");
-        const token = await new Promise((resolve, reject) => {
-          const deadline = Date.now() + 30000;
-          const check = () => {
-            if (Date.now() > deadline) return reject(new Error("recaptcha_timeout"));
-            if (globalThis.grecaptcha?.enterprise) grecaptcha.enterprise.ready(() => grecaptcha.enterprise.execute(siteKey, { action: payload.action || "IMAGE_GENERATION" }).then(resolve).catch(reject));
-            else setTimeout(check, 400);
-          };
-          check();
-        });
-        return { ok: true, data: token };
-      }
-      if (operation === "pageFetch") {
-        const spec = payload.spec || {};
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), spec.timeoutMs || 45000);
+  await waitForTab(tabId, 20000);
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      args: [{ operation, payload }],
+      func: async ({ operation, payload }) => {
         try {
-          const resp = await fetch(spec.url, { method: spec.method || "GET", headers: spec.headers || {}, body: spec.body, credentials: "include", signal: controller.signal });
-          const type = spec.responseType || ((resp.headers.get("content-type") || "").includes("json") ? "json" : "text");
-          const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url, headers: Object.fromEntries(resp.headers.entries()) };
-          if (type === "json") {
-            const text = await resp.text().catch(() => "");
-            try { out.data = text ? JSON.parse(text) : null; }
-            catch (_) { out.text = text; }
+          if (operation === "recaptcha") {
+            let siteKey = payload.fallbackKey;
+            for (const script of document.querySelectorAll('script[src*="recaptcha"]')) {
+              const match = script.src.match(/[?&]render=([^&]+)/);
+              if (match && match[1] !== "explicit") { siteKey = match[1]; break; }
+            }
+            if (!siteKey) throw new Error("recaptcha_site_key_missing");
+            const token = await new Promise((resolve, reject) => {
+              const deadline = Date.now() + 30000;
+              const check = () => {
+                if (Date.now() > deadline) return reject(new Error("recaptcha_timeout"));
+                if (globalThis.grecaptcha?.enterprise) grecaptcha.enterprise.ready(() => grecaptcha.enterprise.execute(siteKey, { action: payload.action || "IMAGE_GENERATION" }).then(resolve).catch(reject));
+                else setTimeout(check, 400);
+              };
+              check();
+            });
+            return { ok: true, data: token };
           }
-          else if (type !== "none") out.text = await resp.text().catch(() => "");
-          return { ok: true, data: out };
-        } finally { clearTimeout(timer); }
-      }
-      throw new Error(`unsupported_injection:${operation}`);
-    },
-  });
+          if (operation === "pageFetch") {
+            const spec = payload.spec || {};
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), spec.timeoutMs || 45000);
+            try {
+              const resp = await fetch(spec.url, {
+                method: spec.method || "GET",
+                headers: spec.headers || {},
+                body: spec.body,
+                credentials: "include",
+                signal: controller.signal,
+              });
+              const type = spec.responseType || ((resp.headers.get("content-type") || "").includes("json") ? "json" : "text");
+              const out = { ok: resp.ok, status: resp.status, finalUrl: resp.url, headers: Object.fromEntries(resp.headers.entries()) };
+              if (type === "json") {
+                const text = await resp.text().catch(() => "");
+                try { out.data = text ? JSON.parse(text) : null; }
+                catch (_) { out.text = text; }
+              }
+              else if (type !== "none") out.text = await resp.text().catch(() => "");
+              return { ok: true, data: out };
+            } catch (fetchErr) {
+              return { ok: false, error: fetchErr?.message || String(fetchErr) };
+            } finally {
+              clearTimeout(timer);
+            }
+          }
+          throw new Error(`unsupported_injection:${operation}`);
+        } catch (err) {
+          return { ok: false, error: err?.message || String(err) };
+        }
+      },
+    });
+  } catch (executeError) {
+    if (operation === "pageFetch" && payload.spec) {
+      appendActivity("Page fetch fallback to SW", "info", executeError?.message || "scripting_failed");
+      return await swFetch(payload.spec);
+    }
+    throw new Error(`execute_script_failed: ${executeError?.message || executeError}`);
+  }
+
   const result = results?.[0]?.result;
-  if (!result?.ok) throw new Error(result?.error || "injection_failed");
+  if (!result?.ok) {
+    if (operation === "pageFetch" && payload.spec) {
+      appendActivity("Page fetch fallback to SW", "info", result?.error || "page_fetch_failed");
+      return await swFetch(payload.spec);
+    }
+    throw new Error(result?.error || "injection_failed");
+  }
   return result.data;
 }
 
@@ -471,7 +528,7 @@ function scheduleReconnect() {
   reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
   try {
     chrome.alarms.create("reconnect", { delayInMinutes: Math.max(0.05, delay / 60000) });
-  } catch (_) {}
+  } catch (_) { }
 }
 
 function disconnect() {
@@ -479,10 +536,10 @@ function disconnect() {
   connectInFlight = null;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = null;
-  try { chrome.alarms.clear("reconnect"); } catch (_) {}
+  try { chrome.alarms.clear("reconnect"); } catch (_) { }
   const oldSocket = socket;
   socket = null;
-  if (oldSocket) { try { oldSocket.close(); } catch (_) {} }
+  if (oldSocket) { try { oldSocket.close(); } catch (_) { } }
   cachedBearer = null;
   cachedBearerAt = 0;
   lastAuthSyncAt = 0;
@@ -494,7 +551,7 @@ async function connectOnce(epoch) {
   if (socket && [WebSocket.OPEN, WebSocket.CONNECTING].includes(socket.readyState)) return;
   try {
     chrome.alarms.clear("reconnect");
-  } catch (_) {}
+  } catch (_) { }
   try {
     const config = await getConnectionConfig();
     if (epoch !== connectionEpoch) return;
@@ -599,7 +656,7 @@ async function connect() {
 
 async function keepAlive() {
   if (socket?.readyState === WebSocket.OPEN) {
-    try { socket.send(JSON.stringify({ type: "ping" })); } catch (_) {}
+    try { socket.send(JSON.stringify({ type: "ping" })); } catch (_) { }
     if (Date.now() - lastAuthSyncAt >= AUTH_REFRESH_MS) await syncAuth(socket);
     return;
   }
@@ -608,10 +665,12 @@ async function keepAlive() {
 
 async function setupDnr() {
   try {
-    await chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: [1201, 1202], addRules: [
-      { id: 1201, priority: 1, action: { type: "modifyHeaders", requestHeaders: [{ header: "origin", operation: "set", value: "https://labs.google" }, { header: "referer", operation: "set", value: "https://labs.google/" }] }, condition: { urlFilter: "aisandbox-pa.googleapis.com", excludedInitiatorDomains: ["labs.google"], resourceTypes: ["xmlhttprequest"] } },
-      { id: 1202, priority: 1, action: { type: "modifyHeaders", requestHeaders: [{ header: "origin", operation: "set", value: "https://labs.google" }, { header: "referer", operation: "set", value: "https://labs.google/fx/tools/flow" }] }, condition: { urlFilter: "labs.google/fx/api/trpc/", excludedInitiatorDomains: ["labs.google"], resourceTypes: ["xmlhttprequest"] } }
-    ] });
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [1201, 1202], addRules: [
+        { id: 1201, priority: 1, action: { type: "modifyHeaders", requestHeaders: [{ header: "origin", operation: "set", value: "https://labs.google" }, { header: "referer", operation: "set", value: "https://labs.google/" }] }, condition: { urlFilter: "aisandbox-pa.googleapis.com", excludedInitiatorDomains: ["labs.google"], resourceTypes: ["xmlhttprequest"] } },
+        { id: 1202, priority: 1, action: { type: "modifyHeaders", requestHeaders: [{ header: "origin", operation: "set", value: "https://labs.google" }, { header: "referer", operation: "set", value: "https://labs.google/fx/tools/flow" }] }, condition: { urlFilter: "labs.google/fx/api/trpc/", excludedInitiatorDomains: ["labs.google"], resourceTypes: ["xmlhttprequest"] } }
+      ]
+    });
   } catch (error) { appendActivity("Network rules failed", "error", error?.message || error); }
 }
 
@@ -646,7 +705,7 @@ async function initialize() {
   await setupDnr();
   try {
     chrome.alarms.create("keepAlive", { periodInMinutes: 0.4 });
-  } catch (_) {}
+  } catch (_) { }
   await connect();
 }
 

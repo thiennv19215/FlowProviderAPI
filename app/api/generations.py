@@ -1016,6 +1016,20 @@ async def upload_image(
     routing_scope: str | None = Header(default=None, alias=ROUTING_SCOPE_HEADER),
 ) -> Response:
     runtime = request.app.state.runtime
+    # Validate and persist the caller-owned bytes before routing to Flow. This
+    # makes the local asset store the durable source of truth even when Flow is
+    # temporarily unavailable, and avoids reporting account availability for a
+    # malformed image payload.
+    digest = _image_digest(payload.image_base64)
+    try:
+        stored_digest, _asset_path, asset_size = runtime.projects.asset_store.put_base64(
+            payload.image_base64, payload.mime_type,
+        )
+    except ValueError as exc:
+        raise APIError(422, "INVALID_IMAGE", str(exc)) from exc
+    if stored_digest != digest:
+        raise APIError(422, "INVALID_IMAGE", "Image digest could not be verified.")
+    runtime.projects.record_asset(digest, payload.mime_type, asset_size, payload.file_name)
     excluded_account_keys = {
         account_key
         for project_id in payload.excluded_project_ids
@@ -1029,7 +1043,6 @@ async def upload_image(
         excluded_account_keys=excluded_account_keys,
     )
     resolved_project_id = payload.project_id or await _managed_project(runtime, connection, client)
-    digest = _image_digest(payload.image_base64)
     account_key = _account_key(connection)
     async with runtime.media_lock(account_key, resolved_project_id, digest):
         cached = runtime.projects.get_media(account_key, resolved_project_id, digest)
@@ -1124,6 +1137,8 @@ def _normalize_job_media(job: Any) -> list[dict]:
 
 
 def _normalize_generation_type(gen_type: str | None, media_type: str | None) -> str:
+    if gen_type in {"character_image", "character_video"}:
+        return gen_type
     if gen_type in {"r2v", "omni_r2v", "omni", "reference_to_video", "ingredients", "references"}:
         return "reference_to_video"
     if gen_type in {"i2v", "omni_i2v", "image_to_video", "start_to_video", "frames_to_video", "frames"}:

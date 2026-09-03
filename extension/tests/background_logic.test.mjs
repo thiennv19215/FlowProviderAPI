@@ -31,24 +31,26 @@ function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig =
   }
 
   const chrome = {
-    storage: { local: {
-      get: async (keys) => {
-        if (typeof keys === 'string') return { [keys]: storage[keys] };
-        if (Array.isArray(keys)) return Object.fromEntries(keys.map((key) => [key, storage[key]]));
-        return { ...storage };
-      },
-      set: async (values) => Object.assign(storage, values),
-      remove: async (keys) => {
-        for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key];
-      },
-    } },
+    storage: {
+      local: {
+        get: async (keys) => {
+          if (typeof keys === 'string') return { [keys]: storage[keys] };
+          if (Array.isArray(keys)) return Object.fromEntries(keys.map((key) => [key, storage[key]]));
+          return { ...storage };
+        },
+        set: async (values) => Object.assign(storage, values),
+        remove: async (keys) => {
+          for (const key of Array.isArray(keys) ? keys : [keys]) delete storage[key];
+        },
+      }
+    },
     permissions: { contains: async () => true, request: async () => true },
     identity: { getProfileUserInfo: async () => ({ email: '' }) },
     runtime: {
       getManifest: () => ({ version: '1.0.0' }),
-      onMessage: { addListener: () => {} },
-      onInstalled: { addListener: () => {} },
-      onStartup: { addListener: () => {} },
+      onMessage: { addListener: () => { } },
+      onInstalled: { addListener: () => { } },
+      onStartup: { addListener: () => { } },
     },
     tabs: {
       query: async () => [],
@@ -60,15 +62,15 @@ function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig =
       create: async () => ({ id: 1, tabs: [{ id: 1 }] }),
     },
     scripting: { executeScript: async () => [{ result: { ok: true, data: 'token' } }] },
-    declarativeNetRequest: { updateDynamicRules: async () => {} },
-    webRequest: { onBeforeRequest: { addListener: () => {} } },
+    declarativeNetRequest: { updateDynamicRules: async () => { } },
+    webRequest: { onBeforeRequest: { addListener: () => { } } },
   };
 
   const context = {
     self: extensionConfig ? { FLOW_PROVIDER_EXTENSION_CONFIG: extensionConfig } : {}, chrome, WebSocket: MockWebSocket,
     URL, AbortController, Uint8Array, TextEncoder,
     btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
-    setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => {},
+    setTimeout, clearTimeout, setInterval: () => 1, clearInterval: () => { },
     console: {
       info: (...args) => consoleEvents.push({ level: 'info', args }),
       warn: (...args) => consoleEvents.push({ level: 'warn', args }),
@@ -272,11 +274,13 @@ test('CANCEL_RPC aborts an in-flight SW_FETCH', async () => {
   const ws = h.sockets[0];
   ws.readyState = h.context.WebSocket.OPEN;
 
-  const rpcPromise = ws.onmessage({ data: JSON.stringify({
-    id: 'rpc-1',
-    type: 'SW_FETCH',
-    spec: { url: 'https://aisandbox-pa.googleapis.com/v1/test', method: 'GET', timeoutMs: 60000 },
-  }) });
+  const rpcPromise = ws.onmessage({
+    data: JSON.stringify({
+      id: 'rpc-1',
+      type: 'SW_FETCH',
+      spec: { url: 'https://aisandbox-pa.googleapis.com/v1/test', method: 'GET', timeoutMs: 60000 },
+    })
+  });
   await flush();
   assert.equal(h.fetchSignals.length, 1);
   assert.equal(h.fetchSignals[0].aborted, false);
@@ -293,11 +297,13 @@ test('unexpected websocket close aborts every in-flight RPC before reconnecting'
   const ws = h.sockets[0];
   ws.readyState = h.context.WebSocket.OPEN;
 
-  const rpcPromise = ws.onmessage({ data: JSON.stringify({
-    id: 'rpc-close',
-    type: 'SW_FETCH',
-    spec: { url: 'https://aisandbox-pa.googleapis.com/v1/test', method: 'GET', timeoutMs: 60000 },
-  }) });
+  const rpcPromise = ws.onmessage({
+    data: JSON.stringify({
+      id: 'rpc-close',
+      type: 'SW_FETCH',
+      spec: { url: 'https://aisandbox-pa.googleapis.com/v1/test', method: 'GET', timeoutMs: 60000 },
+    })
+  });
   await flush();
   assert.equal(h.fetchSignals.length, 1);
   assert.equal(h.fetchSignals[0].aborted, false);
@@ -374,7 +380,7 @@ test('backend handshake is sent before a Flow tab finishes loading', async () =>
   await flush();
   h.context.chrome.tabs.query = async () => [];
   h.context.chrome.tabs.create = async () => ({ id: 88 });
-  h.context.chrome.tabs.get = async () => await new Promise(() => {});
+  h.context.chrome.tabs.get = async () => await new Promise(() => { });
 
   const ws = h.sockets[0];
   ws.readyState = h.context.WebSocket.OPEN;

@@ -21,6 +21,9 @@ from app.api.schemas import MAX_BASE64_TOTAL_CHARS
 ImageModel = Literal["pro", "v2"]
 ImageAspect = Literal["1:1", "16:9", "9:16"]
 VideoAspect = Literal["16:9", "9:16"]
+CharacterEntity = Literal[
+    "character", "location", "creature", "visual_asset", "generic_troop", "faction",
+]
 VideoQuality = Literal["lite", "fast", "quality", "lite_relaxed", "fast_relaxed"]
 VideoType = Literal[
     "frames_to_video",
@@ -142,7 +145,7 @@ class FlowProviderClient:
 
     async def request(
         self,
-        method: Literal["GET", "POST"],
+        method: Literal["GET", "POST", "PATCH", "DELETE"],
         path: str,
         *,
         body: dict[str, Any] | None = None,
@@ -168,10 +171,13 @@ class FlowProviderClient:
         except httpx.RequestError as exc:
             raise ToolError(f"Cannot reach FlowProviderAPI: {exc}") from exc
 
-        try:
-            decoded = response.json()
-        except ValueError:
-            decoded = {"raw": response.text[:4000]}
+        if response.status_code == 204 and not response.content:
+            decoded = {}
+        else:
+            try:
+                decoded = response.json()
+            except ValueError:
+                decoded = {"raw": response.text[:4000]}
         data = decoded if isinstance(decoded, dict) else {"value": decoded}
         metadata = {
             name: value
@@ -289,7 +295,9 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
             "project_id is omitted. Image and video generation both return Provider job ids; read them "
             "with flow_get_job_status until status is complete or failed. For image-to-video, reuse the "
             "completed image media id and project_id. Never create a second paid video "
-            "while a job is queued or running. Generated URLs can expire, so download completed outputs promptly."
+            "while a job is queued or running. For Character workflows, upload 1-3 images, create a Character, "
+            "then call the dedicated Character image/video tool; those tools snapshot references in the DB. "
+            "Generated URLs can expire, so download completed outputs promptly."
         ),
         lifespan=lifespan,
     )
@@ -365,6 +373,124 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
             "POST",
             "/v1/images/generations",
             body=body,
+            routing_scope=routing_scope,
+        )
+
+    @server.tool(title="Create a Character", annotations=mutating)
+    async def flow_create_character(
+        name: Annotated[str, Field(min_length=1, max_length=200)],
+        entity_type: CharacterEntity = "character",
+        description: str | None = None,
+        image_prompt: str | None = None,
+        voice_description: str | None = None,
+        image_model: ImageModel = "pro",
+        aspect_ratio: ImageAspect | None = None,
+        reference_media_ids: list[str] | None = None,
+    ) -> FlowToolResult:
+        """Create a reusable Character catalog entry from up to three uploaded image media IDs."""
+        media_ids = reference_media_ids or []
+        if len(media_ids) > 3:
+            raise ToolError("A Character accepts at most 3 reference media IDs")
+        return await provider.request(
+            "POST", "/v1/characters", body={
+                "name": name, "entity_type": entity_type, "description": description,
+                "image_prompt": image_prompt, "voice_description": voice_description,
+                "image_model": image_model, "aspect_ratio": aspect_ratio,
+                "reference_media_ids": media_ids,
+            },
+        )
+
+    @server.tool(title="List Characters", annotations=read_only)
+    async def flow_list_characters(
+        entity_type: CharacterEntity | None = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 50,
+        offset: Annotated[int, Field(ge=0)] = 0,
+    ) -> FlowToolResult:
+        """List active reusable Character catalog entries."""
+        return await provider.request(
+            "GET", "/v1/characters",
+            params={"entity_type": entity_type, "limit": limit, "offset": offset},
+        )
+
+    @server.tool(title="Get Character", annotations=read_only)
+    async def flow_get_character(character_id: str) -> FlowToolResult:
+        """Get one reusable Character catalog entry."""
+        return await provider.request("GET", f"/v1/characters/{character_id}")
+
+    @server.tool(title="Update Character", annotations=mutating)
+    async def flow_update_character(
+        character_id: str,
+        name: str | None = None,
+        entity_type: CharacterEntity | None = None,
+        description: str | None = None,
+        image_prompt: str | None = None,
+        voice_description: str | None = None,
+        image_model: ImageModel | None = None,
+        aspect_ratio: ImageAspect | None = None,
+        reference_media_ids: list[str] | None = None,
+    ) -> FlowToolResult:
+        """Update Character metadata or replace its 1-3 reference images."""
+        if reference_media_ids is not None and len(reference_media_ids) > 3:
+            raise ToolError("A Character accepts at most 3 reference media IDs")
+        body = {
+            key: value for key, value in {
+                "name": name, "entity_type": entity_type, "description": description, "image_prompt": image_prompt,
+                "voice_description": voice_description, "image_model": image_model,
+                "aspect_ratio": aspect_ratio, "reference_media_ids": reference_media_ids,
+            }.items() if value is not None
+        }
+        return await provider.request("PATCH", f"/v1/characters/{character_id}", body=body)
+
+    @server.tool(title="Delete Character", annotations=mutating)
+    async def flow_delete_character(character_id: str) -> FlowToolResult:
+        """Soft-delete a Character catalog entry without deleting its job history."""
+        return await provider.request("DELETE", f"/v1/characters/{character_id}")
+
+    @server.tool(title="Generate an image with a Character", annotations=mutating)
+    async def flow_generate_character_image(
+        character_id: str,
+        prompt: Annotated[str, Field(min_length=1, max_length=12000)],
+        model: ImageModel | None = None,
+        aspect_ratio: ImageAspect | None = None,
+        variant_count: Annotated[int, Field(ge=1, le=4)] = 1,
+        image_paths: list[str] | None = None,
+        reference_media_ids: list[str] | None = None,
+        project_id: str | None = None,
+        routing_scope: str | None = None,
+    ) -> FlowToolResult:
+        """Queue image generation using Character references plus optional extra images."""
+        paths = image_paths or []
+        media_ids = reference_media_ids or []
+        if len(paths) + len(media_ids) > 8:
+            raise ToolError("Use at most 8 extra reference images and media IDs in total")
+        return await provider.request(
+            "POST", f"/v1/characters/{character_id}/images/generations", body={
+                "prompt": prompt, "model": model, "aspect_ratio": aspect_ratio,
+                "project_id": project_id,
+                "variant_count": variant_count,
+                "reference_media_ids": media_ids,
+                "input_images": await _encode_images(paths, provider.settings.allowed_root_paths),
+            },
+            routing_scope=routing_scope,
+        )
+
+    @server.tool(title="Generate a video with a Character", annotations=paid_mutating)
+    async def flow_generate_character_video(
+        character_id: str,
+        prompt: Annotated[str, Field(min_length=1, max_length=12000)],
+        aspect_ratio: VideoAspect = "9:16",
+        duration_seconds: Literal[4, 6, 8, 10] = 8,
+        dialogue: bool = False,
+        project_id: str | None = None,
+        routing_scope: str | None = None,
+    ) -> FlowToolResult:
+        """Queue a paid R2V video using up to three reference images of one Character."""
+        return await provider.request(
+            "POST", f"/v1/characters/{character_id}/videos/generations", body={
+                "prompt": prompt, "aspect_ratio": aspect_ratio,
+                "duration_seconds": duration_seconds, "dialogue": dialogue,
+                "project_id": project_id,
+            },
             routing_scope=routing_scope,
         )
 

@@ -17,6 +17,7 @@ from app.api.errors import (
     unexpected_error_handler,
     validation_error_handler,
 )
+from app.api.characters import router as characters_router
 from app.api.health import router as health_router
 from app.api.generations import router as generations_router
 from app.config import Settings, get_settings
@@ -177,7 +178,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(StarletteHTTPException, http_error_handler)
     app.add_exception_handler(Exception, unexpected_error_handler)
-    for router in (health_router, generations_router, extension_router):
+    for router in (health_router, generations_router, characters_router, extension_router):
         app.include_router(router)
     return app
 

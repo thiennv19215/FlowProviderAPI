@@ -105,6 +105,86 @@ class ImageGenerationRequest(BaseModel):
         return self
 
 
+ENTITY_TYPES = Literal[
+    "character", "location", "creature", "visual_asset", "generic_troop", "faction",
+]
+
+
+class CharacterCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200)
+    entity_type: ENTITY_TYPES = "character"
+    description: str | None = Field(default=None, max_length=5000)
+    image_prompt: str | None = Field(default=None, max_length=12000)
+    voice_description: str | None = Field(default=None, max_length=200)
+    image_model: Literal["pro", "v2"] = "pro"
+    aspect_ratio: Literal["1:1", "16:9", "9:16"] | None = None
+    reference_media_ids: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=3,
+    )
+
+
+class CharacterUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    entity_type: ENTITY_TYPES | None = None
+    description: str | None = Field(default=None, max_length=5000)
+    image_prompt: str | None = Field(default=None, max_length=12000)
+    voice_description: str | None = Field(default=None, max_length=200)
+    image_model: Literal["pro", "v2"] | None = None
+    aspect_ratio: Literal["1:1", "16:9", "9:16"] | None = None
+    reference_media_ids: list[Annotated[str, Field(min_length=1, max_length=500)]] | None = Field(
+        default=None, max_length=3,
+    )
+
+
+class CharacterResponse(BaseModel):
+    id: str
+    name: str
+    entity_type: ENTITY_TYPES
+    description: str | None = None
+    image_prompt: str | None = None
+    voice_description: str | None = None
+    image_model: Literal["pro", "v2"] = "pro"
+    aspect_ratio: Literal["1:1", "16:9", "9:16"] | None = None
+    reference_media_ids: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class CharacterImageGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+    prompt: str = Field(min_length=1, max_length=12000)
+    project_id: str | None = Field(default=None, min_length=1, max_length=500)
+    model: Literal["pro", "v2"] | None = None
+    aspect_ratio: Literal["1:1", "16:9", "9:16"] | None = None
+    variant_count: int = Field(default=1, ge=1, le=4)
+    # Character references are added by the Provider automatically. These
+    # optional inputs let a caller add scene/style references for this one
+    # generation without changing the Character catalog.
+    reference_media_ids: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(
+        default_factory=list, max_length=8,
+    )
+    input_images: list[InlineImageInput] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_references(self):
+        if len(self.reference_media_ids) + len(self.input_images) > 8:
+            raise ValueError("reference_media_ids and input_images may contain at most 8 images in total")
+        if sum(len(image.image_base64) for image in self.input_images) > MAX_BASE64_TOTAL_CHARS:
+            raise ValueError("input_images may contain at most 64 MiB of Base64 data in total")
+        return self
+
+
+class CharacterVideoGenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_default=True)
+    prompt: str = Field(min_length=1, max_length=12000)
+    project_id: str | None = Field(default=None, min_length=1, max_length=500)
+    aspect_ratio: Literal["16:9", "9:16"] = "9:16"
+    duration_seconds: Literal[4, 6, 8, 10] = 8
+    dialogue: bool = False
+
+
 class ImageToVideoGenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_default=True)
     type: Literal["frames_to_video", "frames", "start_to_video", "image_to_video", "i2v", "omni_i2v"]
@@ -231,7 +311,9 @@ class Job(BaseModel):
     id: str
     provider: str = "google_flow"
     type: Literal["image", "video"]
-    generation_type: Literal["image", "frames_to_video", "reference_to_video"] | str = "image"
+    generation_type: Literal[
+        "image", "frames_to_video", "reference_to_video", "character_image", "character_video",
+    ] | str = "image"
     status: Literal["queued", "running", "complete", "failed"]
     media: list[GeneratedMedia] = Field(default_factory=list)
     error: JobError | None = None

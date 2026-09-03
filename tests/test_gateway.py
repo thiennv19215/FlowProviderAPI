@@ -64,6 +64,10 @@ def test_public_surface_is_a_fixed_flow_facade():
     assert set(application.openapi()["paths"]) == {
         "/v1/media", "/v1/images/generations",
         "/v1/videos/generations", "/v1/jobs/status",
+        "/v1/characters", "/v1/characters/{character_id}",
+        "/v1/characters/{character_id}/reference-images/{index}",
+        "/v1/characters/{character_id}/images/generations",
+        "/v1/characters/{character_id}/videos/generations",
     }
     with TestClient(application) as client:
         assert client.post("/v1/proxy", headers=headers(), json={}).status_code == 404

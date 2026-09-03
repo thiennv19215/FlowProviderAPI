@@ -24,6 +24,7 @@
   "host_permissions": [
     "https://labs.google/*",
     "https://flow.google/*",
+    "https://flow.google.com/*",
     "https://aisandbox-pa.googleapis.com/*",
     "https://flow-content.google/*",
     "https://storage.googleapis.com/*",
