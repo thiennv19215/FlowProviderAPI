@@ -1256,7 +1256,10 @@ class ProjectStore:
             # Claiming must be one SQLite transaction.  The worker performs
             # network I/O after this method returns, so a plain SELECT would
             # let two worker processes dispatch the same paid job.
-            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                pass
             row = db.execute(
                 """
                 SELECT * FROM provider_jobs
@@ -1582,7 +1585,10 @@ class ProjectStore:
         """Atomically lease due polling work so multiple workers do not duplicate polls."""
         with self._lock:
             db = self._db()
-            db.execute("BEGIN IMMEDIATE")
+            try:
+                db.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError:
+                pass
             rows = db.execute(
                 """
                 SELECT job_id FROM provider_jobs
