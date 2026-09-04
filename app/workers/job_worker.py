@@ -220,19 +220,19 @@ class JobWorker:
             and self.runtime.can_reserve(conn, cost, job_type=job.media_type)
         ]
         if not available:
-            if not job.google_project_id and has_inline_assets:
-                fallback_conns = [
-                    c for c in ready_conns
-                    if self.runtime.can_reserve(c, cost, job_type=job.media_type)
-                ]
-                if fallback_conns:
-                    logger.warning(
-                        "Assigned account '%s' cannot serve inline job %s (insufficient credits or offline). "
-                        "Auto-failing over to a ready account with sufficient credits.",
-                        job.installation_id,
-                        job.job_id,
-                    )
-                    available = fallback_conns
+            fallback_conns = [
+                c for c in ready_conns
+                if self.runtime.can_reserve(c, cost, job_type=job.media_type)
+            ]
+            if fallback_conns:
+                logger.warning(
+                    "Assigned account '%s' cannot serve job %s (insufficient credits or offline). "
+                    "Auto-failing over to a ready account with sufficient credits (%d candidate accounts).",
+                    job.installation_id or project_owner,
+                    job.job_id,
+                    len(fallback_conns),
+                )
+                available = fallback_conns
 
         if not available:
             from datetime import datetime, timezone
@@ -246,26 +246,24 @@ class JobWorker:
                 except Exception:
                     job_age_seconds = 0.0
 
-            target_inst = job.installation_id or project_owner
-            if target_inst:
-                matching_conns = [
-                    c for c in ready_conns
-                    if _account_key(c) == target_inst or c.installation_id == target_inst
-                ]
-                if not matching_conns:
+            if not ready_conns:
+                if job_age_seconds > 30:
                     self.runtime.projects.update_job_failed(
                         job.job_id,
-                        f"Assigned account '{target_inst}' is not connected.",
+                        "No Google Flow extension accounts are currently connected.",
                         claim_token,
-                        error_code="ACCOUNT_OFFLINE",
+                        error_code="NO_CONNECTED_ACCOUNTS",
                     )
                     return
-                target_conn = matching_conns[0]
-                avail = self.runtime.available_credits(target_conn)
-                if avail is not None and cost > 0 and avail < cost:
+            else:
+                accounts_with_credits = [
+                    c for c in ready_conns
+                    if (self.runtime.available_credits(c) is None or self.runtime.available_credits(c) >= cost)
+                ]
+                if not accounts_with_credits and cost > 0:
                     self.runtime.projects.update_job_failed(
                         job.job_id,
-                        f"Assigned account has insufficient credits ({avail} available, {cost} required).",
+                        f"All {len(ready_conns)} connected accounts have insufficient credits for this job ({cost} credits required).",
                         claim_token,
                         error_code="INSUFFICIENT_CREDITS",
                     )
@@ -273,42 +271,11 @@ class JobWorker:
                 if job_age_seconds > 300:
                     self.runtime.projects.update_job_failed(
                         job.job_id,
-                        f"Job timed out waiting for assigned account '{target_inst}' to become free.",
+                        "Job timed out waiting for an available account slot.",
                         claim_token,
                         error_code="QUEUE_TIMEOUT",
                     )
                     return
-            else:
-                if not ready_conns:
-                    if job_age_seconds > 30:
-                        self.runtime.projects.update_job_failed(
-                            job.job_id,
-                            "No Google Flow extension accounts are currently connected.",
-                            claim_token,
-                            error_code="NO_CONNECTED_ACCOUNTS",
-                        )
-                        return
-                else:
-                    accounts_with_credits = [
-                        c for c in ready_conns
-                        if (self.runtime.available_credits(c) is None or self.runtime.available_credits(c) >= cost)
-                    ]
-                    if not accounts_with_credits and cost > 0:
-                        self.runtime.projects.update_job_failed(
-                            job.job_id,
-                            f"All {len(ready_conns)} connected accounts have insufficient credits for this job ({cost} credits required).",
-                            claim_token,
-                            error_code="INSUFFICIENT_CREDITS",
-                        )
-                        return
-                    if job_age_seconds > 300:
-                        self.runtime.projects.update_job_failed(
-                            job.job_id,
-                            "Job timed out waiting for an available account slot.",
-                            claim_token,
-                            error_code="QUEUE_TIMEOUT",
-                        )
-                        return
 
             self.runtime.projects.release_job_claim(job.job_id, claim_token)
             return
@@ -332,9 +299,17 @@ class JobWorker:
             )
             from app.providers.google_flow.sdk.helpers import client_context
 
-            resolved_project_id = job.google_project_id or await _managed_project(
-                self.runtime, connection, client
+            project_owner = (
+                self.runtime.projects.installation_for_project(job.google_project_id)
+                if job.google_project_id
+                else None
             )
+            if not job.google_project_id or (project_owner and project_owner != account_key):
+                resolved_project_id = await _managed_project(
+                    self.runtime, connection, client
+                )
+            else:
+                resolved_project_id = job.google_project_id
             tier = connection.paygate_tier or "PAYGATE_TIER_ONE"
             ctx = client_context(resolved_project_id, tier)
 
@@ -433,10 +408,74 @@ class JobWorker:
                     reference_media_ids.extend(uploaded_ids)
                 elif _is_omni_generation(job.generation_type):
                     payload["reference_media_ids"] = list(payload.get("reference_media_ids") or []) + uploaded_ids
-                elif _is_frames_generation(job.generation_type) and not payload.get("start_media_id") and uploaded_ids:
+                elif _is_frames_generation(job.generation_type) and uploaded_ids:
                     payload["start_media_id"] = uploaded_ids[0]
-                    if len(uploaded_ids) > 1 and not payload.get("end_media_id"):
+                    if len(uploaded_ids) > 1:
                         payload["end_media_id"] = uploaded_ids[1]
+
+            from app.api.generations import _known_media, _rehydrate_media_ids
+
+            all_referenced_mids: list[str] = []
+            if payload.get("start_media_id"):
+                all_referenced_mids.append(payload["start_media_id"])
+            if payload.get("end_media_id"):
+                all_referenced_mids.append(payload["end_media_id"])
+            for mid in (payload.get("reference_media_ids") or []):
+                if isinstance(mid, str) and mid not in all_referenced_mids:
+                    all_referenced_mids.append(mid)
+            if reference_media_ids:
+                for mid in reference_media_ids:
+                    if isinstance(mid, str) and mid not in all_referenced_mids:
+                        all_referenced_mids.append(mid)
+
+            if all_referenced_mids:
+                known = _known_media(self.runtime, all_referenced_mids)
+                mids_needing_transfer = [
+                    mid for mid in all_referenced_mids
+                    if mid in known and (
+                        known[mid].installation_id != account_key
+                        or known[mid].google_project_id != resolved_project_id
+                    )
+                ]
+                if mids_needing_transfer:
+                    logger.info(
+                        "Rehydrating %d referenced media IDs across accounts to account %s, project %s",
+                        len(mids_needing_transfer),
+                        account_key,
+                        resolved_project_id,
+                    )
+                    try:
+                        rehydrated = await _rehydrate_media_ids(
+                            self.runtime,
+                            connection,
+                            client,
+                            mids_needing_transfer,
+                            resolved_project_id,
+                            known,
+                        )
+                        rehydrate_map = dict(zip(mids_needing_transfer, rehydrated, strict=True))
+                        if payload.get("start_media_id") in rehydrate_map:
+                            payload["start_media_id"] = rehydrate_map[payload["start_media_id"]]
+                        if payload.get("end_media_id") in rehydrate_map:
+                            payload["end_media_id"] = rehydrate_map[payload["end_media_id"]]
+                        if payload.get("reference_media_ids"):
+                            payload["reference_media_ids"] = [
+                                rehydrate_map.get(mid, mid) for mid in payload["reference_media_ids"]
+                            ]
+                        if reference_media_ids:
+                            reference_media_ids = [
+                                rehydrate_map.get(mid, mid) for mid in reference_media_ids
+                            ]
+                    except Exception as exc:
+                        logger.error("Failed to rehydrate cross-account media: %s", exc)
+                        self.runtime.projects.update_job_failed(
+                            job.job_id,
+                            f"Cross-account media rehydration failed: {exc}",
+                            claim_token,
+                            error_code="MEDIA_REHYDRATION_FAILED",
+                            retryable=True,
+                        )
+                        return
 
             if job.media_type == "image":
                 requests = []

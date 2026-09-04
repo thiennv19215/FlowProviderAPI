@@ -108,11 +108,13 @@ def _connection(
     if routing_scope:
         scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope)
         if required_account_key and scoped_account_key != required_account_key:
-            raise APIError(
-                409,
-                "MEDIA_ACCOUNT_MISMATCH",
-                "The routing scope does not own the referenced media.",
-            )
+            has_with_credits = any(runtime.can_reserve(item, min_credits) for item in available)
+            if not has_with_credits:
+                raise APIError(
+                    409,
+                    "MEDIA_ACCOUNT_MISMATCH",
+                    "The routing scope does not own the referenced media.",
+                )
         connection = next(
             (
                 item for item in available
@@ -122,23 +124,26 @@ def _connection(
             None,
         )
         if connection is None:
-            raise APIError(
-                503,
-                "ROUTING_SCOPE_UNAVAILABLE",
-                "The Google Flow account bound to this routing scope is not currently available.",
-                retryable=True,
-            )
-        if project_id:
-            project_account_key = runtime.projects.installation_for_project(project_id)
-            if project_account_key and project_account_key != _account_key(connection):
+            has_other_with_credits = any(runtime.can_reserve(item, min_credits) for item in available)
+            if not has_other_with_credits:
                 raise APIError(
-                    409,
-                    "PROJECT_ACCOUNT_MISMATCH",
-                    "The selected Google account does not own this project.",
+                    503,
+                    "ROUTING_SCOPE_UNAVAILABLE",
+                    "The Google Flow account bound to this routing scope is not currently available.",
+                    retryable=True,
                 )
-        if not _reserve(request, connection, min_credits):
-            raise APIError(503, "ROUTING_SCOPE_UNAVAILABLE", "The routed account is at capacity.", retryable=True)
-        return connection, BoundFlowClient(runtime.bridge, connection.id)
+        else:
+            if project_id:
+                project_account_key = runtime.projects.installation_for_project(project_id)
+                if project_account_key and project_account_key != _account_key(connection):
+                    raise APIError(
+                        409,
+                        "PROJECT_ACCOUNT_MISMATCH",
+                        "The selected Google account does not own this project.",
+                    )
+            if not _reserve(request, connection, min_credits):
+                raise APIError(503, "ROUTING_SCOPE_UNAVAILABLE", "The routed account is at capacity.", retryable=True)
+            return connection, BoundFlowClient(runtime.bridge, connection.id)
     if required_account_key:
         connection = next(
             (
@@ -149,24 +154,27 @@ def _connection(
             None,
         )
         if connection is None:
-            raise APIError(
-                503,
-                "MEDIA_ACCOUNT_UNAVAILABLE",
-                "The Google Flow account that owns the referenced media is unavailable.",
-                retryable=True,
-            )
-        if project_id:
-            project_account_key = runtime.projects.installation_for_project(project_id)
-            if project_account_key and project_account_key != required_account_key:
+            has_other_with_credits = any(runtime.can_reserve(item, min_credits) for item in available)
+            if not has_other_with_credits:
                 raise APIError(
-                    409,
-                    "MEDIA_PROJECT_MISMATCH",
-                    "The referenced media do not belong to the requested Google Flow project.",
-                    field="project_id",
+                    503,
+                    "MEDIA_ACCOUNT_UNAVAILABLE",
+                    "The Google Flow account that owns the referenced media is unavailable.",
+                    retryable=True,
                 )
-        if not _reserve(request, connection, min_credits):
-            raise APIError(503, "MEDIA_ACCOUNT_UNAVAILABLE", "The media account is at capacity.", retryable=True)
-        return connection, BoundFlowClient(runtime.bridge, connection.id)
+        else:
+            if project_id:
+                project_account_key = runtime.projects.installation_for_project(project_id)
+                if project_account_key and project_account_key != required_account_key:
+                    raise APIError(
+                        409,
+                        "MEDIA_PROJECT_MISMATCH",
+                        "The referenced media do not belong to the requested Google Flow project.",
+                        field="project_id",
+                    )
+            if not _reserve(request, connection, min_credits):
+                raise APIError(503, "MEDIA_ACCOUNT_UNAVAILABLE", "The media account is at capacity.", retryable=True)
+            return connection, BoundFlowClient(runtime.bridge, connection.id)
     if project_id:
         account_key = runtime.projects.installation_for_project(project_id)
         if account_key:
@@ -383,56 +391,83 @@ async def _copy_media_to_target(
         if cached:
             return cached.google_media_id
 
-        async with runtime.media_transfer_slots:
-            downloaded = await source_client.download_media(media_id)
-            if downloaded.get("error"):
+        stored_asset = runtime.projects.asset_store.read(media.content_sha256, media.mime_type)
+        if stored_asset is not None:
+            raw_bytes, mime_type = stored_asset
+            content_sha256 = media.content_sha256
+        else:
+            if source_client is None:
                 raise APIError(
-                    502,
+                    503,
                     "MEDIA_REHYDRATION_FAILED",
-                    f"Referenced media could not be downloaded from its owning account: {downloaded['error']}",
+                    "Source media is not available locally and owning account is offline.",
                     retryable=True,
                 )
-            raw_bytes = downloaded.get("bytes")
-            if not isinstance(raw_bytes, (bytes, bytearray)) or not raw_bytes:
-                raise APIError(
-                    502,
-                    "MEDIA_REHYDRATION_FAILED",
-                    "Referenced media download returned no image data.",
-                    retryable=True,
-                )
-            raw_bytes = bytes(raw_bytes)
-            content_sha256 = hashlib.sha256(raw_bytes).hexdigest()
-            cached = runtime.projects.get_media(target_account_key, project_id, content_sha256)
-            if cached:
-                return cached.google_media_id
+            async with runtime.media_transfer_slots:
+                downloaded = await source_client.download_media(media_id)
+                if downloaded.get("error"):
+                    raise APIError(
+                        502,
+                        "MEDIA_REHYDRATION_FAILED",
+                        f"Referenced media could not be downloaded from its owning account: {downloaded['error']}",
+                        retryable=True,
+                    )
+                raw_bytes = downloaded.get("bytes")
+                if not isinstance(raw_bytes, (bytes, bytearray)) or not raw_bytes:
+                    raise APIError(
+                        502,
+                        "MEDIA_REHYDRATION_FAILED",
+                        "Referenced media download returned no image data.",
+                        retryable=True,
+                    )
+                raw_bytes = bytes(raw_bytes)
+                content_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+                mime_type = _transfer_mime_type(media, downloaded)
 
-            mime_type = _transfer_mime_type(media, downloaded)
-            upload_result = await _api(
-                target_client,
-                url=UPLOAD_IMAGE_URL,
-                body={
-                    "clientContext": {"projectId": project_id, "tool": "PINHOLE"},
-                    "fileName": media.file_name or "reference.png",
-                    "imageBytes": base64.b64encode(raw_bytes).decode("ascii"),
-                    "isHidden": False,
-                    "isUserUploaded": True,
-                    "mimeType": mime_type,
-                },
+        cached = runtime.projects.get_media(target_account_key, project_id, content_sha256)
+        if cached:
+            return cached.google_media_id
+
+        upload_result = await _api(
+            target_client,
+            url=UPLOAD_IMAGE_URL,
+            body={
+                "clientContext": {"projectId": project_id, "tool": "PINHOLE"},
+                "fileName": media.file_name or "reference.png",
+                "imageBytes": base64.b64encode(raw_bytes).decode("ascii"),
+                "isHidden": False,
+                "isUserUploaded": True,
+                "mimeType": mime_type,
+            },
+        )
+        new_media_id = extract_upload_media_id(upload_result)
+        if not new_media_id:
+            raise _flow_failure(
+                upload_result,
+                "MEDIA_REHYDRATION_UPLOAD_FAILED",
+                "Referenced media could not be uploaded to the selected account.",
             )
-            new_media_id = extract_upload_media_id(upload_result)
-            if not new_media_id:
-                raise _flow_failure(
-                    upload_result,
-                    "MEDIA_REHYDRATION_UPLOAD_FAILED",
-                    "Referenced media could not be uploaded to the selected account.",
-                )
-            response_data = upload_result.get("data") if isinstance(upload_result.get("data"), dict) else None
-            response_status = upload_result.get("status") if isinstance(upload_result.get("status"), int) else None
-            response_headers = upload_result.get("headers") if isinstance(upload_result.get("headers"), dict) else None
+        response_data = upload_result.get("data") if isinstance(upload_result.get("data"), dict) else None
+        response_status = upload_result.get("status") if isinstance(upload_result.get("status"), int) else None
+        response_headers = upload_result.get("headers") if isinstance(upload_result.get("headers"), dict) else None
+        runtime.projects.put_media(
+            target_account_key,
+            project_id,
+            content_sha256,
+            new_media_id,
+            mime_type,
+            media.file_name or "reference.png",
+            response_data,
+            response_status,
+            response_headers,
+        )
+        # Generated media uses a synthetic source key. Keep an alias so a
+        # repeated transfer can reuse the copied ID without downloading again.
+        if media.content_sha256 != content_sha256:
             runtime.projects.put_media(
                 target_account_key,
                 project_id,
-                content_sha256,
+                media.content_sha256,
                 new_media_id,
                 mime_type,
                 media.file_name or "reference.png",
@@ -440,21 +475,7 @@ async def _copy_media_to_target(
                 response_status,
                 response_headers,
             )
-            # Generated media uses a synthetic source key. Keep an alias so a
-            # repeated transfer can reuse the copied ID without downloading again.
-            if media.content_sha256 != content_sha256:
-                runtime.projects.put_media(
-                    target_account_key,
-                    project_id,
-                    media.content_sha256,
-                    new_media_id,
-                    mime_type,
-                    media.file_name or "reference.png",
-                    response_data,
-                    response_status,
-                    response_headers,
-                )
-            return new_media_id
+        return new_media_id
 
 
 async def _rehydrate_media_ids(
@@ -477,18 +498,20 @@ async def _rehydrate_media_ids(
             continue
         source_connection = _ready_connection_for_account(runtime, media.installation_id)
         if source_connection is None:
-            raise APIError(
-                503,
-                "MEDIA_SOURCE_UNAVAILABLE",
-                "The account that owns a referenced media is not currently available for transfer.",
-                retryable=True,
+            stored_asset = runtime.projects.asset_store.read(media.content_sha256, media.mime_type)
+            if stored_asset is None:
+                raise APIError(
+                    503,
+                    "MEDIA_SOURCE_UNAVAILABLE",
+                    "The account that owns a referenced media is not currently available for transfer.",
+                    retryable=True,
+                )
+            source_clients[media.installation_id] = None
+        else:
+            source_clients.setdefault(
+                media.installation_id,
+                BoundFlowClient(runtime.bridge, source_connection.id),
             )
-        # Resolving a signed URL is a read-only operation and does not consume a
-        # generation slot. The target job already owns the reservation.
-        source_clients.setdefault(
-            media.installation_id,
-            BoundFlowClient(runtime.bridge, source_connection.id),
-        )
 
     transferred: dict[str, str] = {}
     output: list[str] = []
@@ -1071,6 +1094,14 @@ async def upload_image(
         for project_id in payload.excluded_project_ids
         if (account_key := runtime.projects.installation_for_project(project_id))
     }
+    if routing_scope and not payload.project_id:
+        try:
+            scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope)
+            scoped_conn = _ready_connection_for_account(runtime, scoped_account_key)
+            if not scoped_conn or not runtime.can_reserve(scoped_conn, payload.required_credits or 0):
+                routing_scope = None
+        except Exception:
+            routing_scope = None
     connection, client = _connection(
         request,
         routing_scope,
@@ -1294,34 +1325,50 @@ async def generate_image(
 
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
 
+    cost = 10 * int(getattr(payload, "variant_count", 1) or 1)
     if payload.reference_media_ids and not inline_images:
         inferred_route = _stored_media_route(runtime, payload.reference_media_ids)
         if inferred_route:
             inferred_account, inferred_project = inferred_route
-            if scoped_account_key and scoped_account_key != inferred_account:
-                raise APIError(
-                    409,
-                    "MEDIA_ACCOUNT_MISMATCH",
-                    "The routing scope does not own the referenced media.",
-                )
-            if payload.project_id and payload.project_id != inferred_project:
-                raise APIError(
-                    409,
-                    "MEDIA_PROJECT_MISMATCH",
-                    "Referenced media does not belong to the requested project.",
-                )
-            if not scoped_account_key:
-                scoped_account_key = inferred_account
-            if not payload.project_id:
-                payload.project_id = inferred_project
-                request_data["project_id"] = inferred_project
+            inferred_conn = _ready_connection_for_account(runtime, inferred_account)
+            inferred_has_credits = inferred_conn and runtime.can_reserve(inferred_conn, cost, job_type="image")
+            ready_conns = runtime.bridge.ready_connections()
+            other_has_credits = any(
+                runtime.can_reserve(c, cost, job_type="image")
+                for c in ready_conns
+                if _account_key(c) != inferred_account
+            )
+            if not inferred_has_credits and other_has_credits:
+                scoped_account_key = None
+            else:
+                if scoped_account_key and scoped_account_key != inferred_account:
+                    if not other_has_credits:
+                        raise APIError(
+                            409,
+                            "MEDIA_ACCOUNT_MISMATCH",
+                            "The routing scope does not own the referenced media.",
+                        )
+                    scoped_account_key = None
+                if payload.project_id and payload.project_id != inferred_project:
+                    raise APIError(
+                        409,
+                        "MEDIA_PROJECT_MISMATCH",
+                        "Referenced media does not belong to the requested project.",
+                    )
+                if not scoped_account_key:
+                    scoped_account_key = inferred_account
+                if not payload.project_id:
+                    payload.project_id = inferred_project
+                    request_data["project_id"] = inferred_project
 
     if inline_images:
         _persist_inline_assets(runtime, inline_images)
-        if scoped_account_key and not payload.project_id and not payload.reference_media_ids:
-            cost = 10 * int(getattr(payload, "variant_count", 1) or 1)
-            conn = _ready_connection_for_account(runtime, scoped_account_key)
-            if conn and not runtime.can_reserve(conn, cost, job_type="image"):
+
+    if scoped_account_key and not payload.project_id:
+        conn = _ready_connection_for_account(runtime, scoped_account_key)
+        if conn and not runtime.can_reserve(conn, cost, job_type="image"):
+            ready_conns = runtime.bridge.ready_connections()
+            if any(runtime.can_reserve(c, cost, job_type="image") for c in ready_conns):
                 scoped_account_key = None
 
     job = runtime.projects.enqueue_job(
@@ -1381,35 +1428,51 @@ async def generate_video(
     if getattr(payload, "reference_media_ids", None):
         referenced_media.extend(payload.reference_media_ids)
 
+    from app.workers.job_worker import _job_credit_cost
+    cost = _job_credit_cost(payload.type, payload.duration_seconds)
     if referenced_media and not inline_images:
         inferred_route = _stored_media_route(runtime, referenced_media)
         if inferred_route:
             inferred_account, inferred_project = inferred_route
-            if scoped_account_key and scoped_account_key != inferred_account:
-                raise APIError(
-                    409,
-                    "MEDIA_ACCOUNT_MISMATCH",
-                    "The routing scope does not own the referenced media.",
-                )
-            if payload.project_id and payload.project_id != inferred_project:
-                raise APIError(
-                    409,
-                    "MEDIA_PROJECT_MISMATCH",
-                    "Referenced media does not belong to the requested project.",
-                )
-            if not scoped_account_key:
-                scoped_account_key = inferred_account
-            if not payload.project_id:
-                payload.project_id = inferred_project
-                request_data["project_id"] = inferred_project
+            inferred_conn = _ready_connection_for_account(runtime, inferred_account)
+            inferred_has_credits = inferred_conn and runtime.can_reserve(inferred_conn, cost, job_type="video")
+            ready_conns = runtime.bridge.ready_connections()
+            other_has_credits = any(
+                runtime.can_reserve(c, cost, job_type="video")
+                for c in ready_conns
+                if _account_key(c) != inferred_account
+            )
+            if not inferred_has_credits and other_has_credits:
+                scoped_account_key = None
+            else:
+                if scoped_account_key and scoped_account_key != inferred_account:
+                    if not other_has_credits:
+                        raise APIError(
+                            409,
+                            "MEDIA_ACCOUNT_MISMATCH",
+                            "The routing scope does not own the referenced media.",
+                        )
+                    scoped_account_key = None
+                if payload.project_id and payload.project_id != inferred_project:
+                    raise APIError(
+                        409,
+                        "MEDIA_PROJECT_MISMATCH",
+                        "Referenced media does not belong to the requested project.",
+                    )
+                if not scoped_account_key:
+                    scoped_account_key = inferred_account
+                if not payload.project_id:
+                    payload.project_id = inferred_project
+                    request_data["project_id"] = inferred_project
 
     if inline_images:
         _persist_inline_assets(runtime, inline_images)
-        if scoped_account_key and not payload.project_id and not referenced_media:
-            from app.workers.job_worker import _job_credit_cost
-            cost = _job_credit_cost(payload.type, payload.duration_seconds)
-            conn = _ready_connection_for_account(runtime, scoped_account_key)
-            if conn and not runtime.can_reserve(conn, cost, job_type="video"):
+
+    if scoped_account_key and not payload.project_id:
+        conn = _ready_connection_for_account(runtime, scoped_account_key)
+        if conn and not runtime.can_reserve(conn, cost, job_type="video"):
+            ready_conns = runtime.bridge.ready_connections()
+            if any(runtime.can_reserve(c, cost, job_type="video") for c in ready_conns):
                 scoped_account_key = None
 
     job = runtime.projects.enqueue_job(
