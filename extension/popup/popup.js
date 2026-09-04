@@ -14,25 +14,25 @@ const copyLogsEl = document.querySelector("#copy-logs");
 const clearLogsEl = document.querySelector("#clear-logs");
 const flowBtnEl = document.querySelector("#flow");
 
-// Enhanced UI Elements
+// Console controls
 const promptInputEl = document.querySelector("#prompt-input");
 const promptCountEl = document.querySelector("#prompt-count");
 const toggleMultiEl = document.querySelector("#toggle-multi");
 const btnGenerateEl = document.querySelector("#btn-generate");
 const btnPromptAssistantEl = document.querySelector("#btn-prompt-assistant");
-const btnImportTxtEl = document.querySelector("#btn-import-txt");
-const btnSavePromptEl = document.querySelector("#btn-save-prompt");
+const btnClearPromptEl = document.querySelector("#btn-clear-prompt");
 const popoutTabBtnEl = document.querySelector("#popout-tab");
 const bannerAlertEl = document.querySelector("#banner-alert");
 const bannerCloseEl = document.querySelector("#banner-close");
 const drawerToggleEl = document.querySelector("#drawer-toggle");
 const activityDrawerEl = document.querySelector("#activity-drawer");
-const btnToggleLogsEl = document.querySelector("#btn-toggle-logs");
+const btnToggleActivityEl = document.querySelector("#btn-toggle-activity");
 const tabTaskBadgeEl = document.querySelector("#tab-task-badge");
 const stepperDecEl = document.querySelector("#stepper-dec");
 const stepperIncEl = document.querySelector("#stepper-inc");
 const stepperValEl = document.querySelector("#stepper-val");
 const modelSelectEl = document.querySelector("#model-select");
+const projectScopeLabelEl = document.querySelector("#project-scope-label");
 
 const send = (message) => chrome.runtime.sendMessage(message);
 
@@ -62,7 +62,7 @@ function renderActivity(activity = {}) {
   const errorCount = Number(activity.errorCount || 0);
   const logs = Array.isArray(activity.logs) ? activity.logs : [];
 
-  // Update stats counters
+  // Update telemetry stats counters
   if (statActiveEl && lastActiveCount !== active) {
     statActiveEl.textContent = String(active);
     if (tabTaskBadgeEl) tabTaskBadgeEl.textContent = String(active);
@@ -76,11 +76,11 @@ function renderActivity(activity = {}) {
     statErrorEl.textContent = String(errorCount);
   }
 
-  // Update job status
+  // Update job indicator
   if (lastActiveCount !== active) {
     lastActiveCount = active;
     if (jobEl) {
-      jobEl.textContent = active ? activity.current?.label || `${active} active` : "Idle";
+      jobEl.textContent = active ? activity.current?.label || `${active} in flight` : "Idle";
       jobEl.classList.toggle("idle", !active);
     }
   }
@@ -96,7 +96,7 @@ function renderActivity(activity = {}) {
   if (!logsEl) return;
 
   if (!logs.length) {
-    logsEl.innerHTML = '<div class="empty-state">Chưa có hoạt động nào</div>';
+    logsEl.innerHTML = '<div class="empty-state">Sẵn sàng tiếp nhận lệnh tạo từ API hoặc MCP Adapter</div>';
     return;
   }
 
@@ -143,16 +143,16 @@ function renderActivity(activity = {}) {
 function updateStatus(connected, accountReady) {
   if (!statusBadgeEl || !statusEl) return;
   if (connected && accountReady) {
-    statusBadgeEl.className = "status-pill connected";
+    statusBadgeEl.className = "fp-status-pill connected";
     statusEl.textContent = "Ready";
     if (bannerAlertEl && !bannerAlertEl.dataset.userDismissed) {
       bannerAlertEl.hidden = true;
     }
   } else if (connected) {
-    statusBadgeEl.className = "status-pill syncing";
+    statusBadgeEl.className = "fp-status-pill syncing";
     statusEl.textContent = "Syncing";
   } else {
-    statusBadgeEl.className = "status-pill disconnected";
+    statusBadgeEl.className = "fp-status-pill disconnected";
     statusEl.textContent = "Disconnected";
     if (bannerAlertEl && !bannerAlertEl.dataset.userDismissed) {
       bannerAlertEl.hidden = false;
@@ -176,8 +176,8 @@ async function refresh() {
         accountEl.textContent = state.account.email;
         accountEl.title = state.account.email;
       } else {
-        accountEl.textContent = "Chưa đăng nhập Flow";
-        accountEl.title = "Mở Google Flow để đăng nhập tài khoản";
+        accountEl.textContent = "Chưa kết nối Google Flow";
+        accountEl.title = "Mở Google Flow để xác thực phiên";
       }
     }
 
@@ -201,76 +201,85 @@ function updatePromptCount() {
   if (!promptInputEl || !promptCountEl) return;
   const text = promptInputEl.value.trim();
   if (!text) {
-    promptCountEl.textContent = "0 prompt(s)";
+    promptCountEl.textContent = "Ready";
     return;
   }
   if (toggleMultiEl?.checked) {
     const lines = text.split("\n").filter((l) => l.trim().length > 0);
-    promptCountEl.textContent = `${lines.length} prompt(s)`;
+    promptCountEl.textContent = `${lines.length} lines`;
   } else {
-    promptCountEl.textContent = "1 prompt";
+    promptCountEl.textContent = `${text.length} chars`;
   }
 }
 
 if (promptInputEl) {
   promptInputEl.addEventListener("input", updatePromptCount);
+  promptInputEl.addEventListener("keydown", (e) => {
+    if (e.ctrlKey && e.key === "Enter") {
+      btnGenerateEl?.click();
+    }
+  });
 }
 if (toggleMultiEl) {
   toggleMultiEl.addEventListener("change", updatePromptCount);
 }
 
-// Prompt Assistant (adds high-fidelity enhancers)
-if (btnPromptAssistantEl) {
-  btnPromptAssistantEl.onclick = () => {
-    if (!promptInputEl) return;
-    const current = promptInputEl.value.trim();
-    const additions = "cinematic lighting, ultra detailed 8k, photorealistic, masterpiece, depth of field";
-    if (!current) {
-      promptInputEl.value = `cyberpunk city at dusk, neon rain reflections, ${additions}`;
-    } else {
-      promptInputEl.value = `${current}, ${additions}`;
-    }
+// Clear prompt
+if (btnClearPromptEl && promptInputEl) {
+  btnClearPromptEl.onclick = () => {
+    promptInputEl.value = "";
     updatePromptCount();
+    promptInputEl.focus();
   };
 }
 
-// Provider tabs selection
-document.querySelectorAll(".provider-pill").forEach((btn) => {
-  btn.onclick = () => {
-    document.querySelectorAll(".provider-pill").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    const provider = btn.dataset.provider;
+// Style Booster / Prompt Assistant
+if (btnPromptAssistantEl && promptInputEl) {
+  btnPromptAssistantEl.onclick = () => {
+    const current = promptInputEl.value.trim();
+    const styleModifiers = "volumetric lighting, cinematic composition, photorealistic 8k, highly detailed";
+    if (!current) {
+      promptInputEl.value = `Futuristic architectural glass pavilion on a misty mountain lake, ${styleModifiers}`;
+    } else {
+      promptInputEl.value = `${current}, ${styleModifiers}`;
+    }
+    updatePromptCount();
+    promptInputEl.focus();
+  };
+}
+
+// Provider pill selector
+document.querySelectorAll(".route-pill").forEach((pill) => {
+  pill.onclick = () => {
+    document.querySelectorAll(".route-pill").forEach((p) => p.classList.remove("active"));
+    pill.classList.add("active");
+    const provider = pill.dataset.provider;
     if (modelSelectEl) {
       if (provider === "chatgpt") {
-        modelSelectEl.innerHTML = '<option value="gpt-4o">GPT-4o Vision</option><option value="o1-preview">o1 Preview</option>';
+        modelSelectEl.innerHTML = '<option value="gpt-4o">ChatGPT-4o (Vision)</option><option value="o1-preview">o1 Reasoning Model</option>';
       } else if (provider === "gemini") {
         modelSelectEl.innerHTML = '<option value="gemini-1.5-pro">Gemini 1.5 Pro</option><option value="imagen-3">Imagen 3</option>';
       } else {
-        modelSelectEl.innerHTML = '<option value="imagen-3">Nano Banana 2</option><option value="imagen-3-pro">Flow Imagen 3 Pro</option><option value="flow-v2">Flow V2 Ultra</option><option value="veo-video">Veo 2 Video Motion</option>';
+        modelSelectEl.innerHTML = '<option value="imagen-3">Imagen 3 Pro (Flow Engine)</option><option value="flow-v2">Flow V2 Ultra Fast</option><option value="veo-video">Veo 2 Cinematic Video</option>';
       }
     }
-  };
-});
-
-// Feature nav tabs
-document.querySelectorAll(".tab-btn").forEach((btn) => {
-  btn.onclick = () => {
-    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
+    if (projectScopeLabelEl) {
+      projectScopeLabelEl.textContent = provider === "flow" ? "Workspace: Default" : `Target: ${provider.toUpperCase()}`;
+    }
   };
 });
 
 // Segmented buttons (Ratio, Media type)
-document.querySelectorAll("#ratio-group .seg-btn").forEach((btn) => {
+document.querySelectorAll("#ratio-group .segment-btn").forEach((btn) => {
   btn.onclick = () => {
-    document.querySelectorAll("#ratio-group .seg-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll("#ratio-group .segment-btn").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
   };
 });
 
-document.querySelectorAll("#media-type-group .seg-btn").forEach((btn) => {
+document.querySelectorAll("#media-type-group .segment-btn").forEach((btn) => {
   btn.onclick = () => {
-    document.querySelectorAll("#media-type-group .seg-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll("#media-type-group .segment-btn").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
   };
 });
@@ -284,12 +293,20 @@ if (stepperDecEl && stepperIncEl && stepperValEl) {
     }
   };
   stepperIncEl.onclick = () => {
-    if (currentQuantity < 8) {
+    if (currentQuantity < 4) {
       currentQuantity++;
       stepperValEl.textContent = String(currentQuantity);
     }
   };
 }
+
+// Subnav item switching
+document.querySelectorAll(".subnav-item").forEach((item) => {
+  item.onclick = () => {
+    document.querySelectorAll(".subnav-item").forEach((i) => i.classList.remove("active"));
+    item.classList.add("active");
+  };
+});
 
 // Drawer collapsible toggle
 if (drawerToggleEl && activityDrawerEl) {
@@ -298,10 +315,10 @@ if (drawerToggleEl && activityDrawerEl) {
     drawerToggleEl.textContent = activityDrawerEl.classList.contains("collapsed") ? "▼" : "▲";
   };
 }
-if (btnToggleLogsEl && activityDrawerEl) {
-  btnToggleLogsEl.onclick = () => {
+if (btnToggleActivityEl && activityDrawerEl) {
+  btnToggleActivityEl.onclick = () => {
     activityDrawerEl.classList.toggle("collapsed");
-    btnToggleLogsEl.classList.toggle("active", !activityDrawerEl.classList.contains("collapsed"));
+    btnToggleActivityEl.classList.toggle("active", !activityDrawerEl.classList.contains("collapsed"));
   };
 }
 
@@ -326,7 +343,7 @@ if (btnGenerateEl) {
     hideError();
     const prompt = promptInputEl?.value?.trim();
     if (!prompt) {
-      showError("Vui lòng nhập nội dung prompt trước khi tạo.");
+      showError("Vui lòng nhập nội dung prompt trước khi phát lệnh.");
       promptInputEl?.focus();
       return;
     }
@@ -334,8 +351,7 @@ if (btnGenerateEl) {
     btnGenerateEl.style.transform = "scale(0.98)";
     setTimeout(() => { btnGenerateEl.style.transform = ""; }, 150);
 
-    // If Google Flow is active, make sure Flow tab is available
-    const activeProvider = document.querySelector(".provider-pill.active")?.dataset.provider;
+    const activeProvider = document.querySelector(".route-pill.active")?.dataset.provider;
     if (activeProvider === "chatgpt") {
       const resp = await send({ type: "CHATGPT_OPEN_TAB" }).catch(() => null);
       if (!resp) showError("Không thể mở tab ChatGPT");
