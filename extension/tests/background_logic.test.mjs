@@ -639,3 +639,107 @@ test('extension logs redact credentials and URL query values', async () => {
   assert.match(serialized, /\/v1\/media/);
   assert.match(serialized, /redacted/);
 });
+
+test('isFlowUrl accepts Flow URLs and rejects other labs tools', async () => {
+  const h = buildHarness();
+  await flush();
+  const isFlow = (url) => vm.runInContext(`isFlowUrl(${JSON.stringify(url)})`, h.context);
+
+  assert.equal(isFlow('https://labs.google/fx/vi/tools/flow'), true);
+  assert.equal(isFlow('https://labs.google/fx/vi/tools/flow/project/abc'), true);
+  assert.equal(isFlow('https://labs.google/fx/tools/flow'), true);
+  assert.equal(isFlow('https://labs.google/fx/en-us/tools/flow/'), true);
+  assert.equal(isFlow('https://flow.google/'), true);
+  assert.equal(isFlow('https://flow.google.com/tools/flow'), true);
+
+  // Rejects other non-flow tools
+  assert.equal(isFlow('https://labs.google/fx/vi/tools/image-fx'), false);
+  assert.equal(isFlow('https://labs.google/fx/vi/tools/music-fx'), false);
+  assert.equal(isFlow('https://labs.google/fx/'), false);
+  assert.equal(isFlow('https://labs.google/'), false);
+});
+
+test('handleRpc executes INJECT_RECAPTCHA successfully', async () => {
+  const h = buildHarness();
+  await flush();
+  h.context.chrome.tabs.get = async () => ({ id: 42, url: 'https://labs.google/fx/vi/tools/flow', status: 'complete' });
+  h.context.chrome.scripting.executeScript = async () => [{ result: { ok: true, data: 'test-captcha-token' } }];
+
+  const res = await vm.runInContext('handleRpc({ type: "INJECT_RECAPTCHA", tabId: 42, fallbackKey: "key123", action: "IMAGE_GENERATION" })', h.context);
+  assert.equal(res, 'test-captcha-token');
+});
+
+test('handleRpc INJECT_RECAPTCHA wakes tab and retries on initial failure', async () => {
+  const h = buildHarness();
+  await flush();
+  let updatedTabId = null;
+  let updateOptions = null;
+  h.context.chrome.tabs.update = async (tabId, opts) => {
+    updatedTabId = tabId;
+    updateOptions = opts;
+    return { id: tabId };
+  };
+  h.context.chrome.tabs.get = async () => ({ id: 42, url: 'https://labs.google/fx/vi/tools/flow', status: 'complete' });
+
+  let callCount = 0;
+  h.context.chrome.scripting.executeScript = async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return [{ result: { ok: false, error: 'recaptcha_timeout' } }];
+    }
+    return [{ result: { ok: true, data: 'recovered-captcha-token' } }];
+  };
+
+  const res = await vm.runInContext('handleRpc({ type: "INJECT_RECAPTCHA", tabId: 42, fallbackKey: "key123", action: "IMAGE_GENERATION" })', h.context);
+  assert.equal(res, 'recovered-captcha-token');
+  assert.equal(updatedTabId, 42);
+  assert.equal(updateOptions?.active, true);
+});
+
+test('openFlowHome opens direct project URL when project ID is provided', async () => {
+  const h = buildHarness();
+  await flush();
+  let createdUrl = null;
+  h.context.chrome.tabs.query = async () => [];
+  h.context.chrome.tabs.create = async (options) => {
+    createdUrl = options.url;
+    return { id: 77 };
+  };
+  h.context.chrome.tabs.get = async (tabId) => ({
+    id: tabId,
+    url: createdUrl,
+    status: 'complete',
+  });
+
+  const res = await vm.runInContext('openFlowHome({ projectId: "be5e00b8-deb9-4738-b38f-cc5161febbe1" })', h.context);
+  assert.equal(res.tabId, 77);
+  assert.equal(createdUrl, 'https://flow.google.com/project/be5e00b8-deb9-4738-b38f-cc5161febbe1');
+});
+
+test('openFlowHome navigates existing generic tab to project URL when project ID is known', async () => {
+  const h = buildHarness({ 'flow-provider-last-project-id-v1': 'be5e00b8-deb9-4738-b38f-cc5161febbe1' });
+  await flush();
+  let updatedUrl = null;
+  h.context.chrome.tabs.query = async () => [{
+    id: 55,
+    url: 'https://labs.google/fx/vi/tools/flow',
+    status: 'complete',
+    active: true,
+  }];
+  h.context.chrome.tabs.update = async (tabId, options) => {
+    if (options.url) updatedUrl = options.url;
+    return { id: tabId, url: updatedUrl };
+  };
+  h.context.chrome.tabs.get = async (tabId) => ({
+    id: tabId,
+    url: updatedUrl || 'https://labs.google/fx/vi/tools/flow',
+    status: 'complete',
+  });
+
+  const res = await vm.runInContext('openFlowHome()', h.context);
+  assert.equal(res.tabId, 55);
+  assert.equal(updatedUrl, 'https://flow.google.com/project/be5e00b8-deb9-4738-b38f-cc5161febbe1');
+});
+
+
+

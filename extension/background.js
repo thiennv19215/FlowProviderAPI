@@ -5,6 +5,7 @@ const SERVER_DEFAULT_VERSION_KEY = "flow-provider-server-default-version-v1";
 const INSTALLATION_KEY = "flow-provider-installation-id-v1";
 const PROFILE_KEY = "flow-provider-profile-id-v1";
 const FLOW_TAB_ID_KEY = "flow-provider-flow-tab-id-v1";
+const FLOW_LAST_PROJECT_ID_KEY = "flow-provider-last-project-id-v1";
 const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
 const ALLOWED_FETCH_HOSTS = ["labs.google", "flow.google", "flow.google.com", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
@@ -13,6 +14,12 @@ const FLOW_TAB_OPEN_COOLDOWN_MS = 60 * 1000;
 const MAX_ACTIVITY_LOGS = 50;
 const MAX_LOG_DETAIL_CHARS = 240;
 const SENSITIVE_LOG_KEY = /authorization|cookie|token|secret|api.?key|body|base64|image/i;
+
+function extractProjectId(url) {
+  if (!url || typeof url !== "string") return null;
+  const match = url.match(/\/project\/([a-f0-9-]{36}|[a-z0-9_-]+)/i);
+  return match ? match[1] : null;
+}
 
 let socket = null;
 let connectInFlight = null;
@@ -331,7 +338,11 @@ async function syncAuth(targetSocket = socket) {
 
 function isFlowUrl(url) {
   if (!url || typeof url !== "string") return false;
-  return /^https:\/\/(?:[a-z0-9-]+\.)*(?:labs|flow)\.google(?:\.com)?(\/|$)/i.test(url);
+  if (/^https:\/\/(?:[a-z0-9-]+\.)*flow\.google(?:\.com)?(\/|$)/i.test(url)) return true;
+  if (/^https:\/\/(?:[a-z0-9-]+\.)*labs\.google\/fx\/(?:[a-z0-9-_]+\/)?tools\/flow(\/|$|\?)/i.test(url)) return true;
+  if (/^https:\/\/(?:[a-z0-9-]+\.)*labs\.google\/fx\/(?:[a-z0-9-_]+\/)?projects(\/|$|\?)/i.test(url)) return true;
+  if (/^https:\/\/(?:[a-z0-9-]+\.)*labs\.google\/fx\/.*flow/i.test(url)) return true;
+  return false;
 }
 
 async function waitForTab(tabId, timeoutMs = 30000) {
@@ -367,21 +378,54 @@ async function waitForTab(tabId, timeoutMs = 30000) {
 
 let openFlowHomeInFlight = null;
 
-async function findOrOpenFlowHome() {
-  const tabs = await chrome.tabs.query({ url: ["https://labs.google/fx/*", "https://labs.google/*flow*", "https://flow.google/*", "https://flow.google.com/*"] });
-  const existing = tabs
-    .filter((tab) => tab.id && isFlowUrl(tab.url || tab.pendingUrl))
-    .sort((left, right) => Number(right.status === "complete") - Number(left.status === "complete")
+async function findOrOpenFlowHome({ projectId = null } = {}) {
+  const tabs = await chrome.tabs.query({ url: ["https://labs.google/fx/*/tools/flow*", "https://labs.google/fx/*flow*", "https://flow.google/*", "https://flow.google.com/*"] });
+  const validTabs = tabs.filter((tab) => tab.id && isFlowUrl(tab.url || tab.pendingUrl));
+
+  for (const t of validTabs) {
+    const pid = extractProjectId(t.url || t.pendingUrl);
+    if (pid) {
+      void chrome.storage.local.set({ [FLOW_LAST_PROJECT_ID_KEY]: pid });
+      break;
+    }
+  }
+
+  const stored = await chrome.storage.local.get([FLOW_TAB_ID_KEY, FLOW_LAST_PROJECT_ID_KEY]);
+  const targetProjectId = projectId || stored?.[FLOW_LAST_PROJECT_ID_KEY] || null;
+
+  const existing = validTabs.sort((left, right) => {
+    const leftUrl = left.url || left.pendingUrl || "";
+    const rightUrl = right.url || right.pendingUrl || "";
+    const leftProj = extractProjectId(leftUrl);
+    const rightProj = extractProjectId(rightUrl);
+
+    if (targetProjectId) {
+      const rightExact = rightProj === targetProjectId ? 1 : 0;
+      const leftExact = leftProj === targetProjectId ? 1 : 0;
+      if (rightExact !== leftExact) return rightExact - leftExact;
+    }
+    const rightHasProj = rightProj ? 1 : 0;
+    const leftHasProj = leftProj ? 1 : 0;
+    if (rightHasProj !== leftHasProj) return rightHasProj - leftHasProj;
+
+    return Number(right.status === "complete") - Number(left.status === "complete")
       || Number(right.active) - Number(left.active)
-      || Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0))[0];
+      || Number(right.lastAccessed || 0) - Number(left.lastAccessed || 0);
+  })[0];
+
   if (existing?.id) {
     await chrome.storage.local.set({ [FLOW_TAB_ID_KEY]: existing.id });
-    appendActivity("Flow tab reused", "done", `tab ${existing.id}`);
+    if (targetProjectId && !extractProjectId(existing.url || existing.pendingUrl) && typeof chrome?.tabs?.update === "function") {
+      const projectUrl = `https://flow.google.com/project/${targetProjectId}`;
+      await chrome.tabs.update(existing.id, { url: projectUrl }).catch(() => {});
+      appendActivity("Điều hướng vào Project", "done", `tab ${existing.id} -> ${targetProjectId}`);
+    } else {
+      appendActivity("Flow tab reused", "done", `tab ${existing.id}`);
+    }
     await waitForTab(existing.id);
     return { tabId: existing.id, isNew: false };
   }
 
-  const stored = await chrome.storage.local.get(FLOW_TAB_ID_KEY);
   const trackedTabId = Number(stored?.[FLOW_TAB_ID_KEY]);
   if (Number.isInteger(trackedTabId) && trackedTabId > 0) {
     const tracked = await chrome.tabs.get(trackedTabId).catch(() => null);
@@ -393,6 +437,7 @@ async function findOrOpenFlowHome() {
     await chrome.storage.local.remove(FLOW_TAB_ID_KEY);
   }
 
+  const targetUrl = targetProjectId ? `https://flow.google.com/project/${targetProjectId}` : FLOW_HOME_URL;
   const normalWindows = await chrome.windows.getAll({ windowTypes: ["normal"] }).catch(() => []);
   const targetWindow = normalWindows
     .filter((window) => window.id)
@@ -401,12 +446,12 @@ async function findOrOpenFlowHome() {
   if (targetWindow?.id) {
     tab = await chrome.tabs.create({
       windowId: targetWindow.id,
-      url: FLOW_HOME_URL,
+      url: targetUrl,
       active: false,
     });
   } else {
     const createdWindow = await chrome.windows.create({
-      url: FLOW_HOME_URL,
+      url: targetUrl,
       focused: false,
       type: "normal",
     });
@@ -414,19 +459,19 @@ async function findOrOpenFlowHome() {
   }
   if (!tab?.id) throw new Error("flow_tab_create_failed");
   await chrome.storage.local.set({ [FLOW_TAB_ID_KEY]: tab.id });
-  appendActivity("Flow tab opened", "done", `tab ${tab.id}`);
+  appendActivity("Flow tab opened", "done", targetProjectId ? `project ${targetProjectId}` : `tab ${tab.id}`);
   await waitForTab(tab.id);
   return { tabId: tab.id, isNew: true };
 }
 
-async function openFlowHome({ respectCooldown = false } = {}) {
+async function openFlowHome({ respectCooldown = false, projectId = null } = {}) {
   if (openFlowHomeInFlight) return await openFlowHomeInFlight;
   const now = Date.now();
   if (respectCooldown && now - lastFlowTabOpenAttemptAt < FLOW_TAB_OPEN_COOLDOWN_MS) {
     throw new Error("flow_tab_open_cooldown");
   }
   lastFlowTabOpenAttemptAt = now;
-  const pending = findOrOpenFlowHome();
+  const pending = findOrOpenFlowHome({ projectId });
   openFlowHomeInFlight = pending;
   try {
     return await pending;
@@ -452,12 +497,49 @@ async function inject(tabId, operation, payload = {}) {
               if (match && match[1] !== "explicit") { siteKey = match[1]; break; }
             }
             if (!siteKey) throw new Error("recaptcha_site_key_missing");
+
+            const ensureEnterpriseScript = () => {
+              if (!globalThis.grecaptcha?.enterprise && !document.querySelector('script[src*="recaptcha"]')) {
+                try {
+                  const s = document.createElement("script");
+                  s.src = `https://www.google.com/recaptcha/enterprise.js?render=${encodeURIComponent(siteKey)}`;
+                  s.async = true;
+                  (document.head || document.documentElement).appendChild(s);
+                } catch (_) {}
+              }
+            };
+            ensureEnterpriseScript();
+
             const token = await new Promise((resolve, reject) => {
               const deadline = Date.now() + 30000;
+              let timerId = null;
+              let settled = false;
+
+              const cleanup = () => {
+                settled = true;
+                if (timerId) clearTimeout(timerId);
+              };
+
               const check = () => {
-                if (Date.now() > deadline) return reject(new Error("recaptcha_timeout"));
-                if (globalThis.grecaptcha?.enterprise) grecaptcha.enterprise.ready(() => grecaptcha.enterprise.execute(siteKey, { action: payload.action || "IMAGE_GENERATION" }).then(resolve).catch(reject));
-                else setTimeout(check, 400);
+                if (settled) return;
+                if (Date.now() > deadline) {
+                  cleanup();
+                  return reject(new Error("recaptcha_timeout"));
+                }
+                ensureEnterpriseScript();
+                const enterprise = globalThis.grecaptcha?.enterprise;
+                if (enterprise?.ready && enterprise?.execute) {
+                  try {
+                    enterprise.ready(() => {
+                      if (settled) return;
+                      enterprise.execute(siteKey, { action: payload.action || "IMAGE_GENERATION" })
+                        .then((res) => { cleanup(); resolve(res); })
+                        .catch((err) => { cleanup(); reject(err); });
+                    });
+                    return;
+                  } catch (_) {}
+                }
+                timerId = setTimeout(check, 400);
               };
               check();
             });
@@ -553,12 +635,55 @@ async function swFetch(spec, signal) {
   }
 }
 
+async function injectRecaptchaWithFallback(tabId, fallbackKey, action) {
+  try {
+    return await inject(tabId, "recaptcha", { fallbackKey, action });
+  } catch (firstErr) {
+    appendActivity("Đánh thức Tab Flow", "running", "Thực hiện tương tác giữ ấm session");
+    try {
+      if (tabId && typeof chrome?.tabs?.update === "function") {
+        await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+      }
+      if (tabId && chrome?.scripting?.executeScript) {
+        await chrome.scripting.executeScript({
+          target: { tabId },
+          world: "MAIN",
+          func: () => {
+            try {
+              window.focus();
+              const evt = new MouseEvent("mousemove", {
+                clientX: Math.floor(Math.random() * 200) + 100,
+                clientY: Math.floor(Math.random() * 200) + 100,
+                bubbles: true,
+              });
+              window.dispatchEvent(evt);
+              document.body?.dispatchEvent?.(new Event("focus"));
+              document.dispatchEvent(new Event("visibilitychange"));
+            } catch (_) {}
+          },
+        }).catch(() => {});
+      }
+      await new Promise((r) => setTimeout(r, 800));
+
+      const retryToken = await inject(tabId, "recaptcha", { fallbackKey, action });
+      appendActivity("Giải Captcha thành công", "done", "Đã phục hồi sau khi đánh thức tab");
+      return retryToken;
+    } catch (secondErr) {
+      appendActivity("Cần người dùng xác thực", "error", "Vui lòng mở tab Flow và tương tác để xác thực");
+      if (tabId && typeof chrome?.tabs?.update === "function") {
+        await chrome.tabs.update(tabId, { active: true }).catch(() => {});
+      }
+      throw secondErr;
+    }
+  }
+}
+
 async function handleRpc(msg, signal) {
   switch (msg.type) {
     case "PING": return { version: chrome.runtime.getManifest().version };
     case "GET_BEARER": return await getBearer({ force: Boolean(msg.force) });
-    case "OPEN_FLOW_TAB": return await openFlowHome();
-    case "INJECT_RECAPTCHA": return await inject(msg.tabId, "recaptcha", { fallbackKey: msg.fallbackKey, action: msg.action });
+    case "OPEN_FLOW_TAB": return await openFlowHome({ projectId: msg.projectId });
+    case "INJECT_RECAPTCHA": return await injectRecaptchaWithFallback(msg.tabId, msg.fallbackKey, msg.action);
     case "INJECT_PAGE_FETCH": return await inject(msg.tabId, "pageFetch", { spec: msg.spec });
     case "SW_FETCH": return await swFetch(msg.spec, signal);
     default: throw new Error(`unknown_rpc_type:${msg.type}`);
@@ -747,8 +872,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
   if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setConnectionConfig(msg.serverUrl).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
-  if (msg?.type === "FLOW_PROVIDER_OPEN_FLOW") { openFlowHome().then((v) => sendResponse({ ok: true, ...v })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
+  if (msg?.type === "FLOW_PROVIDER_OPEN_FLOW") { openFlowHome({ projectId: msg.projectId }).then((v) => sendResponse({ ok: true, ...v })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   return false;
+});
+
+chrome.tabs?.onUpdated?.addListener?.((_tabId, changeInfo, tab) => {
+  const url = changeInfo.url || tab?.url;
+  const pid = extractProjectId(url);
+  if (pid) {
+    void chrome.storage.local.set({ [FLOW_LAST_PROJECT_ID_KEY]: pid });
+  }
 });
 
 let initializationPromise = null;
