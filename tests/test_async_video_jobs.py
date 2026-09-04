@@ -808,3 +808,40 @@ def test_enqueue_wakes_worker_immediately():
         # Verify that wake_event was set immediately upon enqueue!
         assert runtime.worker._wake_event.is_set()
 
+
+def test_dispatch_fails_immediately_when_no_extension_connected():
+    application = async_app()
+    runtime = application.state.runtime
+
+    # Enqueue a job when NO extensions are connected
+    with TestClient(application) as client:
+        res = client.post(
+            "/v1/videos/generations",
+            json={
+                "type": "image_to_video",
+                "prompt": "animate this image",
+                "input_images": [{
+                    "image_base64": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+                    "mime_type": "image/png",
+                }],
+            },
+        )
+        assert res.status_code == 202
+        job_id = res.json()["jobs"][0]["id"]
+
+        # Run one worker cycle
+        asyncio.run(JobWorker(runtime).process_queued_jobs())
+
+        # Job must immediately be failed with NO_CONNECTED_ACCOUNTS (not hanging/queued)
+        stored = runtime.projects.get_job(job_id)
+        assert stored is not None
+        assert stored.status == "failed"
+        assert stored.error_code == "NO_CONNECTED_ACCOUNTS"
+        assert "No Google Flow extension accounts are currently connected" in stored.error_message
+
+        # /v1/jobs/status must also report failed immediately
+        status = client.post("/v1/jobs/status", json={"job_ids": [job_id]})
+        assert status.status_code == 200
+        assert status.json()["jobs"][0]["status"] == "failed"
+        assert status.json()["jobs"][0]["error"]["code"] == "NO_CONNECTED_ACCOUNTS"
+

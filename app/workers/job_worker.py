@@ -259,14 +259,13 @@ class JobWorker:
                     job_age_seconds = 0.0
 
             if not ready_conns:
-                if job_age_seconds > 30:
-                    self.runtime.projects.update_job_failed(
-                        job.job_id,
-                        "No Google Flow extension accounts are currently connected.",
-                        claim_token,
-                        error_code="NO_CONNECTED_ACCOUNTS",
-                    )
-                    return
+                self.runtime.projects.update_job_failed(
+                    job.job_id,
+                    "No Google Flow extension accounts are currently connected. Please ensure Chrome is open and the Google Flow extension is connected.",
+                    claim_token,
+                    error_code="NO_CONNECTED_ACCOUNTS",
+                )
+                return True
             else:
                 accounts_with_credits = [
                     c for c in ready_conns
@@ -279,7 +278,7 @@ class JobWorker:
                         claim_token,
                         error_code="INSUFFICIENT_CREDITS",
                     )
-                    return
+                    return True
                 if job_age_seconds > 300:
                     self.runtime.projects.update_job_failed(
                         job.job_id,
@@ -287,7 +286,7 @@ class JobWorker:
                         claim_token,
                         error_code="QUEUE_TIMEOUT",
                     )
-                    return
+                    return True
 
             self.runtime.projects.release_job_claim(job.job_id, claim_token)
             return False
