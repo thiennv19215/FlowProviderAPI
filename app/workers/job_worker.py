@@ -170,13 +170,16 @@ class JobWorker:
         duration = job.request_payload.get("duration_seconds", 8)
         cost = _job_credit_cost(job.generation_type, duration)
 
+        target_installation_id = job.installation_id
+        target_google_project_id = job.google_project_id
+
         has_inline_assets = bool(
             payload.get("input_image_hashes")
             or payload.get("input_images")
             or job.job_id in self.runtime.inline_images
             or payload.get("reference_asset_hashes")
         )
-        if not has_inline_assets and (not job.google_project_id or not job.installation_id):
+        if not has_inline_assets and (not target_google_project_id or not target_installation_id):
             referenced = []
             if payload.get("start_media_id"):
                 referenced.append(payload["start_media_id"])
@@ -192,14 +195,19 @@ class JobWorker:
                     inferred = None
                 if inferred:
                     inferred_inst, inferred_proj = inferred
-                    if not job.installation_id:
-                        job.installation_id = inferred_inst
-                    if not job.google_project_id:
-                        job.google_project_id = inferred_proj
+                    inferred_conn = next(
+                        (c for c in self.runtime.bridge.ready_connections() if _account_key(c) == inferred_inst),
+                        None,
+                    )
+                    if inferred_conn and self.runtime.can_reserve(inferred_conn, cost, job_type=job.media_type):
+                        if not target_installation_id:
+                            target_installation_id = inferred_inst
+                        if not target_google_project_id:
+                            target_google_project_id = inferred_proj
 
         project_owner = (
-            self.runtime.projects.installation_for_project(job.google_project_id)
-            if job.google_project_id
+            self.runtime.projects.installation_for_project(target_google_project_id)
+            if target_google_project_id
             else None
         )
 
@@ -208,9 +216,9 @@ class JobWorker:
             conn
             for conn in ready_conns
             if (
-                not job.installation_id
-                or _account_key(conn) == job.installation_id
-                or conn.installation_id == job.installation_id
+                not target_installation_id
+                or _account_key(conn) == target_installation_id
+                or conn.installation_id == target_installation_id
             )
             and (
                 not project_owner
@@ -228,7 +236,7 @@ class JobWorker:
                 logger.warning(
                     "Assigned account '%s' cannot serve job %s (insufficient credits or offline). "
                     "Auto-failing over to a ready account with sufficient credits (%d candidate accounts).",
-                    job.installation_id or project_owner,
+                    target_installation_id or project_owner,
                     job.job_id,
                     len(fallback_conns),
                 )
