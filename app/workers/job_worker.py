@@ -220,6 +220,21 @@ class JobWorker:
             and self.runtime.can_reserve(conn, cost, job_type=job.media_type)
         ]
         if not available:
+            if not job.google_project_id and has_inline_assets:
+                fallback_conns = [
+                    c for c in ready_conns
+                    if self.runtime.can_reserve(c, cost, job_type=job.media_type)
+                ]
+                if fallback_conns:
+                    logger.warning(
+                        "Assigned account '%s' cannot serve inline job %s (insufficient credits or offline). "
+                        "Auto-failing over to a ready account with sufficient credits.",
+                        job.installation_id,
+                        job.job_id,
+                    )
+                    available = fallback_conns
+
+        if not available:
             from datetime import datetime, timezone
             job_age_seconds = 0.0
             if getattr(job, "created_at", None):

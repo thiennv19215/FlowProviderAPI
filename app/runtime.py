@@ -107,14 +107,19 @@ class Runtime:
             self.worker.wake()
 
     def select_connection(self, available):
-        return min(
-            available,
-            key=lambda item: (
+        def _sort_key(item):
+            avail = self.available_credits(item)
+            credit_tier = 1 if (avail is not None and avail < 20) else 0
+            credit_val = -(avail if avail is not None else 0)
+            return (
+                credit_tier,
                 self.connection_load(item),
+                credit_val,
                 item.connected_at if hasattr(item, "connected_at") else 0,
                 item.installation_id,
-            ),
-        )
+            )
+
+        return min(available, key=_sort_key)
 
     def project_lock(self, installation_id: str) -> asyncio.Lock:
         return self.project_locks.setdefault(installation_id, asyncio.Lock())

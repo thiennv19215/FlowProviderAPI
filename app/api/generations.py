@@ -1318,6 +1318,11 @@ async def generate_image(
 
     if inline_images:
         _persist_inline_assets(runtime, inline_images)
+        if scoped_account_key and not payload.project_id and not payload.reference_media_ids:
+            cost = 10 * int(getattr(payload, "variant_count", 1) or 1)
+            conn = _ready_connection_for_account(runtime, scoped_account_key)
+            if conn and not runtime.can_reserve(conn, cost, job_type="image"):
+                scoped_account_key = None
 
     job = runtime.projects.enqueue_job(
         job_id=job_id,
@@ -1400,6 +1405,12 @@ async def generate_video(
 
     if inline_images:
         _persist_inline_assets(runtime, inline_images)
+        if scoped_account_key and not payload.project_id and not referenced_media:
+            from app.workers.job_worker import _job_credit_cost
+            cost = _job_credit_cost(payload.type, payload.duration_seconds)
+            conn = _ready_connection_for_account(runtime, scoped_account_key)
+            if conn and not runtime.can_reserve(conn, cost, job_type="video"):
+                scoped_account_key = None
 
     job = runtime.projects.enqueue_job(
         job_id=job_id,
