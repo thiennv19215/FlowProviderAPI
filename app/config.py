@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     extension_heartbeat_seconds: int = Field(default=60, ge=5, le=120)
     extension_heartbeat_grace_seconds: int = Field(default=15, ge=5, le=120)
     worker_enabled: bool = True
-    worker_poll_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    worker_poll_seconds: float = Field(default=10.0, ge=0.0, le=60.0)
     worker_poll_max_backoff_seconds: int = Field(default=300, ge=10, le=3600)
     worker_poll_claim_lease_seconds: int = Field(default=120, ge=30, le=600)
     worker_dispatch_lease_seconds: int = Field(default=300, ge=60, le=3600)

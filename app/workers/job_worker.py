@@ -72,6 +72,8 @@ def _account_key(connection: Any) -> str:
 
 def _poll_delay(settings: Any, error_count: int = 0) -> float:
     base = float(getattr(settings, "worker_poll_seconds", 10.0))
+    if base <= 0:
+        return 0.0
     maximum = float(getattr(settings, "worker_poll_max_backoff_seconds", 300))
     return min(maximum, base * (2 ** min(max(0, error_count), 8)))
 
@@ -713,6 +715,7 @@ class JobWorker:
                 google_project_id=resolved_project_id,
                 poll_name=poll_name or operation_name,
                 claim_token=claim_token,
+                poll_delay_seconds=_poll_delay(self.runtime.settings),
             )
             if not claimed_running:
                 logger.warning("Job %s claim was superseded before dispatch completion", job.job_id)

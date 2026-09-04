@@ -1317,12 +1317,25 @@ class ProjectStore:
         google_project_id: str,
         poll_name: str | None = None,
         claim_token: str | None = None,
+        poll_delay_seconds: float = 0.0,
     ) -> bool:
         poll_name = poll_name or operation_name
         with self._lock:
             db = self._db()
             condition = "job_id = ? AND status = 'dispatching'"
-            params: list[object] = [operation_name, installation_id, google_project_id, poll_name, job_id]
+            if poll_delay_seconds > 0:
+                next_poll_sql = "datetime('now', ?)"
+                params: list[object] = [
+                    operation_name,
+                    installation_id,
+                    google_project_id,
+                    poll_name,
+                    f"+{max(1, int(poll_delay_seconds))} seconds",
+                    job_id,
+                ]
+            else:
+                next_poll_sql = "CURRENT_TIMESTAMP"
+                params: list[object] = [operation_name, installation_id, google_project_id, poll_name, job_id]
             if claim_token is not None:
                 condition += " AND claim_token = ?"
                 params.append(claim_token)
@@ -1336,7 +1349,7 @@ class ProjectStore:
                     google_project_id = ?,
                     poll_name = ?,
                     running_at = CURRENT_TIMESTAMP,
-                    next_poll_at = CURRENT_TIMESTAMP,
+                    next_poll_at = {next_poll_sql},
                     last_poll_at = NULL,
                     last_poll_error = NULL,
                     poll_attempts = 0,
@@ -1525,7 +1538,12 @@ class ProjectStore:
         attempted: bool = True,
     ) -> bool:
         """Persist the next poll time and consecutive-error state for a running job."""
-        modifier = f"+{max(1, int(delay_seconds))} seconds"
+        if delay_seconds > 0:
+            next_poll_sql = "datetime('now', ?)"
+            modifier = f"+{max(1, int(delay_seconds))} seconds"
+        else:
+            next_poll_sql = "CURRENT_TIMESTAMP"
+            modifier = None
         with self._lock:
             if error_message is None:
                 poll_error_sql = "0"
@@ -1533,10 +1551,14 @@ class ProjectStore:
             else:
                 poll_error_sql = "poll_error_count + 1"
                 last_error = error_message[:1000]
+            params: list[object] = []
+            if modifier is not None:
+                params.append(modifier)
+            params.extend([int(attempted), last_error, int(attempted), job_id])
             updated = self._db().execute(
                 f"""
                 UPDATE provider_jobs
-                SET next_poll_at = datetime('now', ?),
+                SET next_poll_at = {next_poll_sql},
                     last_poll_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_poll_at END,
                     last_poll_error = ?,
                     poll_attempts = poll_attempts + CASE WHEN ? THEN 1 ELSE 0 END,
@@ -1544,7 +1566,7 @@ class ProjectStore:
                     updated_at = CURRENT_TIMESTAMP
                 WHERE job_id = ? AND status = 'running'
                 """,
-                (modifier, int(attempted), last_error, int(attempted), job_id),
+                params,
             ).rowcount
             self._db().commit()
         return updated == 1

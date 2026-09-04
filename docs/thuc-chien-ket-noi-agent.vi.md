@@ -123,7 +123,7 @@ def wait_for_job_completion(job_id: str, max_wait_seconds: int = 180) -> dict:
             error_info = job.get("error", {})
             raise RuntimeError(f"Tác vụ thất bại: {error_info.get('message', 'Unknown error')}")
             
-        time.sleep(5)
+        time.sleep(10)
     raise TimeoutError("Quá thời gian chờ hoàn thành job!")
 
 

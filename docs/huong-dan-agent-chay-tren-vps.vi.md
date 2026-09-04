@@ -107,7 +107,7 @@ def check_health() -> bool:
     return res.get("status") == "ready"
 
 
-def wait_for_job(job_id: str, max_wait_seconds: int = 120, poll_interval: int = 5) -> dict:
+def wait_for_job(job_id: str, max_wait_seconds: int = 120, poll_interval: int = 10) -> dict:
     """2. Polling trạng thái job từ Database SQLite nội bộ (0 slot, 0 token)"""
     print(f"[*] Đang theo dõi Job: {job_id}")
     start_time = time.time()

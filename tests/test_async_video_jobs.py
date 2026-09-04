@@ -19,6 +19,7 @@ def async_app():
         public_base_url="https://provider.test",
         project_store_path=":memory:",
         worker_enabled=False,
+        worker_poll_seconds=0.0,
     ))
 
 
