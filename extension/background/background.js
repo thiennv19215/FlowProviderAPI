@@ -909,16 +909,17 @@ async function executeDirectFlowImageGeneration(payload = {}) {
   appendActivity("Bắt đầu tạo ảnh", "running", prompt.slice(0, 40));
 
   // 1. Ensure Flow Tab is ready
-  const tab = await findOrOpenFlowTab();
-  if (!tab?.id) throw new Error("Không thể kết nối tab Google Flow. Vui lòng mở và đăng nhập Flow.");
+  const flowResult = await openFlowHome();
+  const tabId = flowResult?.tabId;
+  if (!tabId) throw new Error("Không thể kết nối tab Google Flow. Vui lòng mở và đăng nhập Flow.");
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
 
   // 2. Resolve or query project ID
   let stored = await chrome.storage.local.get(FLOW_LAST_PROJECT_ID_KEY);
-  let projectId = stored?.[FLOW_LAST_PROJECT_ID_KEY] || extractProjectId(tab.url || tab.pendingUrl);
+  let projectId = stored?.[FLOW_LAST_PROJECT_ID_KEY] || extractProjectId(tab?.url || tab?.pendingUrl);
   if (!projectId) {
     try {
-      const searchRes = await executeInFlowTab({
-        operation: "pageFetch",
+      const searchRes = await inject(tabId, "pageFetch", {
         spec: {
           url: "https://labs.google/fx/api/trpc/project.searchUserProjects?input=%7B%22json%22%3A%7B%22pageSize%22%3A5%2C%22toolName%22%3A%22PINHOLE%22%7D%7D",
           method: "GET",
@@ -934,8 +935,7 @@ async function executeDirectFlowImageGeneration(payload = {}) {
 
   if (!projectId) {
     try {
-      const createRes = await executeInFlowTab({
-        operation: "pageFetch",
+      const createRes = await inject(tabId, "pageFetch", {
         spec: {
           url: "https://labs.google/fx/api/trpc/project.createProject",
           method: "POST",
@@ -956,7 +956,7 @@ async function executeDirectFlowImageGeneration(payload = {}) {
   // 3. Inject Captcha
   let recaptchaToken = "";
   try {
-    recaptchaToken = await injectRecaptchaWithFallback(tab.id, "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV", "IMAGE_GENERATION");
+    recaptchaToken = await injectRecaptchaWithFallback(tabId, "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV", "IMAGE_GENERATION");
   } catch (recaptchaErr) {
     extensionLog("warn", "Recaptcha failed, trying with empty token", recaptchaErr);
   }
@@ -1015,8 +1015,7 @@ async function executeDirectFlowImageGeneration(payload = {}) {
   };
   if (token) headers.authorization = `Bearer ${token}`;
 
-  const genResult = await executeInFlowTab({
-    operation: "pageFetch",
+  const genResult = await inject(tabId, "pageFetch", {
     spec: {
       url: `https://aisandbox-pa.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/flowMedia:batchGenerateImages`,
       method: "POST",
