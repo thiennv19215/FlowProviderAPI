@@ -8,12 +8,12 @@ async function ensureFlowProviderOffscreen() {
       if (chrome.runtime.getContexts) {
         const contexts = await chrome.runtime.getContexts({
           contextTypes: ["OFFSCREEN_DOCUMENT"],
-          documentUrls: [chrome.runtime.getURL("offscreen.html")],
+          documentUrls: [chrome.runtime.getURL("core/offscreen.html")],
         });
         if (contexts.length) return;
       }
       await chrome.offscreen.createDocument({
-        url: "offscreen.html",
+        url: "core/offscreen.html",
         reasons: ["IFRAME_SCRIPTING"],
         justification: "Host a hidden Google Flow frame so the connector can warm and observe the signed-in Flow session without opening a visible tab.",
       });

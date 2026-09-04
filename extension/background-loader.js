@@ -1,3 +1,9 @@
 importScripts("config.js");
 try { importScripts("config.local.js"); } catch (_) {}
-importScripts("offscreen-init.js", "background.js", "session-bridge.js", "browser-transport.js", "chatgpt-provider.js");
+importScripts(
+  "core/offscreen-init.js",
+  "core/background.js",
+  "providers/flow/session-bridge.js",
+  "providers/flow/browser-transport.js",
+  "providers/chatgpt/chatgpt-provider.js"
+);

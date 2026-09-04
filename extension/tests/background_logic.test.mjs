@@ -3,9 +3,9 @@ import fs from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('../background.js', import.meta.url), 'utf8');
-const browserTransportSource = fs.readFileSync(new URL('../browser-transport.js', import.meta.url), 'utf8');
-const chatgptSource = fs.readFileSync(new URL('../chatgpt-provider.js', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../core/background.js', import.meta.url), 'utf8');
+const browserTransportSource = fs.readFileSync(new URL('../providers/flow/browser-transport.js', import.meta.url), 'utf8');
+const chatgptSource = fs.readFileSync(new URL('../providers/chatgpt/chatgpt-provider.js', import.meta.url), 'utf8');
 const configContext = { self: {} };
 vm.runInNewContext(fs.readFileSync(new URL('../config.js', import.meta.url), 'utf8'), configContext);
 const productionConfig = JSON.parse(JSON.stringify(configContext.self.FLOW_PROVIDER_EXTENSION_CONFIG));
@@ -200,8 +200,8 @@ test('legacy /ext/token server setting is sanitized without migrating its token'
 });
 
 test('extension source and popup expose no gateway-token configuration', () => {
-  const popupHtml = fs.readFileSync(new URL('../popup.html', import.meta.url), 'utf8');
-  const popupJs = fs.readFileSync(new URL('../popup.js', import.meta.url), 'utf8');
+  const popupHtml = fs.readFileSync(new URL('../popup/popup.html', import.meta.url), 'utf8');
+  const popupJs = fs.readFileSync(new URL('../popup/popup.js', import.meta.url), 'utf8');
   assert.equal(source.includes('gatewayToken'), false);
   assert.equal(source.includes('flow-token.'), false);
   assert.equal(popupHtml.toLowerCase().includes('gateway token'), false);
@@ -214,8 +214,8 @@ test('browser transport preserves the full plain-text body when JSON parsing fai
 });
 
 test('popup hides provider endpoint configuration', () => {
-  const popupHtml = fs.readFileSync(new URL('../popup.html', import.meta.url), 'utf8');
-  const popupJs = fs.readFileSync(new URL('../popup.js', import.meta.url), 'utf8');
+  const popupHtml = fs.readFileSync(new URL('../popup/popup.html', import.meta.url), 'utf8');
+  const popupJs = fs.readFileSync(new URL('../popup/popup.js', import.meta.url), 'utf8');
   assert.equal(popupHtml.includes('Provider server'), false);
   assert.equal(popupHtml.includes('id="server"'), false);
   assert.equal(popupHtml.includes('id="save"'), false);
