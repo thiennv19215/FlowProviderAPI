@@ -158,7 +158,11 @@ class JobWorker:
                 tasks.append(asyncio.create_task(self._dispatch_job(job)))
             if not tasks:
                 break
-            await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            # If any job was released back to the queue because no account slot was available,
+            # stop the loop immediately instead of busy-spinning on the exact same queued jobs.
+            if any(r is False for r in results):
+                break
 
     async def _dispatch_job(self, job: Any) -> None:
         claim_token = job.claim_token
@@ -286,12 +290,12 @@ class JobWorker:
                     return
 
             self.runtime.projects.release_job_claim(job.job_id, claim_token)
-            return
+            return False
 
         connection = self.runtime.select_connection(available)
         if not self.runtime.reserve_connection(connection, cost, job_type=job.media_type):
             self.runtime.projects.release_job_claim(job.job_id, claim_token)
-            return
+            return False
 
         client = BoundFlowClient(self.runtime.bridge, connection.id)
         account_key = _account_key(connection)
