@@ -337,7 +337,19 @@ if (bannerCloseEl && bannerAlertEl) {
   };
 }
 
-// Generate CTA Action
+// Result showcase elements
+const resultGalleryEl = document.querySelector("#result-gallery");
+const resultGridEl = document.querySelector("#result-grid");
+const resultCountEl = document.querySelector("#result-count");
+const btnCloseResultEl = document.querySelector("#btn-close-result");
+
+if (btnCloseResultEl && resultGalleryEl) {
+  btnCloseResultEl.onclick = () => {
+    resultGalleryEl.hidden = true;
+  };
+}
+
+// Generate CTA Action - Directly triggers image creation!
 if (btnGenerateEl) {
   btnGenerateEl.onclick = async () => {
     hideError();
@@ -348,16 +360,72 @@ if (btnGenerateEl) {
       return;
     }
 
-    btnGenerateEl.style.transform = "scale(0.98)";
-    setTimeout(() => { btnGenerateEl.style.transform = ""; }, 150);
+    const activeProvider = document.querySelector(".route-pill.active")?.dataset.provider || "flow";
+    const activeRatio = document.querySelector("#ratio-group .segment-btn.active")?.dataset.ratio || "9:16";
+    const activeMediaType = document.querySelector("#media-type-group .segment-btn.active")?.dataset.type || "image";
+    const selectedModel = modelSelectEl?.value || "imagen-3";
 
-    const activeProvider = document.querySelector(".route-pill.active")?.dataset.provider;
-    if (activeProvider === "chatgpt") {
-      const resp = await send({ type: "CHATGPT_OPEN_TAB" }).catch(() => null);
-      if (!resp) showError("Không thể mở tab ChatGPT");
-    } else {
-      const resp = await send({ type: "FLOW_PROVIDER_OPEN_FLOW" }).catch(() => null);
-      if (!resp?.ok) showError(resp?.error || "Không thể mở Google Flow");
+    // Set UI to loading state
+    const originalContent = btnGenerateEl.innerHTML;
+    btnGenerateEl.disabled = true;
+    btnGenerateEl.style.opacity = "0.8";
+    btnGenerateEl.innerHTML = `
+      <span class="cta-content">
+        <span class="cta-spin">⚙</span>
+        <span>Đang tạo ảnh trên ${activeProvider === "flow" ? "Google Flow" : "ChatGPT"}...</span>
+      </span>
+    `;
+
+    try {
+      const resp = await send({
+        type: "FLOW_PROVIDER_CREATE_GENERATION",
+        payload: {
+          prompt,
+          provider: activeProvider,
+          aspectRatio: activeRatio,
+          mediaType: activeMediaType,
+          model: selectedModel,
+          count: currentQuantity
+        }
+      });
+
+      if (!resp?.ok) {
+        throw new Error(resp?.error || "Tác vụ tạo ảnh không thành công.");
+      }
+
+      if (resp.images && resp.images.length > 0) {
+        if (resultGalleryEl && resultGridEl) {
+          resultGridEl.innerHTML = "";
+          const ratioClass = activeRatio === "16:9" ? "ratio-16-9" : (activeRatio === "1:1" ? "ratio-1-1" : "");
+
+          resp.images.forEach((img, idx) => {
+            const item = document.createElement("div");
+            item.className = `result-item ${ratioClass}`;
+            item.innerHTML = `
+              <img src="${img.url}" alt="Output ${idx + 1}" loading="lazy">
+              <div class="result-overlay">
+                <a href="${img.url}" target="_blank" class="result-btn-view" title="Xem ảnh gốc">↗ Xem</a>
+                <a href="${img.url}" download="flow_generated_${idx + 1}.png" class="result-btn-download" title="Tải về">↓ Lưu</a>
+              </div>
+            `;
+            resultGridEl.appendChild(item);
+          });
+
+          if (resultCountEl) {
+            resultCountEl.textContent = `${resp.images.length} ảnh`;
+          }
+          resultGalleryEl.hidden = false;
+          resultGalleryEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+      } else if (resp.message) {
+        appendActivity("Hoàn tất", "done", resp.message);
+      }
+    } catch (err) {
+      showError(err.message || String(err));
+    } finally {
+      btnGenerateEl.disabled = false;
+      btnGenerateEl.style.opacity = "";
+      btnGenerateEl.innerHTML = originalContent;
     }
   };
 }

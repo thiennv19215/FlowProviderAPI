@@ -902,6 +902,162 @@ async function setupDnr() {
   } catch (error) { appendActivity("Network rules failed", "error", error?.message || error); }
 }
 
+async function executeDirectFlowImageGeneration(payload = {}) {
+  const prompt = String(payload.prompt || "").trim();
+  if (!prompt) throw new Error("Prompt không được để trống");
+
+  appendActivity("Bắt đầu tạo ảnh", "running", prompt.slice(0, 40));
+
+  // 1. Ensure Flow Tab is ready
+  const tab = await findOrOpenFlowTab();
+  if (!tab?.id) throw new Error("Không thể kết nối tab Google Flow. Vui lòng mở và đăng nhập Flow.");
+
+  // 2. Resolve or query project ID
+  let stored = await chrome.storage.local.get(FLOW_LAST_PROJECT_ID_KEY);
+  let projectId = stored?.[FLOW_LAST_PROJECT_ID_KEY] || extractProjectId(tab.url || tab.pendingUrl);
+  if (!projectId) {
+    try {
+      const searchRes = await executeInFlowTab({
+        operation: "pageFetch",
+        spec: {
+          url: "https://labs.google/fx/api/trpc/project.searchUserProjects?input=%7B%22json%22%3A%7B%22pageSize%22%3A5%2C%22toolName%22%3A%22PINHOLE%22%7D%7D",
+          method: "GET",
+          headers: { "accept": "*/*" }
+        }
+      });
+      const items = searchRes?.data?.result?.data?.json?.result?.projects || searchRes?.data?.result?.projects;
+      if (Array.isArray(items) && items[0]?.projectId) {
+        projectId = items[0].projectId;
+      }
+    } catch (_) {}
+  }
+
+  if (!projectId) {
+    try {
+      const createRes = await executeInFlowTab({
+        operation: "pageFetch",
+        spec: {
+          url: "https://labs.google/fx/api/trpc/project.createProject",
+          method: "POST",
+          headers: { "accept": "*/*", "content-type": "application/json" },
+          body: JSON.stringify({ json: { projectTitle: "FlowStudio", toolName: "PINHOLE" } })
+        }
+      });
+      projectId = createRes?.data?.result?.data?.json?.result?.projectId || createRes?.data?.projectId;
+    } catch (_) {}
+  }
+
+  if (!projectId) {
+    throw new Error("Chưa xác định được Project Google Flow. Vui lòng mở một project trên flow.google.com");
+  }
+
+  await chrome.storage.local.set({ [FLOW_LAST_PROJECT_ID_KEY]: projectId });
+
+  // 3. Inject Captcha
+  let recaptchaToken = "";
+  try {
+    recaptchaToken = await injectRecaptchaWithFallback(tab.id, "6LdsFiUsAAAAAIjVDZcuLhaHiDn5nnHVXVRQGeMV", "IMAGE_GENERATION");
+  } catch (recaptchaErr) {
+    extensionLog("warn", "Recaptcha failed, trying with empty token", recaptchaErr);
+  }
+
+  // 4. Map parameters
+  const ratioMap = {
+    "9:16": "IMAGE_ASPECT_RATIO_PORTRAIT",
+    "16:9": "IMAGE_ASPECT_RATIO_LANDSCAPE",
+    "1:1": "IMAGE_ASPECT_RATIO_SQUARE"
+  };
+  const mappedRatio = ratioMap[payload.aspectRatio] || "IMAGE_ASPECT_RATIO_PORTRAIT";
+
+  const modelMap = {
+    "imagen-3": "GEM_PIX_2",
+    "imagen-3-pro": "GEM_PIX_2",
+    "flow-v2": "NARWHAL"
+  };
+  const mappedModel = modelMap[payload.model] || "GEM_PIX_2";
+
+  const count = Math.max(1, Math.min(Number(payload.count) || 1, 4));
+  const sessionSeed = Date.now();
+  const requests = [];
+  for (let i = 0; i < count; i++) {
+    requests.push({
+      clientContext: {
+        projectId,
+        recaptchaContext: { applicationType: "RECAPTCHA_APPLICATION_TYPE_WEB", token: recaptchaToken || "" },
+        sessionId: `;${sessionSeed + i}`,
+        tool: "PINHOLE",
+        userPaygateTier: "PAYGATE_TIER_ONE"
+      },
+      seed: Math.floor(Math.random() * 1000000),
+      structuredPrompt: { parts: [{ text: prompt }] },
+      imageAspectRatio: mappedRatio,
+      imageModelName: mappedModel
+    });
+  }
+
+  const genBody = {
+    clientContext: {
+      projectId,
+      recaptchaContext: { applicationType: "RECAPTCHA_APPLICATION_TYPE_WEB", token: recaptchaToken || "" },
+      sessionId: `;${sessionSeed}`,
+      tool: "PINHOLE",
+      userPaygateTier: "PAYGATE_TIER_ONE"
+    },
+    mediaGenerationContext: { batchId: `batch_${Date.now()}_${Math.random().toString(36).slice(2, 7)}` },
+    useNewMedia: true,
+    requests
+  };
+
+  const token = typeof getBearer === "function" ? await getBearer().catch(() => cachedBearer) : cachedBearer;
+  const headers = {
+    "accept": "*/*",
+    "content-type": "application/json",
+  };
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  const genResult = await executeInFlowTab({
+    operation: "pageFetch",
+    spec: {
+      url: `https://aisandbox-pa.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/flowMedia:batchGenerateImages`,
+      method: "POST",
+      headers,
+      body: JSON.stringify(genBody)
+    }
+  });
+
+  const rawData = genResult?.data || genResult;
+  const mediaList = rawData?.media || [];
+  const images = [];
+
+  for (const item of mediaList) {
+    const gen = item?.image?.generatedImage;
+    const url = gen?.fifeUrl || gen?.url || item?.downloadUrl || (gen?.encodedImage ? `data:image/png;base64,${gen.encodedImage}` : null);
+    if (url) {
+      images.push({
+        url,
+        mediaId: item.name,
+        aspectRatio: payload.aspectRatio || "9:16"
+      });
+    }
+  }
+
+  if (!images.length) {
+    const errText = rawData?.error?.message || rawData?.error || "Google Flow không trả về ảnh nào. Vui lòng kiểm tra lại tài khoản hoặc credits.";
+    throw new Error(errText);
+  }
+
+  activityState.completedCount = (activityState.completedCount || 0) + 1;
+  appendActivity("Tạo ảnh hoàn tất", "done", `Đã tạo ${images.length} ảnh`);
+  saveStats();
+
+  return {
+    ok: true,
+    images,
+    projectId,
+    count: images.length
+  };
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg?.type === "FLOW_PROVIDER_GET_STATE") { connectionState().then(sendResponse); return true; }
   if (msg?.type === "FLOW_PROVIDER_CLEAR_LOGS") {
@@ -921,6 +1077,34 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
   if (msg?.type === "FLOW_PROVIDER_SET_SERVER") { setConnectionConfig(msg.serverUrl).then((serverUrl) => sendResponse({ ok: true, serverUrl })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
   if (msg?.type === "FLOW_PROVIDER_OPEN_FLOW") { openFlowHome({ projectId: msg.projectId }).then((v) => sendResponse({ ok: true, ...v })).catch((e) => sendResponse({ ok: false, error: e.message })); return true; }
+  if (msg?.type === "FLOW_PROVIDER_CREATE_GENERATION") {
+    const payload = msg.payload || {};
+    if (payload.provider === "chatgpt") {
+      (async () => {
+        const info = await findOrOpenChatGPTTab();
+        const session = await getChatGPTSession(info.tabId);
+        if (!session?.accessToken) throw new Error("Chưa đăng nhập ChatGPT trong tab");
+        appendActivity("ChatGPT Session OK", "done", `Tab ${info.tabId}`);
+        return { ok: true, message: "ChatGPT tab sẵn sàng", tabId: info.tabId, images: [] };
+      })().then((v) => sendResponse({ ok: true, ...v })).catch((e) => {
+        activityState.errorCount = (activityState.errorCount || 0) + 1;
+        appendActivity("ChatGPT lỗi", "error", e.message);
+        saveStats();
+        sendResponse({ ok: false, error: e.message });
+      });
+      return true;
+    }
+
+    executeDirectFlowImageGeneration(payload)
+      .then((res) => sendResponse(res))
+      .catch((err) => {
+        activityState.errorCount = (activityState.errorCount || 0) + 1;
+        appendActivity("Tạo ảnh thất bại", "error", err.message);
+        saveStats();
+        sendResponse({ ok: false, error: err.message });
+      });
+    return true;
+  }
   return false;
 });
 
