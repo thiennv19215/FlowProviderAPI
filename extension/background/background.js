@@ -170,7 +170,11 @@ function isGenerationJob(message) {
   }
   if (message.type === "SW_FETCH" || message.type === "INJECT_PAGE_FETCH") {
     const url = String(message.spec?.url || "");
-    if (url.includes("/credits") || url.includes("batchGetAsyncGenerateVideoOperation")) {
+    if (
+      url.includes("/credits") ||
+      url.includes("batchGetAsyncGenerateVideoOperation") ||
+      url.includes("batchCheckAsyncVideoGenerationStatus")
+    ) {
       return false;
     }
     if (url) {
@@ -199,7 +203,12 @@ function activityLabel(message) {
     if (url.includes("batchGenerateImages")) return "Tạo ảnh";
     if (url.includes("batchAsyncGenerateVideo") || url.includes("generateVideo")) return "Tạo video";
     if (url.includes("uploadImage") || url.includes("flowMedia:upload")) return "Tải ảnh tham chiếu";
-    if (url.includes("batchGetAsyncGenerateVideoOperation")) return "Kiểm tra tiến độ video";
+    if (
+      url.includes("batchGetAsyncGenerateVideoOperation") ||
+      url.includes("batchCheckAsyncVideoGenerationStatus")
+    ) {
+      return "Kiểm tra tiến độ video";
+    }
     return "Gọi Google Flow";
   }
   if (message.type === "GET_BEARER") return "Làm mới phiên đăng nhập";
