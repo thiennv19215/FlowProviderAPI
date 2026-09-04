@@ -5,6 +5,7 @@ import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../background.js', import.meta.url), 'utf8');
 const browserTransportSource = fs.readFileSync(new URL('../browser-transport.js', import.meta.url), 'utf8');
+const chatgptSource = fs.readFileSync(new URL('../chatgpt-provider.js', import.meta.url), 'utf8');
 const configContext = { self: {} };
 vm.runInNewContext(fs.readFileSync(new URL('../config.js', import.meta.url), 'utf8'), configContext);
 const productionConfig = JSON.parse(JSON.stringify(configContext.self.FLOW_PROVIDER_EXTENSION_CONFIG));
@@ -90,6 +91,7 @@ function buildHarness(initialStorage = {}, { fetchImpl = null, extensionConfig =
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(source, context, { filename: 'background.js' });
+  vm.runInContext(chatgptSource, context, { filename: 'chatgpt-provider.js' });
   if (loadBrowserTransport) vm.runInContext(browserTransportSource, context, { filename: 'browser-transport.js' });
   return { context, sockets, fetchSignals, storage, consoleEvents };
 }
@@ -740,6 +742,85 @@ test('openFlowHome navigates existing generic tab to project URL when project ID
   assert.equal(res.tabId, 55);
   assert.equal(updatedUrl, 'https://flow.google.com/project/be5e00b8-deb9-4738-b38f-cc5161febbe1');
 });
+
+test('isChatGPTUrl matches ChatGPT domains and rejects other sites', async () => {
+  const h = buildHarness();
+  await flush();
+  const isCgt = (url) => vm.runInContext(`isChatGPTUrl(${JSON.stringify(url)})`, h.context);
+
+  assert.equal(isCgt('https://chatgpt.com/'), true);
+  assert.equal(isCgt('https://chatgpt.com/c/12345'), true);
+  assert.equal(isCgt('https://chat.openai.com/'), true);
+  assert.equal(isCgt('https://chat.openai.com/chat'), true);
+
+  assert.equal(isCgt('https://google.com'), false);
+  assert.equal(isCgt('https://labs.google/fx/vi/tools/flow'), false);
+});
+
+test('handleRpc CHATGPT_OPEN_TAB finds and opens ChatGPT tab', async () => {
+  const h = buildHarness();
+  await flush();
+  let createdUrl = null;
+  h.context.chrome.tabs.query = async () => [];
+  h.context.chrome.tabs.create = async (options) => {
+    createdUrl = options.url;
+    return { id: 101 };
+  };
+  h.context.chrome.tabs.get = async (tabId) => ({
+    id: tabId,
+    url: createdUrl,
+    status: 'complete',
+  });
+
+  const res = await vm.runInContext('handleRpc({ type: "CHATGPT_OPEN_TAB" })', h.context);
+  assert.equal(res.tabId, 101);
+  assert.equal(createdUrl, 'https://chatgpt.com/');
+});
+
+test('handleRpc CHATGPT_GET_SESSION returns accessToken and user from session', async () => {
+  const h = buildHarness();
+  await flush();
+  h.context.chrome.tabs.get = async () => ({ id: 101, url: 'https://chatgpt.com/', status: 'complete' });
+  h.context.chrome.scripting.executeScript = async () => [{
+    result: {
+      ok: true,
+      accessToken: 'test-chatgpt-jwt-token',
+      user: { email: 'user@example.com', name: 'Test User' },
+    },
+  }];
+
+  const res = await vm.runInContext('handleRpc({ type: "CHATGPT_GET_SESSION", tabId: 101 })', h.context);
+  assert.equal(res.ok, true);
+  assert.equal(res.accessToken, 'test-chatgpt-jwt-token');
+  assert.equal(res.user?.email, 'user@example.com');
+});
+
+test('handleRpc CHATGPT_FETCH executes in-tab fetch and returns data', async () => {
+  const h = buildHarness();
+  await flush();
+  h.context.chrome.tabs.get = async () => ({ id: 101, url: 'https://chatgpt.com/', status: 'complete' });
+  h.context.chrome.scripting.executeScript = async () => [{
+    result: {
+      ok: true,
+      data: {
+        ok: true,
+        status: 200,
+        data: { conversation_id: 'conv_123', message: { id: 'msg_1' } },
+      },
+    },
+  }];
+
+  const spec = {
+    url: 'https://chatgpt.com/backend-api/conversation',
+    method: 'POST',
+    body: JSON.stringify({ action: 'next' }),
+  };
+  const res = await vm.runInContext(`handleRpc({ type: "CHATGPT_FETCH", tabId: 101, spec: ${JSON.stringify(spec)} })`, h.context);
+  assert.equal(res.ok, true);
+  assert.equal(res.status, 200);
+  assert.equal(res.data.conversation_id, 'conv_123');
+});
+
 
 
 

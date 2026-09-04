@@ -8,7 +8,7 @@ const FLOW_TAB_ID_KEY = "flow-provider-flow-tab-id-v1";
 const FLOW_LAST_PROJECT_ID_KEY = "flow-provider-last-project-id-v1";
 const LABS_SESSION_URL = "https://labs.google/fx/api/auth/session";
 const FLOW_HOME_URL = "https://labs.google/fx/vi/tools/flow";
-const ALLOWED_FETCH_HOSTS = ["labs.google", "flow.google", "flow.google.com", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com"];
+const ALLOWED_FETCH_HOSTS = ["labs.google", "flow.google", "flow.google.com", "aisandbox-pa.googleapis.com", "flow-content.google", "storage.googleapis.com", "chatgpt.com", "chat.openai.com", "oaistatic.com", "oaiusercontent.com"];
 const AUTH_REFRESH_MS = 5 * 60 * 1000;
 const FLOW_TAB_OPEN_COOLDOWN_MS = 60 * 1000;
 const MAX_ACTIVITY_LOGS = 50;
@@ -141,6 +141,7 @@ function isGenerationJob(message) {
     }
     return true;
   }
+  if (message.type === "CHATGPT_FETCH") return true;
   return false;
 }
 
@@ -148,6 +149,9 @@ function activityLabel(message) {
   if (message.type === "PING") return "ping";
   if (message.type === "OPEN_FLOW_TAB") return "Chuẩn bị tab Flow";
   if (message.type === "INJECT_RECAPTCHA") return "Giải Captcha";
+  if (message.type === "CHATGPT_GET_SESSION") return "Lấy token ChatGPT";
+  if (message.type === "CHATGPT_OPEN_TAB") return "Chuẩn bị tab ChatGPT";
+  if (message.type === "CHATGPT_FETCH") return "Gọi API ChatGPT";
   if (message.type === "INJECT_PAGE_FETCH" || message.type === "SW_FETCH") {
     const url = String(message.spec?.url || "");
     if (url.includes("/credits")) return "Đồng bộ credit";
@@ -679,6 +683,9 @@ async function injectRecaptchaWithFallback(tabId, fallbackKey, action) {
 }
 
 async function handleRpc(msg, signal) {
+  if (msg.type?.startsWith?.("CHATGPT_") && typeof handleChatGPTRpc === "function") {
+    return await handleChatGPTRpc(msg, signal);
+  }
   switch (msg.type) {
     case "PING": return { version: chrome.runtime.getManifest().version };
     case "GET_BEARER": return await getBearer({ force: Boolean(msg.force) });

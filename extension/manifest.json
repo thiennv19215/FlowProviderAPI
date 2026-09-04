@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Flow Provider Connector",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "description": "Connects a signed-in Google Flow browser profile to FlowProviderAPI.",
   "background": {
     "service_worker": "background-loader.js"
@@ -25,6 +25,8 @@
     "https://labs.google/*",
     "https://flow.google/*",
     "https://flow.google.com/*",
+    "https://chatgpt.com/*",
+    "https://chat.openai.com/*",
     "https://aisandbox-pa.googleapis.com/*",
     "https://flow-content.google/*",
     "https://storage.googleapis.com/*",
