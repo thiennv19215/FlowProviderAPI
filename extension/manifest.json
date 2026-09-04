@@ -4,7 +4,7 @@
   "version": "1.0.11",
   "description": "Connects a signed-in Google Flow browser profile to FlowProviderAPI.",
   "background": {
-    "service_worker": "background-loader.js"
+    "service_worker": "background/background.js"
   },
   "action": {
     "default_popup": "popup/popup.html",

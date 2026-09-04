@@ -13,7 +13,7 @@ function isTrustedLabsFrameSender(sender) {
 
 function isTrustedOffscreenSender(sender) {
   if (!sender || sender.id !== chrome.runtime.id) return false;
-  return sender.url === chrome.runtime.getURL("core/offscreen.html");
+  return sender.url === chrome.runtime.getURL("background/offscreen.html");
 }
 
 function publishCapturedSession(token, email = "") {

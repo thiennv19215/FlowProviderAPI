@@ -3,22 +3,22 @@ import fs from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const loader = fs.readFileSync(new URL('../background-loader.js', import.meta.url), 'utf8');
-const background = fs.readFileSync(new URL('../core/background.js', import.meta.url), 'utf8');
+const background = fs.readFileSync(new URL('../background/background.js', import.meta.url), 'utf8');
 const bridge = fs.readFileSync(new URL('../providers/flow/session-bridge.js', import.meta.url), 'utf8');
 const browserTransport = fs.readFileSync(new URL('../providers/flow/browser-transport.js', import.meta.url), 'utf8');
-const offscreen = fs.readFileSync(new URL('../core/offscreen.js', import.meta.url), 'utf8');
+const offscreen = fs.readFileSync(new URL('../background/offscreen.js', import.meta.url), 'utf8');
 const configContext = { self: {} };
 vm.runInNewContext(fs.readFileSync(new URL('../config.js', import.meta.url), 'utf8'), configContext);
 const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
-test('session bridge loads after background so it can reuse connector state', () => {
-  assert.match(loader, /core\/background\.js",\s*"providers\/flow\/session-bridge\.js/);
+test('service worker loads providers and reusable connector state', () => {
+  assert.equal(manifest.background.service_worker, 'background/background.js');
+  assert.match(background, /providers\/flow\/session-bridge\.js/);
 });
 
 test('private connector credentials load from an optional local config', () => {
-  assert.match(loader, /importScripts\("config\.local\.js"\)/);
-  assert.match(loader, /try \{/);
+  assert.match(background, /importScripts\("\.\.\/config\.local\.js"\)/);
+  assert.match(background, /try \{/);
 });
 
 test('production extension defaults to the public provider hostname', () => {

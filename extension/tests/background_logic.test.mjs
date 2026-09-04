@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 
-const source = fs.readFileSync(new URL('../core/background.js', import.meta.url), 'utf8');
+const source = fs.readFileSync(new URL('../background/background.js', import.meta.url), 'utf8');
 const browserTransportSource = fs.readFileSync(new URL('../providers/flow/browser-transport.js', import.meta.url), 'utf8');
 const chatgptSource = fs.readFileSync(new URL('../providers/chatgpt/chatgpt-provider.js', import.meta.url), 'utf8');
 const configContext = { self: {} };
