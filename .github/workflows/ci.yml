@@ -19,8 +19,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: "22" }
-      - run: node --check extension/background.js
-      - run: node --check extension/popup.js
+      - run: node --check extension/background/background.js
+      - run: node --check extension/popup/popup.js
       - run: node --test extension/tests/*.test.mjs
       - run: python -m json.tool extension/manifest.json >/dev/null
   deploy-config:
