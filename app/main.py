@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 
 class RequestGuardMiddleware:
-    """Authenticate production business calls and enforce streamed body size."""
+    """Authenticate business calls, limit request size, and apply queue backpressure."""
 
     def __init__(self, app, *, settings: Settings, max_request_bytes: int):
         self.app = app
@@ -42,6 +42,18 @@ class RequestGuardMiddleware:
     @staticmethod
     def _headers(scope) -> dict[bytes, bytes]:
         return {key.lower(): value for key, value in scope.get("headers") or []}
+
+    @staticmethod
+    def _is_generation_create(scope) -> bool:
+        if str(scope.get("method") or "").upper() != "POST":
+            return False
+        path = str(scope.get("path") or "")
+        if path in {"/v1/images/generations", "/v1/videos/generations"}:
+            return True
+        return (
+            path.startswith("/v1/characters/")
+            and path.endswith(("/images/generations", "/videos/generations"))
+        )
 
     async def _reject(
         self,
@@ -53,6 +65,7 @@ class RequestGuardMiddleware:
         message: str,
         *,
         response_headers: dict[str, str] | None = None,
+        retryable: bool = False,
     ):
         headers = self._headers(scope)
         request_id = headers.get(b"x-request-id", b"").decode("latin-1") or f"req_{uuid.uuid4().hex}"
@@ -68,7 +81,7 @@ class RequestGuardMiddleware:
                     "message": message,
                     "details": [],
                     "request_id": request_id,
-                    "retryable": False,
+                    "retryable": retryable,
                 }
             },
             headers=output_headers,
@@ -134,36 +147,61 @@ class RequestGuardMiddleware:
                 )
                 return
 
-        buffered = bytearray()
-        while True:
-            message = await receive()
-            if message.get("type") != "http.request":
-                await self.app(scope, lambda: message, send)
-                return
-            buffered.extend(message.get("body") or b"")
-            if len(buffered) > self.max_request_bytes:
-                await self._reject(
-                    scope,
-                    receive,
-                    send,
-                    413,
-                    "PAYLOAD_TOO_LARGE",
-                    "Request body exceeds the 70 MiB provider limit.",
-                )
-                return
-            if not message.get("more_body", False):
-                break
+        runtime = None
+        admission_reserved = False
+        if self._is_generation_create(scope):
+            app = scope.get("app")
+            runtime = getattr(getattr(app, "state", None), "runtime", None)
+            if runtime is not None:
+                idempotency_key = headers.get(b"idempotency-key", b"").decode("latin-1") or None
+                allowed, admission_reserved = await runtime.try_reserve_job_admission(idempotency_key)
+                if not allowed:
+                    await self._reject(
+                        scope,
+                        receive,
+                        send,
+                        503,
+                        "JOB_QUEUE_FULL",
+                        "The Provider job queue is at capacity. Retry after queued work drains.",
+                        response_headers={"Retry-After": "10"},
+                        retryable=True,
+                    )
+                    return
 
-        delivered = False
+        try:
+            buffered = bytearray()
+            while True:
+                message = await receive()
+                if message.get("type") != "http.request":
+                    await self.app(scope, lambda: message, send)
+                    return
+                buffered.extend(message.get("body") or b"")
+                if len(buffered) > self.max_request_bytes:
+                    await self._reject(
+                        scope,
+                        receive,
+                        send,
+                        413,
+                        "PAYLOAD_TOO_LARGE",
+                        "Request body exceeds the 70 MiB provider limit.",
+                    )
+                    return
+                if not message.get("more_body", False):
+                    break
 
-        async def replay_receive():
-            nonlocal delivered
-            if delivered:
-                return {"type": "http.request", "body": b"", "more_body": False}
-            delivered = True
-            return {"type": "http.request", "body": bytes(buffered), "more_body": False}
+            delivered = False
 
-        await self.app(scope, replay_receive, send)
+            async def replay_receive():
+                nonlocal delivered
+                if delivered:
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                delivered = True
+                return {"type": "http.request", "body": bytes(buffered), "more_body": False}
+
+            await self.app(scope, replay_receive, send)
+        finally:
+            if admission_reserved and runtime is not None:
+                await runtime.release_job_admission()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
