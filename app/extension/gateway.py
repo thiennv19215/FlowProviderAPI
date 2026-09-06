@@ -115,6 +115,42 @@ def _capabilities_from_hello(hello: dict) -> set[str] | None:
     return capabilities
 
 
+def _hello_diagnostics(hello: dict | None) -> dict[str, object]:
+    """Return non-secret metadata suitable for handshake rejection logs."""
+
+    if not isinstance(hello, dict):
+        return {
+            "protocol": None,
+            "extension_version": None,
+            "capability_count": None,
+        }
+    raw_capabilities = hello.get("capabilities")
+    capability_count = len(raw_capabilities) if isinstance(raw_capabilities, list) else None
+    version = hello.get("extensionVersion")
+    if isinstance(version, str):
+        version = version.strip()[:40] or None
+    elif version is not None:
+        version = str(version)[:40]
+    return {
+        "protocol": hello.get("protocolVersion"),
+        "extension_version": version,
+        "capability_count": capability_count,
+    }
+
+
+async def _reject(websocket: WebSocket, code: int, reason: str, hello: dict | None = None) -> None:
+    diagnostics = _hello_diagnostics(hello)
+    logger.warning(
+        "provider extension rejected reason=%s code=%s protocol=%r extension_version=%r capability_count=%r",
+        reason,
+        code,
+        diagnostics["protocol"],
+        diagnostics["extension_version"],
+        diagnostics["capability_count"],
+    )
+    await websocket.close(code, reason)
+
+
 async def _serve(websocket: WebSocket):
     runtime = websocket.app.state.runtime
     bridge = runtime.bridge
@@ -126,38 +162,38 @@ async def _serve(websocket: WebSocket):
     heartbeat_task = None
     try:
         if not has_protocol:
-            await websocket.close(4406, "extension subprotocol required")
+            await _reject(websocket, 4406, "extension subprotocol required")
             return
 
         hello = await receive_json(websocket, HELLO_TIMEOUT)
         if hello.get("type") != "extension_ready":
-            await websocket.close(4400, "extension_ready frame required")
+            await _reject(websocket, 4400, "extension_ready frame required", hello)
             return
         if hello.get("protocolVersion") not in PROTOCOL_VERSIONS:
-            await websocket.close(4400, "extension protocol mismatch")
+            await _reject(websocket, 4400, "extension protocol mismatch", hello)
             return
 
         try:
             capabilities = _capabilities_from_hello(hello)
         except ValueError:
-            await websocket.close(4400, "extension capabilities invalid")
+            await _reject(websocket, 4400, "extension capabilities invalid", hello)
             return
         if capabilities is not None and not REQUIRED_CAPABILITIES.issubset(capabilities):
-            await websocket.close(4406, "extension capabilities incompatible")
+            await _reject(websocket, 4406, "extension capabilities incompatible", hello)
             return
 
         expected_key = runtime.settings.extension_api_key
         supplied_key = str(hello.get("connectorApiKey") or "")
         if expected_key and not hmac.compare_digest(expected_key, supplied_key):
-            await websocket.close(4401, "extension authentication failed")
+            await _reject(websocket, 4401, "extension authentication failed", hello)
             return
 
         installation = str(hello.get("installationId") or "").strip()
         if not installation:
-            await websocket.close(4400, "installation id required")
+            await _reject(websocket, 4400, "installation id required", hello)
             return
         if len(installation) > MAX_INSTALLATION_ID_CHARS:
-            await websocket.close(4400, "installation id too long")
+            await _reject(websocket, 4400, "installation id too long", hello)
             return
 
         prior = bridge.get_connection_by_installation(installation)
@@ -177,7 +213,13 @@ async def _serve(websocket: WebSocket):
             heartbeat_loop(conn, bridge, manager, runtime.settings),
             name=f"extension-heartbeat-{conn.id}",
         )
-        logger.info("provider extension connected installation=%s", installation)
+        logger.info(
+            "provider extension connected installation=%s protocol=%r extension_version=%r capability_count=%r",
+            installation,
+            hello.get("protocolVersion"),
+            _hello_diagnostics(hello)["extension_version"],
+            _hello_diagnostics(hello)["capability_count"],
+        )
 
         while True:
             data = await receive_json(websocket, bridge.DEFAULT_TIMEOUT * 2)
@@ -186,12 +228,12 @@ async def _serve(websocket: WebSocket):
         pass
     except asyncio.TimeoutError:
         try:
-            await websocket.close(4408, "connection idle timeout")
+            await _reject(websocket, 4408, "connection idle timeout")
         except Exception:
             pass
     except (ValueError, json.JSONDecodeError):
         try:
-            await websocket.close(4400, "invalid websocket frame")
+            await _reject(websocket, 4400, "invalid websocket frame")
         except Exception:
             pass
     except Exception:
