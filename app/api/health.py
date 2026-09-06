@@ -46,4 +46,4 @@ def ready(request: Request):
 @router.get("/api/health", include_in_schema=False)
 def extension_health(request: Request):
     status = _status(request)
-    return {"ok": status["status"] == "ready", **status}
+    return {"ok": status["status"] != "unavailable", **status}
