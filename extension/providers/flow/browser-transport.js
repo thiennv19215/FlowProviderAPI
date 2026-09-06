@@ -80,6 +80,35 @@ chrome.webRequest.onBeforeRequest.addListener(
   { urls: [`https://${FLOW_API_HOST}/*`] },
 );
 
+async function fetchProviderHealth() {
+  const config = await getConnectionConfig();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const url = new URL("/api/health", config.serverUrl);
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      cache: "no-store",
+      credentials: "omit",
+      signal: controller.signal,
+    });
+    if (!response.ok) return { ok: false, error: `provider_health_http_${response.status}` };
+    const health = await response.json().catch(() => null);
+    if (!health || typeof health !== "object") return { ok: false, error: "provider_health_invalid" };
+    return { ok: true, health };
+  } catch (error) {
+    return { ok: false, error: error?.name === "AbortError" ? "provider_health_timeout" : "provider_health_unavailable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type !== "FLOW_PROVIDER_GET_BACKEND_HEALTH") return false;
+  fetchProviderHealth().then(sendResponse).catch(() => sendResponse({ ok: false, error: "provider_health_unavailable" }));
+  return true;
+});
+
 async function withBrowserOwnedFlowAuth(spec) {
   const next = { ...(spec || {}) };
   if (next.authMode !== FLOW_AUTH_MODE) return next;
