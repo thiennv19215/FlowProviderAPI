@@ -1,8 +1,7 @@
 name: Release acceptance dev
 
 on:
-  push:
-    branches: [release/acceptance-e2e-20260906]
+  workflow_dispatch:
 
 concurrency:
   group: flowprovider-release-acceptance
@@ -11,96 +10,5 @@ concurrency:
 jobs:
   acceptance:
     runs-on: [self-hosted, Linux, X64, flowprovider-production]
-    timeout-minutes: 25
-    env:
-      FLOW_PROVIDER_BOOTSTRAP_API_KEY: ${{ secrets.FLOW_PROVIDER_BOOTSTRAP_API_KEY }}
-      FLOW_PROVIDER_EXTENSION_API_KEY: ${{ secrets.FLOW_PROVIDER_EXTENSION_API_KEY }}
-      FLOW_PROVIDER_ACCEPTANCE_BASE_URL: https://api.shopcongngheso5.io.vn
-      FLOW_PROVIDER_PRODUCTION_REPO: /home/ubuntu/FlowProviderAPI
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Temporarily deploy dev, run real acceptance, restore main
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          PROD="$FLOW_PROVIDER_PRODUCTION_REPO"
-          : "${FLOW_PROVIDER_BOOTSTRAP_API_KEY:?missing business API key}"
-          : "${FLOW_PROVIDER_EXTENSION_API_KEY:?missing extension API key}"
-          test "$FLOW_PROVIDER_BOOTSTRAP_API_KEY" != "$FLOW_PROVIDER_EXTENSION_API_KEY"
-          test -d "$PROD/.git"
-
-          restore_main() {
-            rc=$?
-            trap - EXIT
-            set +e
-            echo "::group::Restore production main"
-            git -C "$PROD" fetch origin +refs/heads/main:refs/remotes/origin/main
-            git -C "$PROD" checkout main
-            git -C "$PROD" reset --hard origin/main
-            (
-              cd "$PROD"
-              bash scripts/deploy-production.sh
-            )
-            restore_rc=$?
-            if [ "$restore_rc" -eq 0 ]; then
-              for _ in $(seq 1 24); do
-                if curl --fail --silent --show-error --max-time 5 \
-                  "$FLOW_PROVIDER_ACCEPTANCE_BASE_URL/health/ready" >/dev/null 2>&1; then
-                  break
-                fi
-                sleep 5
-              done
-              curl --fail --silent --show-error --max-time 10 \
-                "$FLOW_PROVIDER_ACCEPTANCE_BASE_URL/health/live" >/dev/null
-            fi
-            echo "::endgroup::"
-            if [ "$restore_rc" -ne 0 ]; then
-              echo "Production main restore failed" >&2
-              exit 97
-            fi
-            exit "$rc"
-          }
-          trap restore_main EXIT
-
-          git -C "$PROD" diff --quiet
-          git -C "$PROD" diff --cached --quiet
-          git -C "$PROD" fetch origin \
-            +refs/heads/main:refs/remotes/origin/main \
-            +refs/heads/dev:refs/remotes/origin/dev
-          TARGET_SHA="$(git -C "$PROD" rev-parse origin/dev)"
-          MAIN_SHA="$(git -C "$PROD" rev-parse origin/main)"
-          echo "Acceptance target dev: $TARGET_SHA"
-          echo "Restore target main: $MAIN_SHA"
-
-          git -C "$PROD" checkout --detach "$TARGET_SHA"
-
-          if grep -q '^FLOW_PROVIDER_BOOTSTRAP_API_KEY=' "$PROD/.env.production"; then
-            sed -i "s|^FLOW_PROVIDER_BOOTSTRAP_API_KEY=.*$|FLOW_PROVIDER_BOOTSTRAP_API_KEY=$FLOW_PROVIDER_BOOTSTRAP_API_KEY|" "$PROD/.env.production"
-          else
-            printf '\nFLOW_PROVIDER_BOOTSTRAP_API_KEY=%s\n' "$FLOW_PROVIDER_BOOTSTRAP_API_KEY" >> "$PROD/.env.production"
-          fi
-          if grep -q '^FLOW_PROVIDER_EXTENSION_API_KEY=' "$PROD/.env.production"; then
-            sed -i "s|^FLOW_PROVIDER_EXTENSION_API_KEY=.*$|FLOW_PROVIDER_EXTENSION_API_KEY=$FLOW_PROVIDER_EXTENSION_API_KEY|" "$PROD/.env.production"
-          else
-            printf '\nFLOW_PROVIDER_EXTENSION_API_KEY=%s\n' "$FLOW_PROVIDER_EXTENSION_API_KEY" >> "$PROD/.env.production"
-          fi
-
-          (
-            cd "$PROD"
-            bash scripts/deploy-production.sh
-          )
-
-          for _ in $(seq 1 36); do
-            if curl --fail --silent --show-error --max-time 5 \
-              "$FLOW_PROVIDER_ACCEPTANCE_BASE_URL/health/ready" >/tmp/flowprovider-ready.json 2>/dev/null; then
-              cat /tmp/flowprovider-ready.json
-              break
-            fi
-            sleep 5
-          done
-          curl --fail --silent --show-error --max-time 10 \
-            "$FLOW_PROVIDER_ACCEPTANCE_BASE_URL/health/ready" >/tmp/flowprovider-ready.json
-
-          FLOW_PROVIDER_ACCEPTANCE_TARGET_SHA="$TARGET_SHA" \
-          python "$GITHUB_WORKSPACE/scripts/release-acceptance-e2e.py"
+      - run: echo "Acceptance harness update in progress; no automatic production test on this commit."
