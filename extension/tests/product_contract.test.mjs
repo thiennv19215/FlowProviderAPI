@@ -6,6 +6,7 @@ const popupHtml = fs.readFileSync(new URL('../popup/popup.html', import.meta.url
 const popupJs = fs.readFileSync(new URL('../popup/popup.js', import.meta.url), 'utf8');
 const background = fs.readFileSync(new URL('../background/background.js', import.meta.url), 'utf8');
 const transport = fs.readFileSync(new URL('../providers/flow/browser-transport.js', import.meta.url), 'utf8');
+const manifest = JSON.parse(fs.readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
 
 test('popup is an operator console and does not expose local generation paths', () => {
   assert.equal(popupHtml.includes('id="btn-generate"'), false);
@@ -37,6 +38,15 @@ test('extension_ready metadata advertises explicit executor capabilities', () =>
   ]) {
     assert.ok(transport.includes(`"${capability}"`), capability);
   }
+});
+
+test('release manifest and runtime expose only the Google Flow product surface', () => {
+  assert.equal(manifest.version, '1.0.12');
+  assert.equal(manifest.host_permissions.includes('https://chatgpt.com/*'), false);
+  assert.equal(manifest.host_permissions.includes('https://chat.openai.com/*'), false);
+  assert.match(transport, /unsupported_provider_rpc:chatgpt/);
+  assert.match(transport, /PRODUCT_FETCH_HOSTS/);
+  assert.match(transport, /fetch_host_not_allowed/);
 });
 
 test('stored Flow tab ids are validated before reuse', () => {
