@@ -8,7 +8,17 @@ from dataclasses import field
 from app.extension.manager import ExtensionManager
 from app.projects import ProjectStore
 from app.providers.google_flow.browser_bridge import FlowBridge
+from app.runtime_store import RuntimeProjectStore
 from app.workers.job_worker import JobWorker
+
+
+class ConfiguredJobWorker(JobWorker):
+    """Apply the runtime's global dispatch-concurrency setting to worker batches."""
+
+    async def process_queued_jobs(self, max_concurrent: int | None = None) -> None:
+        configured = max(1, int(getattr(self.runtime.settings, "worker_concurrency", 4)))
+        limit = configured if max_concurrent is None else min(configured, max(1, int(max_concurrent)))
+        await super().process_queued_jobs(max_concurrent=limit)
 
 
 @dataclass
@@ -26,6 +36,8 @@ class Runtime:
     active_video_jobs: dict[str, int] = field(default_factory=dict)
     reserved_credits: dict[str, int] = field(default_factory=dict)
     inline_images: dict[str, list] = field(default_factory=dict)
+    job_admission_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    pending_job_admissions: int = 0
     worker: JobWorker | None = None
 
     def connection_load(self, connection) -> int:
@@ -121,6 +133,47 @@ class Runtime:
 
         return min(available, key=_sort_key)
 
+    def durable_job_status_counts(self) -> dict[str, int]:
+        """Return aggregate durable active-job counts for safe operator telemetry."""
+        counts = {"queued": 0, "dispatching": 0, "running": 0}
+        with self.projects._lock:
+            rows = self.projects._db().execute(
+                "SELECT status, COUNT(*) FROM provider_jobs "
+                "WHERE status IN ('queued', 'dispatching', 'running') GROUP BY status"
+            ).fetchall()
+        for status, count in rows:
+            if status in counts:
+                counts[str(status)] = int(count)
+        return counts
+
+    def durable_active_job_count(self) -> int:
+        """Count durable work that still consumes queue/worker capacity."""
+        return sum(self.durable_job_status_counts().values())
+
+    async def try_reserve_job_admission(self, idempotency_key: str | None) -> tuple[bool, bool]:
+        """Atomically reserve one HTTP admission slot for a new generation request.
+
+        Returns ``(allowed, reserved)``. Existing idempotency keys are always
+        allowed through without consuming a temporary admission slot so the
+        route can return/validate the durable original job even when the queue
+        is full.
+        """
+        normalized_key = (idempotency_key or "").strip() or None
+        async with self.job_admission_lock:
+            if normalized_key and self.projects.get_job_by_idempotency_key(normalized_key):
+                return True, False
+            active = self.durable_active_job_count()
+            limit = int(getattr(self.settings, "job_queue_max_active", 200))
+            if active + self.pending_job_admissions >= limit:
+                return False, False
+            self.pending_job_admissions += 1
+            return True, True
+
+    async def release_job_admission(self) -> None:
+        async with self.job_admission_lock:
+            if self.pending_job_admissions > 0:
+                self.pending_job_admissions -= 1
+
     def project_lock(self, installation_id: str) -> asyncio.Lock:
         return self.project_locks.setdefault(installation_id, asyncio.Lock())
 
@@ -150,7 +203,11 @@ def build_runtime(settings) -> Runtime:
         video_slot_capacity=getattr(settings, "account_video_slot_capacity", 3),
         cooldown_seconds=settings.account_rate_limit_cooldown_seconds,
     )
-    projects = ProjectStore(settings.project_store_path, asset_store_path=settings.asset_store_path)
+    projects = RuntimeProjectStore(
+        settings.project_store_path,
+        asset_store_path=settings.asset_store_path,
+        dispatch_lease_seconds=getattr(settings, "worker_dispatch_lease_seconds", 900),
+    )
     projects.prune(asset_retention_days=settings.asset_retention_days)
     runtime = Runtime(
         settings,
@@ -158,5 +215,5 @@ def build_runtime(settings) -> Runtime:
         ExtensionManager(bridge),
         projects,
     )
-    runtime.worker = JobWorker(runtime)
+    runtime.worker = ConfiguredJobWorker(runtime)
     return runtime

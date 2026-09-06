@@ -13,11 +13,13 @@ class Settings(BaseSettings):
 
     env: Literal["development", "test", "production"] = "development"
     public_base_url: str = "http://localhost:8000"
+    bootstrap_api_key: str | None = None
     extension_api_key: str | None = None
     flow_api_key: str | None = None
     project_store_path: str = ".data/projects.db"
     asset_store_path: str = ".data/assets"
     asset_retention_days: int = Field(default=30, ge=1, le=3650)
+    job_queue_max_active: int = Field(default=200, ge=1, le=10000)
     account_slot_capacity: int = Field(default=3, ge=1, le=20)
     account_image_slot_capacity: int = Field(default=4, ge=1, le=20)
     account_video_slot_capacity: int = Field(default=3, ge=1, le=10)
@@ -28,8 +30,7 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = Field(default=10.0, ge=0.0, le=60.0)
     worker_poll_max_backoff_seconds: int = Field(default=300, ge=10, le=3600)
     worker_poll_claim_lease_seconds: int = Field(default=120, ge=30, le=600)
-    worker_dispatch_lease_seconds: int = Field(default=300, ge=60, le=3600)
-    worker_running_timeout_seconds: int = Field(default=600, ge=300, le=604800)
+    worker_dispatch_lease_seconds: int = Field(default=900, ge=60, le=3600)
     job_image_timeout_seconds: int = Field(default=120, ge=30, le=600)
     job_video_queue_timeout_seconds: int = Field(default=180, ge=30, le=1800)
     job_video_running_timeout_seconds: int = Field(default=600, ge=60, le=3600)
@@ -38,10 +39,16 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_settings(self):
         if self.env == "production":
+            if not self.bootstrap_api_key:
+                raise ValueError("Production requires a business API key")
+            if self.bootstrap_api_key.startswith("fpa_dev_") or "change_me" in self.bootstrap_api_key.lower():
+                raise ValueError("Production requires a non-development business API key")
             if not self.extension_api_key:
                 raise ValueError("Production requires a separate extension connector API key")
             if self.extension_api_key.startswith("fpe_dev_") or "change_me" in self.extension_api_key.lower():
                 raise ValueError("Production requires a non-development extension connector API key")
+            if self.bootstrap_api_key == self.extension_api_key:
+                raise ValueError("Business and extension API keys must be different")
             parsed = urlparse(self.public_base_url)
             if parsed.scheme != "https" or not parsed.netloc:
                 raise ValueError("Production public base URL must use HTTPS")

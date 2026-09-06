@@ -1,4 +1,6 @@
 import asyncio
+import time
+
 import httpx
 import app.providers.google_flow.client as flow_client_module
 
@@ -91,8 +93,6 @@ async def test_account_refresh_ignores_delayed_previous_account_after_switch(mon
     assert connection.sku == "new"
     assert connection.auth_generation == 1
     await bridge.close_background_tasks()
-
-
 
 
 async def test_media_redirect_uses_browser_cookies_and_url_encodes_id(monkeypatch):
@@ -228,6 +228,9 @@ def test_extension_connects_on_gateway_runtime_path():
                 "installationId": "install-test", "profileName": "Test Chrome"})
             assert client.get("/api/health").json()["ok"] is True
             assert app.state.runtime.bridge.connected is True
+        deadline = time.monotonic() + 1.0
+        while app.state.runtime.bridge.connected and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert app.state.runtime.bridge.connected is False
 
 
@@ -265,8 +268,6 @@ def test_extension_gateway_requires_the_versioned_subprotocol():
                 assert exc.code == 4406
             else:
                 raise AssertionError("missing extension subprotocol must close the socket")
-
-
 
 
 def test_legacy_extension_websocket_is_removed():

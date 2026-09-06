@@ -9,6 +9,8 @@ __pycache__/
 !.env.production.example
 .flowprovider-api-keys.local
 extension/config.local.js
+extension/*.zip
+dist/
 .data/
 backups/
 .coverage

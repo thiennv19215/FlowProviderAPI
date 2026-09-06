@@ -24,18 +24,82 @@ fi
 
 compose=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
 
+prepare_data_volume() {
+  # Existing named volumes may have been created by older root-running images.
+  # Migrate ownership before starting the non-root API container. Future writes
+  # stay owned by the runtime UID/GID, so the recursive chown normally runs once.
+  "${compose[@]}" run --rm --no-deps --user 0:0 api sh -ceu '
+    target="10001:10001"
+    owner="$(stat -c "%u:%g" /data)"
+    if [ "$owner" != "$target" ]; then
+      echo "Migrating /data ownership from $owner to $target"
+      chown -R 10001:10001 /data
+    fi
+  '
+}
+
 verify_gateway_surface() {
   "${compose[@]}" exec -T api python - <<'PY'
 import json
-import urllib.request
+import os
+import pathlib
 import urllib.error
+import urllib.request
+
+if os.geteuid() == 0:
+    raise SystemExit("API container is running as root")
+probe = pathlib.Path("/data/.flowprovider-write-probe")
+try:
+    probe.write_text("ok", encoding="utf-8")
+finally:
+    probe.unlink(missing_ok=True)
 
 base_url = "http://127.0.0.1:8000"
 with urllib.request.urlopen(base_url + "/openapi.json", timeout=5) as response:
-    paths = json.load(response)["paths"]
+    schema = json.load(response)
+paths = schema["paths"]
 required = {"/v1/media", "/v1/images/generations", "/v1/videos/generations", "/v1/jobs/status"}
 if not required.issubset(set(paths)):
     raise SystemExit(f"missing required public API endpoints: {sorted(required - set(paths))}")
+security = schema.get("components", {}).get("securitySchemes", {})
+if "BearerAuth" not in security:
+    raise SystemExit("OpenAPI is missing the BearerAuth security scheme")
+
+body = json.dumps({"job_ids": ["deploy_smoke_missing"]}).encode("utf-8")
+unauthenticated = urllib.request.Request(
+    base_url + "/v1/jobs/status",
+    data=body,
+    method="POST",
+    headers={"Content-Type": "application/json"},
+)
+try:
+    urllib.request.urlopen(unauthenticated, timeout=5)
+except urllib.error.HTTPError as exc:
+    if exc.code != 401:
+        raise
+    payload = json.loads(exc.read().decode("utf-8"))
+    if payload.get("error", {}).get("code") != "INVALID_API_KEY":
+        raise SystemExit("unauthenticated /v1 request did not return INVALID_API_KEY")
+else:
+    raise SystemExit("unauthenticated /v1 request was accepted")
+
+api_key = os.environ.get("FLOW_PROVIDER_BOOTSTRAP_API_KEY", "").strip()
+if not api_key:
+    raise SystemExit("FLOW_PROVIDER_BOOTSTRAP_API_KEY is missing inside the API container")
+authenticated = urllib.request.Request(
+    base_url + "/v1/jobs/status",
+    data=body,
+    method="POST",
+    headers={
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    },
+)
+with urllib.request.urlopen(authenticated, timeout=5) as response:
+    payload = json.load(response)
+if payload.get("jobs", [{}])[0].get("error", {}).get("code") != "JOB_NOT_FOUND":
+    raise SystemExit("authenticated /v1 job-status smoke response is unexpected")
+
 try:
     urllib.request.urlopen(base_url + "/admin", timeout=5)
 except urllib.error.HTTPError as exc:
@@ -43,16 +107,18 @@ except urllib.error.HTTPError as exc:
         raise
 else:
     raise SystemExit("legacy admin surface is enabled")
-print("Google Flow facade API surface is ready.")
+print("Google Flow facade API surface and production auth contract are ready.")
 PY
 }
 
 # Validate interpolation and required variables before touching running services.
 "${compose[@]}" config >/dev/null
 
-# Refresh third-party images, rebuild the API, and reconcile the stateless stack.
+# Refresh third-party images, rebuild the API, migrate persistent-data ownership,
+# and reconcile the stack.
 "${compose[@]}" pull cloudflared
 "${compose[@]}" build --pull api
+prepare_data_volume
 "${compose[@]}" up -d --remove-orphans
 
 "${compose[@]}" ps
