@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     project_store_path: str = ".data/projects.db"
     asset_store_path: str = ".data/assets"
     asset_retention_days: int = Field(default=30, ge=1, le=3650)
+    job_queue_max_active: int = Field(default=200, ge=1, le=10000)
     account_slot_capacity: int = Field(default=3, ge=1, le=20)
     account_image_slot_capacity: int = Field(default=4, ge=1, le=20)
     account_video_slot_capacity: int = Field(default=3, ge=1, le=10)
