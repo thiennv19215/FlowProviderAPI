@@ -45,17 +45,49 @@
           <div class="card-header">
             <div class="header-left-meta">
               <span class="meta-icon">◈</span>
-              <span class="meta-heading">Connector Health</span>
+              <span class="meta-heading">Backend Queue</span>
+            </div>
+            <span id="backend-status" class="meta-count">Checking...</span>
+          </div>
+          <div class="telemetry-grid">
+            <div class="telemetry-card completed">
+              <span class="telemetry-value" id="backend-providers">--</span>
+              <span class="telemetry-tag">Provider sẵn sàng</span>
+            </div>
+            <div class="telemetry-card active">
+              <span class="telemetry-value" id="backend-queued">--</span>
+              <span class="telemetry-tag">Queued</span>
+            </div>
+            <div class="telemetry-card active">
+              <span class="telemetry-value" id="backend-dispatching">--</span>
+              <span class="telemetry-tag">Dispatching</span>
+            </div>
+            <div class="telemetry-card active">
+              <span class="telemetry-value" id="backend-running">--</span>
+              <span class="telemetry-tag">Running</span>
+            </div>
+          </div>
+          <div class="subnav-job-state">
+            <span class="job-dot"></span>
+            <span id="backend-capacity" class="job-tag idle">Queue -- / --</span>
+          </div>
+        </div>
+
+        <div class="fp-card params-card">
+          <div class="card-header">
+            <div class="header-left-meta">
+              <span class="meta-icon">◌</span>
+              <span class="meta-heading">Connector Activity</span>
             </div>
           </div>
           <div class="telemetry-grid">
             <div class="telemetry-card active">
               <span class="telemetry-value" id="stat-active">0</span>
-              <span class="telemetry-tag">Đang xử lý</span>
+              <span class="telemetry-tag">RPC đang xử lý</span>
             </div>
             <div class="telemetry-card completed">
               <span class="telemetry-value" id="stat-completed">0</span>
-              <span class="telemetry-tag">Đã hoàn thành</span>
+              <span class="telemetry-tag">RPC hoàn thành</span>
             </div>
             <div class="telemetry-card error">
               <span class="telemetry-value" id="stat-error">0</span>
@@ -72,7 +104,7 @@
           <div class="activity-topbar">
             <div class="activity-heading-wrap">
               <span class="activity-pulse"></span>
-              <span class="activity-heading">Connector Activity</span>
+              <span class="activity-heading">Connector Activity Log</span>
             </div>
             <div class="activity-btn-group">
               <button id="copy-logs" class="fp-mini-btn" type="button">Copy</button>
@@ -98,7 +130,7 @@
         </div>
       </div>
       <div class="footer-system-meta">
-        <span class="system-info">Executor only · jobs are owned by FlowProviderAPI</span>
+        <span class="system-info">Executor only · durable jobs are owned by FlowProviderAPI</span>
       </div>
     </footer>
   </div>
