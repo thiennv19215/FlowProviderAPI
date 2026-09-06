@@ -16,7 +16,25 @@ test('popup is an operator console and does not expose local generation paths', 
   assert.equal(popupHtml.includes('Video (Veo)'), false);
   assert.equal(popupHtml.includes('Gemini Live'), false);
   assert.equal(popupJs.includes('FLOW_PROVIDER_CREATE_GENERATION'), false);
-  assert.match(popupHtml, /Executor only · jobs are owned by FlowProviderAPI/);
+  assert.match(popupHtml, /Executor only · durable jobs are owned by FlowProviderAPI/);
+});
+
+test('operator console renders aggregate durable backend queue telemetry', () => {
+  for (const id of [
+    'backend-status',
+    'backend-providers',
+    'backend-queued',
+    'backend-dispatching',
+    'backend-running',
+    'backend-capacity',
+  ]) {
+    assert.ok(popupHtml.includes(`id="${id}"`), id);
+  }
+  assert.match(popupJs, /new URL\('\/api\/health', serverUrl\)/);
+  assert.match(popupJs, /fetchBackendHealth/);
+  assert.match(popupJs, /renderBackendHealth/);
+  assert.match(popupJs, /job_queue_capacity/);
+  assert.match(popupJs, /jobs\.dispatching/);
 });
 
 test('browser runtime rejects the legacy direct-generation shortcut', () => {
