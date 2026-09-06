@@ -1,0 +1,29 @@
+name: Diagnose current provider connectivity
+
+on:
+  push:
+    branches: [diagnostic/current-main-provider-20260906]
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Linux, X64, flowprovider-production]
+    timeout-minutes: 5
+    steps:
+      - name: Inspect current production without changing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROD=/home/ubuntu/FlowProviderAPI
+          BASE=https://api.shopcongngheso5.io.vn
+          echo "--- production git ---"
+          git -C "$PROD" rev-parse --abbrev-ref HEAD
+          git -C "$PROD" rev-parse HEAD
+          echo "--- public health ---"
+          curl --silent --show-error --max-time 10 "$BASE/api/health" || true
+          echo
+          echo "--- readiness HTTP status/body ---"
+          curl --silent --show-error --max-time 10 -i "$BASE/health/ready" || true
+          echo
+          echo "--- recent API connector logs ---"
+          docker compose --env-file "$PROD/.env.production" -f "$PROD/compose.production.yaml" \
+            logs --since 15m --tail 250 api | grep -E 'provider extension|WebSocket|extension|Started server|Application startup' || true
