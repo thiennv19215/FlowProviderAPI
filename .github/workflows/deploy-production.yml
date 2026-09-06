@@ -34,6 +34,10 @@ jobs:
           git pull --ff-only origin main
           : "${FLOW_PROVIDER_BOOTSTRAP_API_KEY:?missing FLOW_PROVIDER_BOOTSTRAP_API_KEY secret}"
           : "${FLOW_PROVIDER_EXTENSION_API_KEY:?missing FLOW_PROVIDER_EXTENSION_API_KEY secret}"
+          if [ "$FLOW_PROVIDER_BOOTSTRAP_API_KEY" = "$FLOW_PROVIDER_EXTENSION_API_KEY" ]; then
+            echo "Business and extension API keys must be different" >&2
+            exit 1
+          fi
           if grep -q '^FLOW_PROVIDER_BOOTSTRAP_API_KEY=' .env.production; then
             sed -i "s|^FLOW_PROVIDER_BOOTSTRAP_API_KEY=.*$|FLOW_PROVIDER_BOOTSTRAP_API_KEY=$FLOW_PROVIDER_BOOTSTRAP_API_KEY|" .env.production
           else
@@ -44,16 +48,11 @@ jobs:
           else
             printf '\nFLOW_PROVIDER_EXTENSION_API_KEY=%s\n' "$FLOW_PROVIDER_EXTENSION_API_KEY" >> .env.production
           fi
-          if grep -q '^FLOW_PROVIDER_ALLOW_SIMULATION_MODE=' .env.production; then
-            sed -i 's|^FLOW_PROVIDER_ALLOW_SIMULATION_MODE=.*$|FLOW_PROVIDER_ALLOW_SIMULATION_MODE=false|' .env.production
-          else
-            printf '\nFLOW_PROVIDER_ALLOW_SIMULATION_MODE=false\n' >> .env.production
-          fi
           bash scripts/deploy-production.sh
 
-      - name: Verify public API
+      - name: Verify public API liveness
         run: |
           set -euo pipefail
           curl --fail --silent --show-error \
             --retry 10 --retry-delay 5 --retry-all-errors \
-            https://api.shopcongngheso5.io.vn/health/ready
+            https://api.shopcongngheso5.io.vn/health/live

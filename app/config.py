@@ -13,6 +13,7 @@ class Settings(BaseSettings):
 
     env: Literal["development", "test", "production"] = "development"
     public_base_url: str = "http://localhost:8000"
+    bootstrap_api_key: str | None = None
     extension_api_key: str | None = None
     flow_api_key: str | None = None
     project_store_path: str = ".data/projects.db"
@@ -38,10 +39,16 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def validate_settings(self):
         if self.env == "production":
+            if not self.bootstrap_api_key:
+                raise ValueError("Production requires a business API key")
+            if self.bootstrap_api_key.startswith("fpa_dev_") or "change_me" in self.bootstrap_api_key.lower():
+                raise ValueError("Production requires a non-development business API key")
             if not self.extension_api_key:
                 raise ValueError("Production requires a separate extension connector API key")
             if self.extension_api_key.startswith("fpe_dev_") or "change_me" in self.extension_api_key.lower():
                 raise ValueError("Production requires a non-development extension connector API key")
+            if self.bootstrap_api_key == self.extension_api_key:
+                raise ValueError("Business and extension API keys must be different")
             parsed = urlparse(self.public_base_url)
             if parsed.scheme != "https" or not parsed.netloc:
                 raise ValueError("Production public base URL must use HTTPS")
