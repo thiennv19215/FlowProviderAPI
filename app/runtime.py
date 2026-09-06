@@ -8,6 +8,7 @@ from dataclasses import field
 from app.extension.manager import ExtensionManager
 from app.projects import ProjectStore
 from app.providers.google_flow.browser_bridge import FlowBridge
+from app.runtime_store import RuntimeProjectStore
 from app.workers.job_worker import JobWorker
 
 
@@ -202,7 +203,11 @@ def build_runtime(settings) -> Runtime:
         video_slot_capacity=getattr(settings, "account_video_slot_capacity", 3),
         cooldown_seconds=settings.account_rate_limit_cooldown_seconds,
     )
-    projects = ProjectStore(settings.project_store_path, asset_store_path=settings.asset_store_path)
+    projects = RuntimeProjectStore(
+        settings.project_store_path,
+        asset_store_path=settings.asset_store_path,
+        dispatch_lease_seconds=getattr(settings, "worker_dispatch_lease_seconds", 900),
+    )
     projects.prune(asset_retention_days=settings.asset_retention_days)
     runtime = Runtime(
         settings,
