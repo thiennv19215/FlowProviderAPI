@@ -35,7 +35,7 @@ jobs:
             trap - EXIT
             set +e
             echo "::group::Restore production main"
-            git -C "$PROD" fetch origin main
+            git -C "$PROD" fetch origin +refs/heads/main:refs/remotes/origin/main
             git -C "$PROD" checkout main
             git -C "$PROD" reset --hard origin/main
             (
@@ -65,7 +65,9 @@ jobs:
 
           git -C "$PROD" diff --quiet
           git -C "$PROD" diff --cached --quiet
-          git -C "$PROD" fetch origin main dev
+          git -C "$PROD" fetch origin \
+            +refs/heads/main:refs/remotes/origin/main \
+            +refs/heads/dev:refs/remotes/origin/dev
           TARGET_SHA="$(git -C "$PROD" rev-parse origin/dev)"
           MAIN_SHA="$(git -C "$PROD" rev-parse origin/main)"
           echo "Acceptance target dev: $TARGET_SHA"
