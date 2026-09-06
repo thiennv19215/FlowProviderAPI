@@ -1,296 +1,107 @@
 <!doctype html>
 <html lang="vi">
-
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>FlowProvider Console</title>
+  <title>Flow Provider Connector</title>
   <link rel="stylesheet" href="popup.css">
 </head>
-
 <body>
   <div class="fp-console">
-    <!-- Header Navigation -->
     <header class="fp-header">
       <div class="header-brand-group">
-        <div class="fp-logo">
+        <div class="fp-logo" aria-hidden="true">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="url(#logo-grad)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
-            <defs>
-              <linearGradient id="logo-grad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
-                <stop stop-color="#38bdf8" />
-                <stop offset="0.5" stop-color="#818cf8" />
-                <stop offset="1" stop-color="#c084fc" />
-              </linearGradient>
-            </defs>
+            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
         </div>
         <div class="fp-title-wrap">
-          <span class="fp-title">FlowProvider</span>
-          <span id="version" class="fp-badge-version">v1.0.11</span>
-        </div>
-
-        <div class="fp-workspace-chip" title="Không gian dự án Google Flow">
-          <span class="chip-spark">✦</span>
-          <span id="project-scope-label" class="chip-label">Workspace: Default</span>
-          <span class="chip-dot"></span>
+          <span class="fp-title">Flow Provider Connector</span>
+          <span id="version" class="fp-badge-version">...</span>
         </div>
       </div>
-
       <div class="header-status-group">
-        <!-- Live Connection Health Pill -->
-        <div id="status-badge" class="fp-status-pill checking" title="Trạng thái WebSocket Gateway">
+        <div id="status-badge" class="fp-status-pill checking" title="Trạng thái kết nối Provider">
           <span class="status-dot"></span>
           <span id="status" class="status-label">Checking...</span>
         </div>
-
-        <!-- Quick actions -->
         <div class="fp-action-bar">
-          <button id="flow" class="fp-icon-btn" type="button" title="Mở tab Google Flow">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <circle cx="12" cy="12" r="10" />
-              <polygon points="10 8 16 12 10 16 10 8" fill="currentColor" />
-            </svg>
-          </button>
-          <button id="btn-toggle-activity" class="fp-icon-btn active" type="button" title="Bật/tắt bảng nhật ký">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <line x1="4" y1="6" x2="20" y2="6" />
-              <line x1="4" y1="12" x2="14" y2="12" />
-              <line x1="4" y1="18" x2="18" y2="18" />
-            </svg>
-          </button>
-          <button id="popout-tab" class="fp-icon-btn" type="button" title="Mở ra toàn màn hình">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-              <path d="M15 3h6v6" />
-              <path d="M10 14L21 3" />
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-            </svg>
-          </button>
+          <button id="flow" class="fp-icon-btn" type="button" title="Mở Google Flow">Flow</button>
+          <button id="refresh" class="fp-icon-btn" type="button" title="Làm mới trạng thái">↻</button>
         </div>
       </div>
     </header>
 
-    <!-- Context Notice Banner -->
-    <aside id="banner-alert" class="fp-alert-banner">
-      <div class="alert-content">
-        <span class="alert-icon">⚡</span>
-        <span class="alert-text">Sẵn sàng điều phối: Google Flow & ChatGPT đã kích hoạt chế độ In-Tab Session.</span>
-      </div>
-      <button id="banner-close" class="alert-close" type="button" aria-label="Đóng thông báo">✕</button>
-    </aside>
-
-    <!-- Navigation Bar -->
-    <nav class="fp-subnav">
-      <div class="subnav-tabs">
-        <button class="subnav-item active" data-tab="studio" type="button">
-          <span class="tab-glyph">◈</span> Studio Console
-        </button>
-        <button class="subnav-item" data-tab="queue" type="button">
-          <span class="tab-glyph">▤</span> Task Queue
-          <span id="tab-task-badge" class="counter-badge">0</span>
-        </button>
-        <button class="subnav-item" data-tab="docs" type="button">
-          <span class="tab-glyph">ℹ</span> Provider Docs
-        </button>
-      </div>
-
-      <div class="subnav-job-state">
-        <span class="job-dot"></span>
-        <span id="job" class="job-tag idle">Idle</span>
-      </div>
-    </nav>
-
-    <!-- Main Workspace Stage -->
     <main class="fp-stage">
-      <!-- Studio Creator Panel -->
-      <section class="fp-panel" id="panel-studio">
-        <!-- Prompt Box Container -->
-        <div class="fp-card prompt-card">
+      <section class="fp-panel">
+        <div id="banner-alert" class="fp-alert-banner">
+          <div class="alert-content">
+            <span class="alert-icon">⚡</span>
+            <span id="banner-text" class="alert-text">Đang kiểm tra kết nối Provider và Google Flow.</span>
+          </div>
+        </div>
+
+        <div class="fp-card params-card">
           <div class="card-header">
             <div class="header-left-meta">
-              <span class="meta-icon">✍</span>
-              <span class="meta-heading">Prompt Payload</span>
-              <span id="prompt-count" class="meta-count">Ready</span>
-            </div>
-            <div class="header-right-meta">
-              <label class="fp-switch">
-                <span class="switch-label">Batch Prompts</span>
-                <input id="toggle-multi" type="checkbox">
-                <span class="switch-slider"></span>
-              </label>
+              <span class="meta-icon">◈</span>
+              <span class="meta-heading">Connector Health</span>
             </div>
           </div>
-
-          <div class="input-container">
-            <textarea id="prompt-input" class="fp-textarea" placeholder="Nhập prompt sáng tạo nội dung của bạn tại đây...
-
-Ví dụ: Cybernetic samurai overlooking a neon-lit rain Tokyo, volumetric fog, cinematic 8k" rows="5"></textarea>
+          <div class="telemetry-grid">
+            <div class="telemetry-card active">
+              <span class="telemetry-value" id="stat-active">0</span>
+              <span class="telemetry-tag">Đang xử lý</span>
+            </div>
+            <div class="telemetry-card completed">
+              <span class="telemetry-value" id="stat-completed">0</span>
+              <span class="telemetry-tag">Đã hoàn thành</span>
+            </div>
+            <div class="telemetry-card error">
+              <span class="telemetry-value" id="stat-error">0</span>
+              <span class="telemetry-tag">Lỗi cục bộ</span>
+            </div>
           </div>
-
-          <div class="card-actions">
-            <div class="action-chips">
-              <button id="btn-prompt-assistant" class="fp-chip-btn" type="button">
-                <span class="chip-sparkle">✦</span> Style Booster
-              </button>
-              <button id="btn-clear-prompt" class="fp-chip-btn" type="button">
-                <span>✕</span> Xóa trắng
-              </button>
-            </div>
-            <div class="action-extra">
-              <span class="key-hint">Phím tắt: Ctrl + Enter</span>
-            </div>
+          <div class="subnav-job-state">
+            <span class="job-dot"></span>
+            <span id="job" class="job-tag idle">Idle</span>
           </div>
         </div>
 
-        <!-- Provider Routing Pills -->
-        <div class="fp-routing-strip">
-          <span class="routing-label">Target Provider:</span>
-          <div class="routing-pills">
-            <button class="route-pill active" data-provider="flow" type="button">
-              <span class="pill-beacon"></span> Google Flow
-            </button>
-            <button class="route-pill" data-provider="chatgpt" type="button">
-              <span class="pill-beacon"></span> ChatGPT Tab
-            </button>
-            <button class="route-pill" data-provider="gemini" type="button">
-              <span class="pill-beacon"></span> Gemini Live
-            </button>
-          </div>
-        </div>
-
-        <!-- Generation Parameter Controls -->
-        <div class="fp-card params-card">
-          <div class="params-row">
-            <!-- Mode Segmented: Image vs Video -->
-            <div class="param-control">
-              <span class="control-label">Media Mode</span>
-              <div class="fp-segment-group" id="media-type-group">
-                <button class="segment-btn active" data-type="image" type="button">Image</button>
-                <button class="segment-btn" data-type="video" type="button">Video (Veo)</button>
-              </div>
+        <section class="fp-activity-panel" id="activity-drawer">
+          <div class="activity-topbar">
+            <div class="activity-heading-wrap">
+              <span class="activity-pulse"></span>
+              <span class="activity-heading">Connector Activity</span>
             </div>
-
-            <!-- Model Selection Dropdown -->
-            <div class="param-control flex-grow">
-              <span class="control-label">Generator Model</span>
-              <div class="fp-select-wrap">
-                <select id="model-select" class="fp-select">
-                  <option value="imagen-3">Imagen 3 Pro (Flow Engine)</option>
-                  <option value="flow-v2">Flow V2 Ultra Fast</option>
-                  <option value="veo-video">Veo 2 Cinematic Video</option>
-                </select>
-              </div>
-            </div>
-
-            <!-- Aspect Ratio Selector -->
-            <div class="param-control">
-              <span class="control-label">Aspect Ratio</span>
-              <div class="fp-segment-group" id="ratio-group">
-                <button class="segment-btn active" data-ratio="9:16" type="button">9:16</button>
-                <button class="segment-btn" data-ratio="16:9" type="button">16:9</button>
-                <button class="segment-btn" data-ratio="1:1" type="button">1:1</button>
-              </div>
-            </div>
-
-            <!-- Batch Count Stepper -->
-            <div class="param-control">
-              <span class="control-label">Variants</span>
-              <div class="fp-stepper">
-                <button id="stepper-dec" class="stepper-action" type="button">−</button>
-                <span id="stepper-val" class="stepper-number">1</span>
-                <button id="stepper-inc" class="stepper-action" type="button">+</button>
-              </div>
+            <div class="activity-btn-group">
+              <button id="copy-logs" class="fp-mini-btn" type="button">Copy</button>
+              <button id="clear-logs" class="fp-mini-btn" type="button">Clear</button>
             </div>
           </div>
-        </div>
-
-        <!-- Hero Dispatch Action -->
-        <div class="fp-hero-cta">
-          <button id="btn-generate" class="fp-cta-button" type="button">
-            <span class="cta-glow"></span>
-            <span class="cta-content">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-              </svg>
-              <span>Dispatch Generation</span>
-            </span>
-          </button>
-        </div>
-
-        <!-- Result Preview Showcase -->
-        <div id="result-gallery" class="fp-card result-showcase" hidden>
-          <div class="result-header">
-            <div class="result-title-wrap">
-              <span class="result-icon">✦</span>
-              <span class="result-title">Generated Outputs</span>
-              <span id="result-count" class="result-badge">0 items</span>
-            </div>
-            <button id="btn-close-result" class="fp-mini-btn" type="button">✕ Đóng</button>
+          <div id="logs" class="fp-log-stream">
+            <div class="empty-state">Chưa có hoạt động.</div>
           </div>
-          <div id="result-grid" class="result-grid"></div>
-        </div>
-      </section>
-
-      <!-- Collapsible Activity Console & Stats -->
-      <section class="fp-activity-panel" id="activity-drawer">
-        <div class="activity-topbar">
-          <div class="activity-heading-wrap">
-            <span class="activity-pulse"></span>
-            <span class="activity-heading">Worker Telemetry & Logs</span>
-          </div>
-          <div class="activity-btn-group">
-            <button id="copy-logs" class="fp-mini-btn" type="button" title="Sao chép toàn bộ nhật ký">Copy</button>
-            <button id="clear-logs" class="fp-mini-btn" type="button" title="Xóa dữ liệu nhật ký">Clear</button>
-            <button id="drawer-toggle" class="fp-mini-btn" type="button" title="Thu gọn/mở rộng">▲</button>
-          </div>
-        </div>
-
-        <!-- Telemetry metric cards -->
-        <div class="telemetry-grid">
-          <div class="telemetry-card active">
-            <span class="telemetry-value" id="stat-active">0</span>
-            <span class="telemetry-tag">Đang xử lý</span>
-          </div>
-          <div class="telemetry-card completed">
-            <span class="telemetry-value" id="stat-completed">0</span>
-            <span class="telemetry-tag">Đã hoàn thành</span>
-          </div>
-          <div class="telemetry-card error">
-            <span class="telemetry-value" id="stat-error">0</span>
-            <span class="telemetry-tag">Gặp sự cố</span>
-          </div>
-        </div>
-
-        <!-- Realtime streaming logs -->
-        <div id="logs" class="fp-log-stream">
-          <div class="empty-state">Sẵn sàng tiếp nhận lệnh tạo từ API hoặc MCP Adapter</div>
-        </div>
+        </section>
       </section>
     </main>
 
-    <!-- Error Toast Notification -->
     <div id="error" class="fp-error-toast" hidden></div>
 
-    <!-- Console Footer -->
     <footer class="fp-footer">
       <div class="footer-account-meta">
         <span class="fp-account-avatar">●</span>
-        <span id="account" class="fp-account-name">Đang kết nối phiên...</span>
+        <span id="account" class="fp-account-name">Đang kiểm tra tài khoản...</span>
         <div id="credits-pill" class="fp-credits-capsule" hidden>
           <span class="capsule-icon">⚡</span>
           <span id="credits-value">0 cr</span>
         </div>
       </div>
-
       <div class="footer-system-meta">
-        <span class="system-shield">🔒 TLS End-to-End</span>
-        <span class="system-divider">·</span>
-        <span class="system-info">Provider Gateway Engine</span>
+        <span class="system-info">Executor only · jobs are owned by FlowProviderAPI</span>
       </div>
     </footer>
   </div>
-
   <script src="popup.js"></script>
 </body>
-
 </html>
