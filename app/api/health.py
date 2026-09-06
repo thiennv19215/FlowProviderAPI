@@ -19,18 +19,6 @@ def _status(request: Request) -> dict:
         status = "waiting_for_provider"
     else:
         status = "ready"
-    accounts_info = [
-        {
-            "id": connection.id,
-            "installation_id": connection.installation_id,
-            "account_email": getattr(connection, "account_email", None),
-            "credits": getattr(connection, "credits", None),
-            "available_credits": runtime.available_credits(connection),
-            "can_reserve_20": runtime.can_reserve(connection, 20),
-            "last_error": getattr(connection, "last_error", None),
-        }
-        for connection in ready_conns
-    ]
     return {
         "status": status,
         "project_store": "ready" if store_ready else "unavailable",
@@ -39,7 +27,6 @@ def _status(request: Request) -> dict:
             1 for connection in ready_conns
             if runtime.can_reserve(connection, 20)
         ),
-        "accounts": accounts_info,
     }
 
 
@@ -51,7 +38,7 @@ def live():
 @router.get("/health/ready", include_in_schema=False)
 def ready(request: Request):
     status = _status(request)
-    if status["status"] == "unavailable":
+    if status["status"] != "ready":
         return JSONResponse(status_code=503, content=status)
     return status
 
@@ -59,4 +46,4 @@ def ready(request: Request):
 @router.get("/api/health", include_in_schema=False)
 def extension_health(request: Request):
     status = _status(request)
-    return {"ok": status["status"] != "unavailable", **status}
+    return {"ok": status["status"] == "ready", **status}
