@@ -1,10 +1,11 @@
+import json
 import time
 
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from app.config import Settings
-from app.extension.gateway import REQUIRED_CAPABILITIES
+from app.extension.gateway import REQUIRED_CAPABILITIES, _hello_diagnostics
 from app.main import create_app
 
 
@@ -62,3 +63,22 @@ def test_gateway_rejects_malformed_capabilities():
             else:
                 raise AssertionError("malformed executor capabilities must close the socket")
         assert app.state.runtime.bridge.connected is False
+
+
+def test_handshake_diagnostics_never_include_credentials_or_identity():
+    hello = _hello(
+        connectorApiKey="fpe_prod_super_secret",
+        installationId="install-private-identifier",
+        account_email="private@example.com",
+        userInfo={"email": "private@example.com"},
+    )
+    diagnostics = _hello_diagnostics(hello)
+    assert diagnostics == {
+        "protocol": 7,
+        "extension_version": "1.0.12",
+        "capability_count": len(REQUIRED_CAPABILITIES),
+    }
+    encoded = json.dumps(diagnostics)
+    assert "super_secret" not in encoded
+    assert "private@example.com" not in encoded
+    assert "install-private-identifier" not in encoded
