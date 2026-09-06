@@ -27,15 +27,56 @@ compose=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
 verify_gateway_surface() {
   "${compose[@]}" exec -T api python - <<'PY'
 import json
-import urllib.request
+import os
 import urllib.error
+import urllib.request
 
 base_url = "http://127.0.0.1:8000"
 with urllib.request.urlopen(base_url + "/openapi.json", timeout=5) as response:
-    paths = json.load(response)["paths"]
+    schema = json.load(response)
+paths = schema["paths"]
 required = {"/v1/media", "/v1/images/generations", "/v1/videos/generations", "/v1/jobs/status"}
 if not required.issubset(set(paths)):
     raise SystemExit(f"missing required public API endpoints: {sorted(required - set(paths))}")
+security = schema.get("components", {}).get("securitySchemes", {})
+if "BearerAuth" not in security:
+    raise SystemExit("OpenAPI is missing the BearerAuth security scheme")
+
+body = json.dumps({"job_ids": ["deploy_smoke_missing"]}).encode("utf-8")
+unauthenticated = urllib.request.Request(
+    base_url + "/v1/jobs/status",
+    data=body,
+    method="POST",
+    headers={"Content-Type": "application/json"},
+)
+try:
+    urllib.request.urlopen(unauthenticated, timeout=5)
+except urllib.error.HTTPError as exc:
+    if exc.code != 401:
+        raise
+    payload = json.loads(exc.read().decode("utf-8"))
+    if payload.get("error", {}).get("code") != "INVALID_API_KEY":
+        raise SystemExit("unauthenticated /v1 request did not return INVALID_API_KEY")
+else:
+    raise SystemExit("unauthenticated /v1 request was accepted")
+
+api_key = os.environ.get("FLOW_PROVIDER_BOOTSTRAP_API_KEY", "").strip()
+if not api_key:
+    raise SystemExit("FLOW_PROVIDER_BOOTSTRAP_API_KEY is missing inside the API container")
+authenticated = urllib.request.Request(
+    base_url + "/v1/jobs/status",
+    data=body,
+    method="POST",
+    headers={
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    },
+)
+with urllib.request.urlopen(authenticated, timeout=5) as response:
+    payload = json.load(response)
+if payload.get("jobs", [{}])[0].get("error", {}).get("code") != "JOB_NOT_FOUND":
+    raise SystemExit("authenticated /v1 job-status smoke response is unexpected")
+
 try:
     urllib.request.urlopen(base_url + "/admin", timeout=5)
 except urllib.error.HTTPError as exc:
@@ -43,7 +84,7 @@ except urllib.error.HTTPError as exc:
         raise
 else:
     raise SystemExit("legacy admin surface is enabled")
-print("Google Flow facade API surface is ready.")
+print("Google Flow facade API surface and production auth contract are ready.")
 PY
 }
 
