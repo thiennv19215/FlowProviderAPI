@@ -79,7 +79,8 @@ def test_production_readiness_is_safe_and_requires_provider(tmp_path):
     assert ready.json()["status"] == "waiting_for_provider"
     assert "accounts" not in ready.json()
     assert extension_health.status_code == 200
-    assert extension_health.json()["ok"] is False
+    assert extension_health.json()["ok"] is True
+    assert extension_health.json()["status"] == "waiting_for_provider"
     assert "accounts" not in extension_health.json()
 
 
