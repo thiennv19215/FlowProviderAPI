@@ -2,7 +2,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev]
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -33,4 +33,6 @@ jobs:
         run: |
           cp .env.production.example .env.production
           sed -i 's/^CLOUDFLARE_TUNNEL_TOKEN=$/CLOUDFLARE_TUNNEL_TOKEN=ci_tunnel_token/' .env.production
+          sed -i 's/^FLOW_PROVIDER_BOOTSTRAP_API_KEY=$/FLOW_PROVIDER_BOOTSTRAP_API_KEY=fpa_prod_ci_business_secret/' .env.production
+          sed -i 's/^FLOW_PROVIDER_EXTENSION_API_KEY=$/FLOW_PROVIDER_EXTENSION_API_KEY=fpe_prod_ci_connector_secret/' .env.production
           docker compose --env-file .env.production -f compose.production.yaml config >/dev/null
