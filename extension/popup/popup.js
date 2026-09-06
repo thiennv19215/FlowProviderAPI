@@ -135,25 +135,14 @@ function renderBackendHealth(health) {
   }
 }
 
-async function fetchBackendHealth(serverUrl) {
-  if (!serverUrl) return null;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 3000);
+async function fetchBackendHealth() {
   try {
-    const url = new URL('/api/health', serverUrl);
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      cache: 'no-store',
-      credentials: 'omit',
-      signal: controller.signal,
-    });
-    if (!response.ok) return null;
-    const health = await response.json();
-    return health && typeof health === 'object' ? health : null;
+    const response = await send({ type: 'FLOW_PROVIDER_GET_BACKEND_HEALTH' });
+    return response?.ok && response.health && typeof response.health === 'object'
+      ? response.health
+      : null;
   } catch (_) {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -173,7 +162,7 @@ async function refresh() {
       if (hasCredits) creditsValueEl.textContent = `${state.account.credits} cr`;
     }
     renderActivity(state.activity);
-    renderBackendHealth(await fetchBackendHealth(state.serverUrl));
+    renderBackendHealth(await fetchBackendHealth());
   } catch (error) {
     updateStatus(false, false);
     renderBackendHealth(null);
