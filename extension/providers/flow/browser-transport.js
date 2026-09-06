@@ -1,5 +1,13 @@
 const FLOW_AUTH_MODE = "flow";
 const FLOW_API_HOST = "aisandbox-pa.googleapis.com";
+const PRODUCT_FETCH_HOSTS = new Set([
+  "labs.google",
+  "flow.google",
+  "flow.google.com",
+  "aisandbox-pa.googleapis.com",
+  "flow-content.google",
+  "storage.googleapis.com",
+]);
 let capturedFlowApiKey = null;
 
 function normalizeFlowApiKey(value) {
@@ -14,6 +22,16 @@ function apiKeyFromUrl(value) {
     return normalizeFlowApiKey(url.searchParams.get("key"));
   } catch (_) {
     return null;
+  }
+}
+
+function isProductFetchUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (url.protocol !== "https:") return false;
+    return PRODUCT_FETCH_HOSTS.has(url.hostname);
+  } catch (_) {
+    return false;
   }
 }
 
@@ -75,7 +93,14 @@ async function withBrowserOwnedFlowAuth(spec) {
 
 const baseHandleRpc = handleRpc;
 handleRpc = async function browserOwnedHandleRpc(msg, signal) {
-  if ((msg?.type === "SW_FETCH" || msg?.type === "INJECT_PAGE_FETCH") && msg?.spec?.authMode === FLOW_AUTH_MODE) {
+  const rpcType = String(msg?.type || "");
+  if (rpcType.startsWith("CHATGPT_")) {
+    throw new Error("unsupported_provider_rpc:chatgpt");
+  }
+  if ((rpcType === "SW_FETCH" || rpcType === "INJECT_PAGE_FETCH") && !isProductFetchUrl(msg?.spec?.url)) {
+    throw new Error("fetch_host_not_allowed");
+  }
+  if ((rpcType === "SW_FETCH" || rpcType === "INJECT_PAGE_FETCH") && msg?.spec?.authMode === FLOW_AUTH_MODE) {
     return baseHandleRpc({ ...msg, spec: await withBrowserOwnedFlowAuth(msg.spec) }, signal);
   }
   return baseHandleRpc(msg, signal);
