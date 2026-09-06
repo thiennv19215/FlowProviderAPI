@@ -69,6 +69,13 @@ class MCPSettings(BaseSettings):
             "FLOW_PROVIDER_PUBLIC_BASE_URL",
         ),
     )
+    api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "FLOW_PROVIDER_MCP_API_KEY",
+            "FLOW_PROVIDER_BOOTSTRAP_API_KEY",
+        ),
+    )
     timeout_seconds: float = Field(
         default=300,
         ge=1,
@@ -89,6 +96,14 @@ class MCPSettings(BaseSettings):
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("MCP base URL cannot contain credentials, a query, or a fragment")
         return value.rstrip("/")
+
+    @field_validator("api_key")
+    @classmethod
+    def validate_api_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
     @field_validator("allowed_roots")
     @classmethod
@@ -130,12 +145,15 @@ class FlowProviderClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self.settings = settings or MCPSettings()
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "FlowProviderMCP/1.0",
+        }
+        if self.settings.api_key:
+            headers["Authorization"] = f"Bearer {self.settings.api_key}"
         self._client = httpx.AsyncClient(
             base_url=self.settings.base_url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "FlowProviderMCP/1.0",
-            },
+            headers=headers,
             timeout=self.settings.timeout_seconds,
             transport=transport,
             trust_env=False,
