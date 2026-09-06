@@ -92,9 +92,6 @@ syncAuth = async function browserOwnedSyncAuth(targetSocket = socket) {
       const session = await fetchLabsSession({ expectedGeneration: generation });
       fetchSequence = authFetchSequence;
       if (!session || generation !== authGeneration || fetchSequence !== authFetchSequence || targetSocket !== socket || targetSocket.readyState !== WebSocket.OPEN) return;
-      // fetchLabsSession may be supplied by a browser integration shim. Keep
-      // the cache update here as part of the same generation check so an old
-      // session can never become the bearer used by the active account.
       cachedBearer = session.access_token;
       cachedBearerAt = Date.now();
       lastAuthSyncAt = Date.now();
@@ -149,4 +146,62 @@ publishCapturedSession = function browserOwnedPublishCapturedSession(token, emai
     }
   }
   return true;
+};
+
+// Product contract: the browser extension is an executor/connector. Durable job
+// creation belongs to FlowProviderAPI so queueing, idempotency and paid-request
+// reconciliation always share one source of truth.
+executeDirectFlowImageGeneration = async function disabledDirectFlowGeneration() {
+  throw new Error("direct_generation_disabled_use_provider_api");
+};
+
+// Include explicit connector capabilities in the existing extension_ready hello
+// via the metadata spread performed by background.js.
+const baseGetProfileMetaForCapabilities = getProfileMeta;
+getProfileMeta = async function connectorProfileMeta() {
+  const meta = await baseGetProfileMetaForCapabilities();
+  return {
+    ...meta,
+    extensionVersion: chrome.runtime.getManifest().version,
+    capabilities: [
+      "flow.session",
+      "flow.browser_fetch",
+      "flow.recaptcha",
+      "flow.project_tab",
+      "rpc.cancel",
+      "connector.keepalive",
+    ],
+  };
+};
+
+// A stored Chrome tab id is only reusable while it still points at Google Flow.
+// If the user navigates that tab elsewhere, discard the stale pointer before
+// the normal Flow-tab selection logic runs.
+const baseFindOrOpenFlowHomeForValidation = findOrOpenFlowHome;
+findOrOpenFlowHome = async function validatedFindOrOpenFlowHome(options = {}) {
+  const stored = await chrome.storage.local.get(FLOW_TAB_ID_KEY);
+  const trackedTabId = Number(stored?.[FLOW_TAB_ID_KEY]);
+  if (Number.isInteger(trackedTabId) && trackedTabId > 0) {
+    const tracked = await chrome.tabs.get(trackedTabId).catch(() => null);
+    const trackedUrl = tracked?.url || tracked?.pendingUrl || "";
+    if (!tracked || !isFlowUrl(trackedUrl)) {
+      await chrome.storage.local.remove(FLOW_TAB_ID_KEY);
+    }
+  }
+  return baseFindOrOpenFlowHomeForValidation(options);
+};
+
+// Desynchronise reconnect storms when many Chrome profiles reconnect after the
+// Provider/VPS restarts. Exponential backoff remains bounded, with positive jitter.
+scheduleReconnect = function jitteredScheduleReconnect() {
+  if (reconnectTimer) return;
+  const baseDelay = Math.min(1000 * 2 ** reconnectAttempt, 15000);
+  const jitterWindow = Math.max(250, Math.floor(baseDelay * 0.4));
+  const delay = Math.min(30000, baseDelay + Math.floor(Math.random() * jitterWindow));
+  reconnectAttempt += 1;
+  appendActivity("Backend reconnect scheduled", "running", `${delay} ms`);
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, delay);
+  try {
+    chrome.alarms.create("reconnect", { delayInMinutes: Math.max(0.05, delay / 60000) });
+  } catch (_) {}
 };
