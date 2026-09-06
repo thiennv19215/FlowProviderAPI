@@ -815,16 +815,65 @@ def _video_media_generation_failed(status: object) -> bool:
 
 
 def _video_provider_error_message(error: object, fallback: str) -> str:
-    if isinstance(error, dict):
-        for key in ("message", "localizedMessage", "status", "code"):
-            value = error.get(key)
-            if isinstance(value, str) and value.strip():
-                return f"{fallback}: {value.strip()}"
-            if isinstance(value, (int, float)):
-                return f"{fallback}: {value}"
-    elif isinstance(error, str) and error.strip():
-        return f"{fallback}: {error.strip()}"
-    return fallback
+    # Keep only diagnostic fields, never serialize the complete upstream
+    # response (which can contain signed URLs, headers, or input media).
+    details: list[str] = []
+
+    def collect(node: object, depth: int = 0) -> None:
+        if depth > 6 or len(details) >= 8:
+            return
+        if isinstance(node, str) and node.strip():
+            value = " ".join(node.split())[:400]
+            if value not in details:
+                details.append(value)
+        elif isinstance(node, dict):
+            for key in ("message", "localizedMessage", "reason", "status", "code"):
+                value = node.get(key)
+                if isinstance(value, str):
+                    collect(value, depth + 1)
+                elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                    collect(f"{key}={value}", depth + 1)
+            for key in ("error", "details"):
+                collect(node.get(key), depth + 1)
+        elif isinstance(node, list):
+            for item in node[:8]:
+                collect(item, depth + 1)
+
+    collect(error)
+    if details:
+        return f"{fallback} Upstream details: {'; '.join(details)}"[:1000]
+    return (
+        f"{fallback} Google Flow did not provide a detailed reason. "
+        "Check the failed media in the Google Flow project before creating another video."
+    )
+
+
+def _extract_upstream_error_codes(node: object) -> tuple[str | None, str | None]:
+    """Extract (upstream_code, upstream_status) from upstream error diagnostics."""
+    code: str | None = None
+    status: str | None = None
+
+    def scan(item: object, depth: int = 0) -> None:
+        nonlocal code, status
+        if depth > 6 or (code is not None and status is not None):
+            return
+        if isinstance(item, dict):
+            if code is None and item.get("code") is not None:
+                code = str(item["code"])
+            if status is None:
+                for key in ("reason", "status"):
+                    val = item.get(key)
+                    if isinstance(val, str) and val.strip():
+                        status = val.strip()
+                        break
+            for key in ("error", "details"):
+                scan(item.get(key), depth + 1)
+        elif isinstance(item, list):
+            for sub in item[:8]:
+                scan(sub, depth + 1)
+
+    scan(node)
+    return code, status
 
 
 def _video_status_failure(result: dict) -> APIError | None:
@@ -839,17 +888,21 @@ def _video_status_failure(result: dict) -> APIError | None:
         operation = item.get("operation") if isinstance(item.get("operation"), dict) else item
         if not isinstance(operation, dict) or "error" not in operation:
             continue
+        u_code, u_status = _extract_upstream_error_codes(operation.get("error"))
+        error_code = u_status or u_code or "VIDEO_OPERATION_FAILED"
         return APIError(
             502,
-            "VIDEO_OPERATION_FAILED",
+            error_code,
             _video_provider_error_message(
                 operation.get("error"),
                 "Google Flow video operation failed.",
             ),
             retryable=False,
+            upstream_code=u_code,
+            upstream_status=u_status,
         )
 
-    def failed_media_status(node: object) -> str | None:
+    def failed_media_status(node: object) -> tuple[str, list[dict]] | None:
         if isinstance(node, list):
             for item in node:
                 failure = failed_media_status(item)
@@ -862,7 +915,9 @@ def _video_status_failure(result: dict) -> APIError | None:
         media_status = metadata.get("mediaStatus") if isinstance(metadata, dict) else None
         status = media_status.get("mediaGenerationStatus") if isinstance(media_status, dict) else None
         if _video_media_generation_failed(status):
-            return str(status)
+            # Error fields may live on the status, metadata, or media item.
+            # Restrict extraction to this failed item, not sibling media.
+            return str(status), [media_status, metadata, node]
         for value in node.values():
             failure = failed_media_status(value)
             if failure:
@@ -871,11 +926,19 @@ def _video_status_failure(result: dict) -> APIError | None:
 
     failure_status = failed_media_status(data)
     if failure_status:
+        status, diagnostics = failure_status
+        u_code, u_status = _extract_upstream_error_codes(diagnostics)
+        error_code = u_status or u_code or str(status)
         return APIError(
             502,
-            "VIDEO_MEDIA_FAILED",
-            f"Google Flow video generation failed with status {failure_status}.",
+            error_code,
+            _video_provider_error_message(
+                diagnostics,
+                f"Google Flow video generation failed with status {status}.",
+            ),
             retryable=False,
+            upstream_code=u_code,
+            upstream_status=u_status or str(status),
         )
     return None
 
@@ -1232,6 +1295,8 @@ def _job_to_dict(job: Any) -> dict:
             "message": job.error_message,
             "retryable": bool(getattr(job, "error_retryable", False)),
             "outcome_unknown": bool(getattr(job, "outcome_unknown", False)),
+            "upstream_code": getattr(job, "upstream_code", None),
+            "upstream_status": getattr(job, "upstream_status", None),
         }
     return {
         "id": getattr(job, "job_id", ""),

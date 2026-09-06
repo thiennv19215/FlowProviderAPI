@@ -543,6 +543,8 @@ class JobWorker:
                         ),
                         retryable=False,
                         outcome_unknown=unknown,
+                        upstream_code=str(status) if isinstance(status, int) else None,
+                        upstream_status=str(result.get("error")) if result.get("error") else (f"HTTP_{status}" if isinstance(status, int) else None),
                     )
                     return
                 data = result.get("data") if isinstance(result.get("data"), dict) else {}
@@ -644,6 +646,8 @@ class JobWorker:
                         claim_token,
                         error_code="CREDIT_EXHAUSTED",
                         retryable=False,
+                        upstream_code=str(status) if isinstance(status, int) else None,
+                        upstream_status="CREDIT_EXHAUSTED",
                     )
                     return
                 if paid_attempted and (
@@ -661,6 +665,8 @@ class JobWorker:
                     job.job_id, error_msg, claim_token,
                     error_code="VIDEO_DISPATCH_OUTCOME_UNKNOWN" if unknown else "VIDEO_DISPATCH_FAILED",
                     outcome_unknown=unknown,
+                    upstream_code=str(status) if isinstance(status, int) else None,
+                    upstream_status=str(result.get("error")) if result.get("error") else (f"HTTP_{status}" if isinstance(status, int) else None),
                 )
                 return
 
@@ -855,6 +861,8 @@ class JobWorker:
                         self.runtime.projects.update_job_failed(
                             job.job_id, failure.message, error_code=failure.code,
                             retryable=failure.retryable,
+                            upstream_code=failure.upstream_code,
+                            upstream_status=failure.upstream_status,
                         )
                         logger.warning("Job %s failed: %s", job.job_id, failure.message)
                         continue

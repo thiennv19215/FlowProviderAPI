@@ -310,6 +310,8 @@ class JobError(BaseModel):
     message: str
     retryable: bool = False
     outcome_unknown: bool = False
+    upstream_code: str | None = None
+    upstream_status: str | None = None
 
 
 class Job(BaseModel):

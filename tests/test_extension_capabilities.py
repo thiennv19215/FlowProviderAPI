@@ -34,6 +34,7 @@ def test_gateway_accepts_current_executor_capabilities():
             while not app.state.runtime.bridge.connected and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert app.state.runtime.bridge.connected is True
+            ws.close()
 
 
 def test_gateway_rejects_an_incomplete_advertised_capability_set():

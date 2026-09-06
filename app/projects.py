@@ -61,6 +61,8 @@ class ProviderJob:
     result_data: dict | None = None
     error_message: str | None = None
     error_code: str | None = None
+    upstream_code: str | None = None
+    upstream_status: str | None = None
     error_retryable: bool = False
     outcome_unknown: bool = False
     running_at: str | None = None
@@ -120,6 +122,8 @@ def _row_to_job(row: sqlite3.Row) -> ProviderJob:
         result_data=result,
         error_message=row["error_message"],
         error_code=row["error_code"] if "error_code" in columns else None,
+        upstream_code=row["upstream_code"] if "upstream_code" in columns else None,
+        upstream_status=row["upstream_status"] if "upstream_status" in columns else None,
         error_retryable=bool(row["error_retryable"]) if "error_retryable" in columns else False,
         outcome_unknown=bool(row["outcome_unknown"]) if "outcome_unknown" in columns else False,
         running_at=row["running_at"] if "running_at" in columns else None,
@@ -335,6 +339,11 @@ class ProjectStore:
                     self._connection.execute(
                         "ALTER TABLE provider_jobs ADD COLUMN error_code TEXT"
                     )
+                for column in ("upstream_code", "upstream_status"):
+                    if column not in job_columns:
+                        self._connection.execute(
+                            f"ALTER TABLE provider_jobs ADD COLUMN {column} TEXT"
+                        )
                 if "error_retryable" not in job_columns:
                     self._connection.execute(
                         "ALTER TABLE provider_jobs ADD COLUMN error_retryable INTEGER NOT NULL DEFAULT 0"
@@ -1394,12 +1403,14 @@ class ProjectStore:
         self, job_id: str, error_message: str, claim_token: str | None = None,
         *, error_code: str = "VIDEO_GENERATION_FAILED", retryable: bool = False,
         outcome_unknown: bool = False,
+        upstream_code: str | None = None, upstream_status: str | None = None,
     ) -> bool:
         with self._lock:
             db = self._db()
             condition = "job_id = ? AND status IN ('queued', 'dispatching', 'running')"
             params: list[object] = [
-                error_message[:1000], error_code, int(retryable), int(outcome_unknown), job_id,
+                error_message[:1000], error_code, int(retryable), int(outcome_unknown),
+                upstream_code, upstream_status, job_id,
             ]
             if claim_token is not None:
                 condition += " AND claim_token = ?"
@@ -1414,6 +1425,8 @@ class ProjectStore:
                     error_code = ?,
                     error_retryable = ?,
                     outcome_unknown = ?,
+                    upstream_code = ?,
+                    upstream_status = ?,
                     next_poll_at = NULL,
                     updated_at = CURRENT_TIMESTAMP,
                     completed_at = CURRENT_TIMESTAMP

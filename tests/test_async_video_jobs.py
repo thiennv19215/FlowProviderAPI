@@ -427,7 +427,12 @@ def test_video_contract_is_present_in_openapi():
     ]
 
 
-def test_worker_marks_terminal_media_failure(monkeypatch):
+@pytest.mark.parametrize("upstream_error", [None, {
+    "code": 3,
+    "message": "Reference image could not be processed",
+    "details": [{"reason": "INVALID_REFERENCE_IMAGE"}],
+}])
+def test_worker_marks_terminal_media_failure(monkeypatch, upstream_error):
     application = async_app()
     connect(application, monkeypatch)
     runtime = application.state.runtime
@@ -459,6 +464,7 @@ def test_worker_marks_terminal_media_failure(monkeypatch):
                 "name": "media/video-1",
                 "mediaMetadata": {"mediaStatus": {
                     "mediaGenerationStatus": "MEDIA_GENERATION_STATUS_UNSUCCESSFUL",
+                    "error": upstream_error,
                 }},
             }]},
         }
@@ -466,15 +472,25 @@ def test_worker_marks_terminal_media_failure(monkeypatch):
     monkeypatch.setattr(runtime.bridge, "api_request", failed_poll)
     asyncio.run(worker.poll_running_jobs())
     failed = runtime.projects.get_job("job-failed")
-    assert failed.status == "failed"
-    assert failed.error_code == "VIDEO_MEDIA_FAILED"
+    expected_code = "INVALID_REFERENCE_IMAGE" if upstream_error else "MEDIA_GENERATION_STATUS_UNSUCCESSFUL"
+    assert failed.error_code == expected_code
     with TestClient(application) as client:
         response = client.post("/v1/jobs/status", json={"job_ids": ["job-failed"]})
     assert response.json()["jobs"][0]["error"] == {
-        "code": "VIDEO_MEDIA_FAILED",
-        "message": "Google Flow video generation failed with status MEDIA_GENERATION_STATUS_UNSUCCESSFUL.",
+        "code": expected_code,
+        "message": (
+            "Google Flow video generation failed with status MEDIA_GENERATION_STATUS_UNSUCCESSFUL. "
+            + (
+                "Upstream details: Reference image could not be processed; code=3; INVALID_REFERENCE_IMAGE"
+                if upstream_error else
+                "Google Flow did not provide a detailed reason. "
+                "Check the failed media in the Google Flow project before creating another video."
+            )
+        ),
         "retryable": False,
         "outcome_unknown": False,
+        "upstream_code": "3" if upstream_error else None,
+        "upstream_status": "INVALID_REFERENCE_IMAGE" if upstream_error else "MEDIA_GENERATION_STATUS_UNSUCCESSFUL",
     }
 
 

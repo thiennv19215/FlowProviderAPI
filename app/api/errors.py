@@ -11,8 +11,10 @@ from app.api.schemas import ErrorResponse
 logger=logging.getLogger(__name__)
 
 class APIError(Exception):
-    def __init__(self,status_code:int,code:str,message:str,*,field:str|None=None,retryable:bool=False,headers:dict[str,str]|None=None):
+    def __init__(self,status_code:int,code:str,message:str,*,field:str|None=None,retryable:bool=False,headers:dict[str,str]|None=None,upstream_code:str|None=None,upstream_status:str|None=None):
         self.status_code=status_code;self.code=code;self.message=message;self.field=field;self.retryable=retryable;self.headers=headers or {}
+        self.upstream_code = upstream_code
+        self.upstream_status = upstream_status
 
 
 def error_body(request:Request,*,status_code:int,code:str,message:str,details:list[dict]|None=None,retryable:bool=False):
