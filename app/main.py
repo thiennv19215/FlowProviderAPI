@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import hmac
 import logging
 import uuid
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -30,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 
 class RequestGuardMiddleware:
-    """Enforce the actual streamed body size for public business calls."""
+    """Authenticate production business calls and enforce streamed body size."""
 
     def __init__(self, app, *, settings: Settings, max_request_bytes: int):
         self.app = app
@@ -41,10 +43,22 @@ class RequestGuardMiddleware:
     def _headers(scope) -> dict[bytes, bytes]:
         return {key.lower(): value for key, value in scope.get("headers") or []}
 
-    async def _reject(self, scope, receive, send, status_code: int, code: str, message: str):
+    async def _reject(
+        self,
+        scope,
+        receive,
+        send,
+        status_code: int,
+        code: str,
+        message: str,
+        *,
+        response_headers: dict[str, str] | None = None,
+    ):
         headers = self._headers(scope)
         request_id = headers.get(b"x-request-id", b"").decode("latin-1") or f"req_{uuid.uuid4().hex}"
         scope.setdefault("state", {})["request_id"] = request_id
+        output_headers = {"X-Request-Id": request_id}
+        output_headers.update(response_headers or {})
         response = JSONResponse(
             status_code=status_code,
             content={
@@ -57,7 +71,7 @@ class RequestGuardMiddleware:
                     "retryable": False,
                 }
             },
-            headers={"X-Request-Id": request_id},
+            headers=output_headers,
         )
         await response(scope, receive, send)
 
@@ -68,6 +82,33 @@ class RequestGuardMiddleware:
         headers = self._headers(scope)
         request_id = headers.get(b"x-request-id", b"").decode("latin-1") or f"req_{uuid.uuid4().hex}"
         scope.setdefault("state", {})["request_id"] = request_id
+
+        path = str(scope.get("path") or "")
+        is_business_path = path == "/v1" or path.startswith("/v1/")
+        if self.settings.env == "production" and is_business_path:
+            expected_key = self.settings.bootstrap_api_key or ""
+            raw_authorization = headers.get(b"authorization", b"").decode("latin-1").strip()
+            scheme, separator, supplied_key = raw_authorization.partition(" ")
+            supplied_key = supplied_key.strip()
+            valid = (
+                separator == " "
+                and scheme.lower() == "bearer"
+                and bool(supplied_key)
+                and bool(expected_key)
+                and hmac.compare_digest(expected_key, supplied_key)
+            )
+            if not valid:
+                await self._reject(
+                    scope,
+                    receive,
+                    send,
+                    401,
+                    "INVALID_API_KEY",
+                    "A valid Bearer API key is required.",
+                    response_headers={"WWW-Authenticate": "Bearer"},
+                )
+                return
+
         content_length = headers.get(b"content-length")
         if content_length:
             try:
@@ -180,6 +221,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(Exception, unexpected_error_handler)
     for router in (health_router, generations_router, characters_router, extension_router):
         app.include_router(router)
+
+    def custom_openapi():
+        if app.openapi_schema:
+            return app.openapi_schema
+        schema = get_openapi(
+            title=app.title,
+            version=app.version,
+            description=app.description,
+            routes=app.routes,
+        )
+        components = schema.setdefault("components", {})
+        security_schemes = components.setdefault("securitySchemes", {})
+        security_schemes["BearerAuth"] = {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "API key",
+            "description": "Required for /v1 business endpoints in production.",
+        }
+        methods = {"get", "post", "put", "patch", "delete", "options", "head"}
+        for path, path_item in schema.get("paths", {}).items():
+            if path == "/v1" or path.startswith("/v1/"):
+                for method, operation in path_item.items():
+                    if method.lower() in methods and isinstance(operation, dict):
+                        operation["security"] = [{"BearerAuth": []}]
+        app.openapi_schema = schema
+        return app.openapi_schema
+
+    app.openapi = custom_openapi
     return app
 
 
