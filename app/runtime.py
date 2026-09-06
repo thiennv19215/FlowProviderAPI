@@ -123,13 +123,22 @@ class Runtime:
 
         return min(available, key=_sort_key)
 
+    def durable_job_status_counts(self) -> dict[str, int]:
+        """Return aggregate durable active-job counts for safe operator telemetry."""
+        counts = {"queued": 0, "dispatching": 0, "running": 0}
+        with self.projects._lock:
+            rows = self.projects._db().execute(
+                "SELECT status, COUNT(*) FROM provider_jobs "
+                "WHERE status IN ('queued', 'dispatching', 'running') GROUP BY status"
+            ).fetchall()
+        for status, count in rows:
+            if status in counts:
+                counts[str(status)] = int(count)
+        return counts
+
     def durable_active_job_count(self) -> int:
         """Count durable work that still consumes queue/worker capacity."""
-        with self.projects._lock:
-            row = self.projects._db().execute(
-                "SELECT COUNT(*) FROM provider_jobs WHERE status IN ('queued', 'dispatching', 'running')"
-            ).fetchone()
-        return int(row[0]) if row is not None else 0
+        return sum(self.durable_job_status_counts().values())
 
     async def try_reserve_job_admission(self, idempotency_key: str | None) -> tuple[bool, bool]:
         """Atomically reserve one HTTP admission slot for a new generation request.
@@ -156,7 +165,7 @@ class Runtime:
                 self.pending_job_admissions -= 1
 
     def project_lock(self, installation_id: str) -> asyncio.Lock:
-        return self.project_locks.setdefault(installation_id, asyncio.Lock())
+        return self.project_locks.setdefault(installation_id, asyncio.Lock)
 
     def project_is_synced(self, connection, account_key: str) -> bool:
         session = (float(getattr(connection, "connected_at", 0)), account_key)
