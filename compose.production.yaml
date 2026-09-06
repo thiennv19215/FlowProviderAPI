@@ -6,6 +6,9 @@ services:
       context: .
     restart: unless-stopped
     init: true
+    user: "10001:10001"
+    security_opt:
+      - no-new-privileges:true
     env_file:
       - .env.production
     environment:
