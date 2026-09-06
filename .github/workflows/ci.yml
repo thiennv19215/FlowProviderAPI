@@ -48,3 +48,14 @@ jobs:
           docker compose --env-file .env.production -f compose.production.yaml config >/dev/null
       - name: Build production image
         run: docker build -t flowprovider-ci .
+      - name: Verify non-root runtime and data-volume access
+        run: |
+          set -euo pipefail
+          volume="flowprovider-ci-data-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker volume create "$volume" >/dev/null
+          trap 'docker volume rm -f "$volume" >/dev/null 2>&1 || true' EXIT
+          docker run --rm \
+            -v "$volume:/data" \
+            --entrypoint sh \
+            flowprovider-ci \
+            -ceu 'test "$(id -u)" = 10001; test "$(id -g)" = 10001; touch /data/.write-test'
