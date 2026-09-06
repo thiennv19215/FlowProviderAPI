@@ -1,41 +1,64 @@
 # FlowProviderAPI
 
-Google Flow API and orchestration service backed by signed-in Chrome MV3 connectors. The service selects an available account, remembers its managed Google Flow project, and forwards browser-authenticated generation requests.
+Google Flow API and orchestration service backed by signed-in Chrome MV3 connectors. The service exposes a stable server-to-server API, selects an available Google Flow account, manages project/media routing, persists durable jobs in SQLite, and forwards browser-authenticated generation requests through the private extension connector.
 
 ## Production contract
 
-Clients call fixed v1 business endpoints for projects, image upload, image generation and video generation. Image and video generation return durable Provider jobs; clients read their state from SQLite through `/v1/jobs/status`.
+Production business endpoints under `/v1/*` require:
 
-Image generation can run in either compatibility mode with an explicit `project_id`, or managed mode without one. The API resolves references, writes an image job, and returns `202`; the worker calls Flow once and stores the terminal result without upstream polling. Video jobs are dispatched once and then polled by the worker. In managed mode the Provider chooses a ready extension, reuses that account's newest project or creates `FlowProvider` when none exists, and caches project and media routes in SQLite.
+```http
+Authorization: Bearer <FLOW_PROVIDER_BOOTSTRAP_API_KEY>
+Content-Type: application/json
+```
 
-Scheduling selects the least-loaded ready extension, breaking ties by connection age, and reserves up to three complete HTTP jobs per extension. Each video job also reserves at least 20 credits, or its higher known Omni cost, before it starts, so concurrent requests cannot reuse the same visible balance. After every paid attempt, including an uncertain timeout, paid routing remains blocked until the managed credit refresh succeeds. Image operations remain eligible.
+`FLOW_PROVIDER_BOOTSTRAP_API_KEY` is the credential for trusted backend callers. `FLOW_PROVIDER_EXTENSION_API_KEY` is a separate credential used only between this Provider and Chrome extensions. Production refuses to start if either is missing, uses a development placeholder, or both keys are identical.
 
-Video operation routes are stored by account/project. Status requests without a routing scope are split by owning account and merged, so polling cannot move to a different Google account.
+Clients use fixed v1 endpoints for media upload, image generation, video generation, job status, and Character workflows. Image and video generation return durable Provider jobs; clients read their state from SQLite through `POST /v1/jobs/status`.
 
-**Enforced Media Inputs for Video (Multi-Account Balancing & SHA-256 Deduplication)**: Video generation endpoints strictly require passing raw image bytes via Base64 (`input_images`) or local file paths (`image_paths` in MCP) instead of Google `media_id`. The Provider automatically computes SHA-256 content hashes, deduplicates repeated uploads with 0ms SQLite cache hits, and freely load-balances generation jobs across all available Google accounts without cross-account API 404 errors or account locks. Jobs immediately transition from `queued` to `running` upon worker dispatch, and fail with clear terminal errors if account credits are exhausted or accounts are unavailable.
+Image generation can run in compatibility mode with an explicit `project_id`, or managed mode without one. The API resolves references, writes an image job, and returns `202`; the worker calls Flow once and stores the terminal result without upstream polling. Video jobs are dispatched once and then polled by the worker. In managed mode the Provider chooses a ready extension, reuses that account's newest project or creates `FlowProvider` when none exists, and caches project and media routes in SQLite.
 
-**Automatic Job Timeouts**: To avoid keeping users or agents waiting on hanging requests, the Provider enforces strict processing timeouts: image jobs fail after 120s (`IMAGE_TIMEOUT`), video queue wait fails after 180s (`QUEUE_TIMEOUT`), and active video rendering/polling fails after 600s (`VIDEO_POLL_TIMEOUT`). Timeouts are enforced both periodically by the background worker and instantaneously upon status queries.
+Scheduling selects a ready extension by capacity/load and available credits. Video jobs reserve their estimated credit cost before dispatch so concurrent requests cannot reuse the same visible balance. After every paid attempt, including an uncertain timeout, paid routing remains blocked until credit refresh succeeds. Image operations remain eligible.
 
-Character workflows are separate from the generic generation endpoints. Upload 1-3
-source images with `POST /v1/media`, register them with `POST /v1/characters`,
-then call `/v1/characters/{id}/images/generations` or
-`/v1/characters/{id}/videos/generations`. Character image jobs call Flow's
-`batchGenerateImages` once; Character video jobs use R2V/Omni and enter the
-durable worker poller. Source bytes are retained under
-`FLOW_PROVIDER_ASSET_STORE_PATH`; Character output never replaces its references.
+For multi-account-safe video generation, callers pass reference image bytes through `input_images`. The Provider hashes and persists the bytes, deduplicates uploads per account/project, and can rehydrate them when routing changes. Google project/media ownership is never silently moved to an unrelated account.
 
-## Configuration
+Provider jobs expose a normalized lifecycle:
 
-Required production values:
+```text
+queued -> running -> complete | failed
+```
+
+Generation endpoints support `Idempotency-Key`. A repeated logical request with the same key and payload returns the existing job; reusing a key with a different payload returns a conflict. Paid video callers should always use idempotency keys.
+
+Current default job timeouts are image 120s, video queue 180s, and active video render/poll 600s. Status responses tell clients when to poll again.
+
+## Character workflows
+
+Character workflows are separate from generic generation endpoints. Upload source images through `POST /v1/media`, register them with `POST /v1/characters`, then call `/v1/characters/{id}/images/generations` or `/v1/characters/{id}/videos/generations`.
+
+Character reference bytes are retained in the configured asset store so they survive Google signed-URL expiry and account changes. Character output never replaces its stored references.
+
+## Required production configuration
 
 ```env
 FLOW_PROVIDER_ENV=production
 FLOW_PROVIDER_PUBLIC_BASE_URL=https://provider.example.com
-FLOW_PROVIDER_EXTENSION_API_KEY=fpe_prod_<different-secret>
-FLOW_PROVIDER_ALLOW_SIMULATION_MODE=false
+FLOW_PROVIDER_BOOTSTRAP_API_KEY=fpa_prod_<business-secret>
+FLOW_PROVIDER_EXTENSION_API_KEY=fpe_prod_<different-connector-secret>
+FLOW_PROVIDER_WORKER_ENABLED=true
 ```
 
-Copy `extension/config.local.example.js` to the Git-ignored `extension/config.local.js`, then set the same extension connector key there before packaging or loading the private connector. Never put the backend business API key in the extension.
+Keep both keys server-side. Never expose either credential in a frontend application. The business key belongs only to trusted services calling `/v1/*`; the connector key belongs only to the private Chrome extension.
+
+Copy `extension/config.local.example.js` to the Git-ignored `extension/config.local.js`, then set the extension connector key before packaging or loading the private connector.
+
+## Health
+
+- `GET /health/live` — process liveness only; safe for container healthchecks.
+- `GET /health/ready` — serving readiness; returns `200` only when the store and at least one Google Flow connector are ready, otherwise `503`.
+- `GET /api/health` — safe aggregate connector readiness for extension tooling.
+- `WS /api/extensions/ws` — private Chrome connector gateway; authenticated separately in production.
+
+Public health responses do not expose Google account emails, detailed credit balances, or connector error details.
 
 ## Run locally
 
@@ -45,31 +68,20 @@ pip install -e '.[dev]'
 uvicorn app.main:app --reload
 ```
 
-Load `extension/` as an unpacked Chrome extension in a Chrome profile signed in to Google Flow. Open `http://localhost:8000/docs` for the active gateway OpenAPI document.
+Load `extension/` as an unpacked Chrome extension in a Chrome profile signed in to Google Flow. Open `http://localhost:8000/docs` for the active OpenAPI document.
 
 ## Deploy
 
-The production Compose stack contains only FlowProviderAPI and Cloudflare Tunnel:
+The production Compose stack contains FlowProviderAPI and Cloudflare Tunnel:
 
 ```bash
 cp .env.production.example .env.production
 bash scripts/deploy-production.sh
 ```
 
-See [deployment](docs/deployment.md).
+The container healthcheck uses `/health/live` so Cloudflare Tunnel can start even before a browser connector is online. External callers should use `/health/ready` to decide whether generation work can be served.
 
-Integration documentation: [Vietnamese API integration guide](docs/integration-guide.vi.md), [Vietnamese Gemini Omni Flash guide](docs/gemini-omni-flash.vi.md).
-
-AI agents can use the included MCP adapter over local `stdio`. See [Vietnamese MCP agent guide](docs/mcp-agent.vi.md), [Vietnamese practical agent playbook](docs/thuc-chien-ket-noi-agent.vi.md), and the repository-level [agent instructions](AGENTS.md).
-
-## Operational endpoints
-
-- `GET /health/live`
-- `GET /health/ready`
-- `GET /api/health`
-- `WS /api/extensions/ws`
-
-The extension WebSocket requires the connector key in production; development may omit it. Keep WAF/DDoS protection and an IP-based handshake rate limit without an interactive challenge.
+See `docs/deployment.md` for deployment details and `docs/integration-guide.vi.md` for the current server-to-server API contract.
 
 ## Tests
 
@@ -77,4 +89,4 @@ The extension WebSocket requires the connector key in production; development ma
 python -m pytest -q
 ```
 
-The suite covers authentication, connection selection, fixed Flow operations and transparent upstream responses. Production acceptance must also exercise a real request through a signed-in Google Flow profile.
+CI also checks extension JavaScript, manifest syntax, and production Compose configuration. The `dev` integration branch and all pull requests are CI-gated. Production acceptance must additionally exercise a real generation through a signed-in Google Flow profile before promotion to `main`.
