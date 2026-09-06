@@ -26,6 +26,8 @@ class Runtime:
     active_video_jobs: dict[str, int] = field(default_factory=dict)
     reserved_credits: dict[str, int] = field(default_factory=dict)
     inline_images: dict[str, list] = field(default_factory=dict)
+    job_admission_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    pending_job_admissions: int = 0
     worker: JobWorker | None = None
 
     def connection_load(self, connection) -> int:
@@ -120,6 +122,38 @@ class Runtime:
             )
 
         return min(available, key=_sort_key)
+
+    def durable_active_job_count(self) -> int:
+        """Count durable work that still consumes queue/worker capacity."""
+        with self.projects._lock:
+            row = self.projects._db().execute(
+                "SELECT COUNT(*) FROM provider_jobs WHERE status IN ('queued', 'dispatching', 'running')"
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    async def try_reserve_job_admission(self, idempotency_key: str | None) -> tuple[bool, bool]:
+        """Atomically reserve one HTTP admission slot for a new generation request.
+
+        Returns ``(allowed, reserved)``. Existing idempotency keys are always
+        allowed through without consuming a temporary admission slot so the
+        route can return/validate the durable original job even when the queue
+        is full.
+        """
+        normalized_key = (idempotency_key or "").strip() or None
+        async with self.job_admission_lock:
+            if normalized_key and self.projects.get_job_by_idempotency_key(normalized_key):
+                return True, False
+            active = self.durable_active_job_count()
+            limit = int(getattr(self.settings, "job_queue_max_active", 200))
+            if active + self.pending_job_admissions >= limit:
+                return False, False
+            self.pending_job_admissions += 1
+            return True, True
+
+    async def release_job_admission(self) -> None:
+        async with self.job_admission_lock:
+            if self.pending_job_admissions > 0:
+                self.pending_job_admissions -= 1
 
     def project_lock(self, installation_id: str) -> asyncio.Lock:
         return self.project_locks.setdefault(installation_id, asyncio.Lock())
