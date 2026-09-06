@@ -14,11 +14,17 @@ const copyLogsEl = document.querySelector('#copy-logs');
 const clearLogsEl = document.querySelector('#clear-logs');
 const flowBtnEl = document.querySelector('#flow');
 const refreshBtnEl = document.querySelector('#refresh');
-const bannerAlertEl = document.querySelector('#banner-alert');
 const bannerTextEl = document.querySelector('#banner-text');
+const backendStatusEl = document.querySelector('#backend-status');
+const backendProvidersEl = document.querySelector('#backend-providers');
+const backendQueuedEl = document.querySelector('#backend-queued');
+const backendDispatchingEl = document.querySelector('#backend-dispatching');
+const backendRunningEl = document.querySelector('#backend-running');
+const backendCapacityEl = document.querySelector('#backend-capacity');
 
 const send = (message) => chrome.runtime.sendMessage(message);
 let lastLogsFingerprint = null;
+let lastBackendHealth = null;
 
 function timeLabel(value) {
   if (!value) return '';
@@ -103,6 +109,54 @@ function renderActivity(activity = {}) {
   logsEl.replaceChildren(fragment);
 }
 
+function renderBackendHealth(health) {
+  lastBackendHealth = health && typeof health === 'object' ? health : null;
+  if (!lastBackendHealth) {
+    if (backendStatusEl) backendStatusEl.textContent = 'Unavailable';
+    if (backendProvidersEl) backendProvidersEl.textContent = '--';
+    if (backendQueuedEl) backendQueuedEl.textContent = '--';
+    if (backendDispatchingEl) backendDispatchingEl.textContent = '--';
+    if (backendRunningEl) backendRunningEl.textContent = '--';
+    if (backendCapacityEl) backendCapacityEl.textContent = 'Queue -- / --';
+    return;
+  }
+
+  const jobs = lastBackendHealth.jobs || {};
+  const active = Number.isFinite(lastBackendHealth.active_jobs) ? lastBackendHealth.active_jobs : 0;
+  const capacity = Number.isFinite(lastBackendHealth.job_queue_capacity) ? lastBackendHealth.job_queue_capacity : 0;
+  if (backendStatusEl) backendStatusEl.textContent = String(lastBackendHealth.status || 'unknown');
+  if (backendProvidersEl) backendProvidersEl.textContent = String(Number(lastBackendHealth.provider_accounts || 0));
+  if (backendQueuedEl) backendQueuedEl.textContent = String(Number(jobs.queued || 0));
+  if (backendDispatchingEl) backendDispatchingEl.textContent = String(Number(jobs.dispatching || 0));
+  if (backendRunningEl) backendRunningEl.textContent = String(Number(jobs.running || 0));
+  if (backendCapacityEl) {
+    backendCapacityEl.textContent = capacity > 0 ? `Queue ${active} / ${capacity}` : `Active ${active}`;
+    backendCapacityEl.classList.toggle('idle', active === 0);
+  }
+}
+
+async function fetchBackendHealth(serverUrl) {
+  if (!serverUrl) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3000);
+  try {
+    const url = new URL('/api/health', serverUrl);
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'omit',
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const health = await response.json();
+    return health && typeof health === 'object' ? health : null;
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function refresh() {
   try {
     const state = await send({ type: 'FLOW_PROVIDER_GET_STATE' });
@@ -119,8 +173,10 @@ async function refresh() {
       if (hasCredits) creditsValueEl.textContent = `${state.account.credits} cr`;
     }
     renderActivity(state.activity);
+    renderBackendHealth(await fetchBackendHealth(state.serverUrl));
   } catch (error) {
     updateStatus(false, false);
+    renderBackendHealth(null);
     showError(error?.message || 'Không đọc được trạng thái connector.');
   }
 }
@@ -140,13 +196,18 @@ if (copyLogsEl) {
     hideError();
     try {
       const state = await send({ type: 'FLOW_PROVIDER_GET_STATE' });
+      const backend = lastBackendHealth;
       const lines = [
         `Flow Provider ${state?.version || 'unknown'}`,
         `Connected: ${Boolean(state?.connected)}`,
         `Account ready: ${Boolean(state?.account?.ready)}`,
         `Account: ${state?.account?.email || 'none'}`,
         `Credits: ${state?.account?.credits ?? 'unknown'}`,
-        `Activity: ${state?.activity?.activeCount || 0} active, ${state?.activity?.completedCount || 0} completed, ${state?.activity?.errorCount || 0} errors`,
+        `Backend: ${backend?.status || 'unavailable'}`,
+        `Providers ready: ${backend?.provider_accounts ?? 'unknown'}`,
+        `Queue: ${backend?.active_jobs ?? 'unknown'} / ${backend?.job_queue_capacity ?? 'unknown'}`,
+        `Jobs: ${backend?.jobs?.queued ?? 'unknown'} queued, ${backend?.jobs?.dispatching ?? 'unknown'} dispatching, ${backend?.jobs?.running ?? 'unknown'} running`,
+        `Connector activity: ${state?.activity?.activeCount || 0} active, ${state?.activity?.completedCount || 0} completed, ${state?.activity?.errorCount || 0} errors`,
         '--- Activity Logs ---',
         ...((state?.activity?.logs || []).slice().reverse().map((item) => (
           `[${new Date(item.at).toLocaleTimeString()}] [${String(item.status || 'info').toUpperCase()}] ${item.label || 'Activity'}${item.detail ? ` · ${item.detail}` : ''}`
@@ -189,5 +250,5 @@ function hideError() {
 }
 
 void refresh();
-const timer = setInterval(() => { void refresh(); }, 1500);
+const timer = setInterval(() => { void refresh(); }, 3000);
 window.addEventListener('unload', () => clearInterval(timer));
