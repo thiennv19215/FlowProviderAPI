@@ -24,12 +24,35 @@ fi
 
 compose=(docker compose --env-file "${ENV_FILE}" -f "${COMPOSE_FILE}")
 
+prepare_data_volume() {
+  # Existing named volumes may have been created by older root-running images.
+  # Migrate ownership before starting the non-root API container. Future writes
+  # stay owned by the runtime UID/GID, so the recursive chown normally runs once.
+  "${compose[@]}" run --rm --no-deps --user 0:0 api sh -ceu '
+    target="10001:10001"
+    owner="$(stat -c "%u:%g" /data)"
+    if [ "$owner" != "$target" ]; then
+      echo "Migrating /data ownership from $owner to $target"
+      chown -R 10001:10001 /data
+    fi
+  '
+}
+
 verify_gateway_surface() {
   "${compose[@]}" exec -T api python - <<'PY'
 import json
 import os
+import pathlib
 import urllib.error
 import urllib.request
+
+if os.geteuid() == 0:
+    raise SystemExit("API container is running as root")
+probe = pathlib.Path("/data/.flowprovider-write-probe")
+try:
+    probe.write_text("ok", encoding="utf-8")
+finally:
+    probe.unlink(missing_ok=True)
 
 base_url = "http://127.0.0.1:8000"
 with urllib.request.urlopen(base_url + "/openapi.json", timeout=5) as response:
@@ -91,9 +114,11 @@ PY
 # Validate interpolation and required variables before touching running services.
 "${compose[@]}" config >/dev/null
 
-# Refresh third-party images, rebuild the API, and reconcile the stateless stack.
+# Refresh third-party images, rebuild the API, migrate persistent-data ownership,
+# and reconcile the stack.
 "${compose[@]}" pull cloudflared
 "${compose[@]}" build --pull api
+prepare_data_volume
 "${compose[@]}" up -d --remove-orphans
 
 "${compose[@]}" ps
