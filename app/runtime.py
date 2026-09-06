@@ -165,7 +165,7 @@ class Runtime:
                 self.pending_job_admissions -= 1
 
     def project_lock(self, installation_id: str) -> asyncio.Lock:
-        return self.project_locks.setdefault(installation_id, asyncio.Lock)
+        return self.project_locks.setdefault(installation_id, asyncio.Lock())
 
     def project_is_synced(self, connection, account_key: str) -> bool:
         session = (float(getattr(connection, "connected_at", 0)), account_key)
