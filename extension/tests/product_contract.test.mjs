@@ -30,8 +30,10 @@ test('operator console renders aggregate durable backend queue telemetry', () =>
   ]) {
     assert.ok(popupHtml.includes(`id="${id}"`), id);
   }
-  assert.match(popupJs, /new URL\('\/api\/health', serverUrl\)/);
-  assert.match(popupJs, /fetchBackendHealth/);
+  assert.match(popupJs, /FLOW_PROVIDER_GET_BACKEND_HEALTH/);
+  assert.equal(popupJs.includes('serverUrl'), false);
+  assert.match(transport, /FLOW_PROVIDER_GET_BACKEND_HEALTH/);
+  assert.match(transport, /new URL\("\/api\/health", config\.serverUrl\)/);
   assert.match(popupJs, /renderBackendHealth/);
   assert.match(popupJs, /job_queue_capacity/);
   assert.match(popupJs, /jobs\.dispatching/);
