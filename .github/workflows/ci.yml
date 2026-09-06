@@ -23,6 +23,15 @@ jobs:
       - run: node --check extension/popup/popup.js
       - run: node --test extension/tests/*.test.mjs
       - run: python -m json.tool extension/manifest.json >/dev/null
+      - name: Package extension from tested source
+        run: bash scripts/package-extension.sh
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: flow-provider-extension
+          path: dist/flow-provider-extension.zip
+          if-no-files-found: error
+          retention-days: 14
   deploy-config:
     runs-on: ubuntu-latest
     steps:
