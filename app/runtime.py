@@ -11,6 +11,15 @@ from app.providers.google_flow.browser_bridge import FlowBridge
 from app.workers.job_worker import JobWorker
 
 
+class ConfiguredJobWorker(JobWorker):
+    """Apply the runtime's global dispatch-concurrency setting to worker batches."""
+
+    async def process_queued_jobs(self, max_concurrent: int | None = None) -> None:
+        configured = max(1, int(getattr(self.runtime.settings, "worker_concurrency", 4)))
+        limit = configured if max_concurrent is None else min(configured, max(1, int(max_concurrent)))
+        await super().process_queued_jobs(max_concurrent=limit)
+
+
 @dataclass
 class Runtime:
     settings: object
@@ -201,5 +210,5 @@ def build_runtime(settings) -> Runtime:
         ExtensionManager(bridge),
         projects,
     )
-    runtime.worker = JobWorker(runtime)
+    runtime.worker = ConfiguredJobWorker(runtime)
     return runtime
