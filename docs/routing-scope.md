@@ -1,90 +1,81 @@
 # Provider routing scope
 
-FlowProviderAPI persists managed project/media mappings and durable Provider jobs.
-Character source images are additionally stored content-addressed under the
-configured asset store; generic inline generation inputs are not retained after
-their job is dispatched.
+`X-Provider-Routing-Scope` is a compatibility mechanism for requests that must stay on the same signed-in Google Flow account. Most managed generation calls should omit `project_id`, send image bytes through `input_images`, and let FlowProviderAPI choose/recover an eligible account/project automatically.
 
-Google Flow projects and media are account-scoped. In a multi-account deployment, explicitly scoped requests that reuse one Flow `project_id`, `media_id`, or video operation must be routed back to the same Chrome installation/account that created them.
+## Authentication is separate
 
-The Provider also records uploaded media ownership and uses a known `media_id` to recover its account/project route for video generation. Callers should forward the returned scope explicitly when they require a workflow to remain on one account. Without a routing scope, a known media ID may be copied into the managed account/project selected for a repeated request, including an explicitly selected managed `project_id`. When media is uploaded specifically for a paid video, `required_credits` lets account selection exclude connectors that cannot submit that video. A bounded failover attempt can pass prior `project_id` values in `excluded_project_ids`; the Provider then selects a different account and uploads fresh media there. For an unscoped video request, if the selected account is already below the required credit cost or Flow deterministically rejects the request for insufficient credits/quota, the Provider makes one failover attempt on another eligible account and rehydrates known media into its project. A routing scope always disables this automatic failover.
-
-Managed image/video generation requests omit `project_id` and send Base64 references through `input_images`. For that flow, the Provider owns account selection and reuses the newest existing project on that Google account. It creates a `FlowProvider` project only when a complete lookup confirms that the account has no projects, so reconnects and concurrent requests do not spam projects. Inline image-to-video requires one image; Omni accepts one to eight combined inline/media-ID references. If a managed request references a media ID previously recorded by the Provider and the scheduler selects another account, the Provider downloads the source image through the owning account, uploads it into the selected account's project, and substitutes the copied media ID. Generic inline source bytes are not persisted; Character uploads are the exception and remain in the durable asset store for reference rehydration. The caller does not need to store or return a routing scope. The scope contract below applies only to compatibility calls where callers explicitly reuse Google project or media IDs across requests.
-
-## Contract
-
-Create the Flow project normally:
+Production `/v1/*` calls always require:
 
 ```http
-POST /v1/projects
-Authorization: Bearer <API_KEY>
-Content-Type: application/json
+Authorization: Bearer <FLOW_PROVIDER_BOOTSTRAP_API_KEY>
 ```
 
-The response body remains the upstream Google Flow response. FlowProviderAPI adds this response header:
+The routing scope is **not** an authentication token. It cannot replace the business Bearer key.
 
-```http
-X-Provider-Routing-Scope: <opaque-signed-token>
-```
+## When a scope is useful
 
-Store the routing scope together with the returned `project_id` in the integrating application.
+Google Flow project/media IDs are account-scoped. A caller using explicit Google project/media identity may need to keep later operations on the same connector/account.
 
-Send the same header on every follow-up request that belongs to that project/account context:
+Current endpoints that can consume/return routing context include media and generation calls such as:
 
 ```http
 POST /v1/media
-X-Provider-Routing-Scope: <opaque-signed-token>
-```
-
-```http
 POST /v1/images/generations
-X-Provider-Routing-Scope: <opaque-signed-token>
-```
-
-```http
 POST /v1/videos/generations
-X-Provider-Routing-Scope: <opaque-signed-token>
 ```
+
+There is no public `/v1/projects` endpoint in the current API. Managed project lookup/creation happens inside FlowProviderAPI.
+
+A response can include:
 
 ```http
-POST /v1/jobs/status
-X-Provider-Routing-Scope: <opaque-signed-token>
+X-Provider-Routing-Scope: <opaque-token>
+X-Flow-Project-Id: <google-project-id>
 ```
 
-Successful scoped responses repeat the same `X-Provider-Routing-Scope` header for convenience.
+If the integrating application intentionally continues an explicit project/account workflow, persist the opaque scope together with its related project/media context and resend it on compatible follow-up requests.
+
+## Managed workflow recommendation
+
+For new server-to-server integrations:
+
+1. omit `project_id`;
+2. pass caller-owned reference bytes via `input_images`;
+3. persist Provider `jobs[].id` rather than Google operation identity;
+4. poll `/v1/jobs/status`;
+5. let the worker handle account selection, credit filtering and safe media rehydration.
+
+This minimizes sticky account coupling and makes failover safer.
 
 ## Failure behavior
 
-If the token is malformed or has an invalid signature, the API returns:
+Malformed/tampered scope:
 
 ```text
 400 ROUTING_SCOPE_INVALID
 ```
 
-If the bound Chrome installation/Google-account pair is offline, changed, unhealthy, or currently has no free slot, the API returns:
+Bound route currently unavailable:
 
 ```text
 503 ROUTING_SCOPE_UNAVAILABLE
 ```
 
-A scoped request never falls back to another available Google account and never performs an implicit cross-account media transfer. The caller decides whether to retry later or create a new Flow project on another account and re-upload any required media. An explicit `project_id` without a routing scope identifies the target project; known media from another account can be rehydrated into that project.
+Known project/media ownership conflicts can return 409 errors such as `PROJECT_ACCOUNT_MISMATCH`, `MEDIA_ACCOUNT_MISMATCH`, `MEDIA_PROJECT_MISMATCH`, or `PROJECT_ROUTE_UNKNOWN` depending on the request.
+
+A truly scoped workflow must not silently send account-bound Google resources through an unrelated account. For unscoped managed work with durable source images, Provider can choose a different eligible account and rehydrate the image into that account's managed project.
 
 ## Security and lifecycle
 
-The v2 routing scope is opaque to callers and contains no Google credential. It is HMAC-signed using the Provider bootstrap API key and encodes the extension installation identity plus normalized Google account email. No database is required.
+The current v2 scope is HMAC-signed using the private extension connector credential (`FLOW_PROVIDER_EXTENSION_API_KEY` in production) and encodes the extension installation identity plus normalized Google account email. It contains no Google cookie/token.
 
-The extension `installationId` is stable across WebSocket reconnects, so reconnecting the same installation with the same Google account can continue serving existing routing scopes. Changing the signed-in Google account makes the old scope unavailable. Rotating `FLOW_PROVIDER_EXTENSION_API_KEY` invalidates previously issued scopes. Installation-only v1 scopes are intentionally rejected.
+Rotating the extension connector key invalidates previously issued routing-scope signatures. Changing the Google account signed into an installation also makes an old account-bound route unusable.
 
-## Responsibility boundary
+The business API key and routing-scope signing key intentionally have different responsibilities:
 
-For managed image/video generation, FlowProviderAPI owns connection selection, project lookup, media-ID deduplication, known-media rehydration between managed accounts, browser authentication/captcha injection, and forwarding. The compatibility contract additionally supports caller-managed sticky routing.
+- business key: authenticate trusted `/v1/*` callers;
+- extension key: authenticate private connectors and sign account-routing scopes.
 
-For the compatibility contract, the integrating application owns durable state such as:
+## Durable source assets
 
-- which workflow/board/run uses which routing scope;
-- the Google Flow `project_id` paired with that scope;
-- local asset identity and storage;
-- provider media bindings created outside the managed generation flow;
-- failover to another account/project when a routing scope becomes unavailable.
-
-This keeps FlowProviderAPI usable as a third-party endpoint while allowing callers to safely reuse Google Flow media in multi-account deployments.
+Inline generation inputs used by queued jobs are persisted content-addressed before enqueueing, so restart recovery does not rely solely on in-memory bytes. Character references are also retained in the durable asset store. Account/project-specific Google media IDs remain cached in SQLite and can be recreated when source bytes are available.
