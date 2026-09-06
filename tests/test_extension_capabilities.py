@@ -1,3 +1,5 @@
+import time
+
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
@@ -27,6 +29,9 @@ def test_gateway_accepts_current_executor_capabilities():
     with TestClient(app) as client:
         with client.websocket_connect("/api/extensions/ws", subprotocols=["flow-provider-v7"]) as ws:
             ws.send_json(_hello())
+            deadline = time.monotonic() + 1.0
+            while not app.state.runtime.bridge.connected and time.monotonic() < deadline:
+                time.sleep(0.01)
             assert app.state.runtime.bridge.connected is True
 
 
