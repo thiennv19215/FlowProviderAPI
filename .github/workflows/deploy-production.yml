@@ -21,17 +21,42 @@ jobs:
     env:
       FLOW_PROVIDER_BOOTSTRAP_API_KEY: ${{ secrets.FLOW_PROVIDER_BOOTSTRAP_API_KEY }}
       FLOW_PROVIDER_EXTENSION_API_KEY: ${{ secrets.FLOW_PROVIDER_EXTENSION_API_KEY }}
+      CI_APPROVED_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
-      - name: Deploy origin/main
+      - name: Resolve CI-approved main SHA
+        id: target
+        working-directory: /home/ubuntu/FlowProviderAPI
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          main_sha="$(git rev-parse origin/main)"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+            approved_sha="${CI_APPROVED_SHA:?workflow_run did not provide a head SHA}"
+            if [ "$approved_sha" != "$main_sha" ]; then
+              echo "Skipping stale successful CI run $approved_sha; current main is $main_sha."
+              echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            approved_sha="$main_sha"
+          fi
+          case "$approved_sha" in
+            *[!0-9a-f]*|'') echo "invalid deploy SHA" >&2; exit 1 ;;
+          esac
+          echo "deploy_sha=$approved_sha" >> "$GITHUB_OUTPUT"
+          echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy CI-approved SHA
+        if: steps.target.outputs.should_deploy == 'true'
         working-directory: /home/ubuntu/FlowProviderAPI
         run: |
           set -euo pipefail
           git diff --quiet
           git diff --cached --quiet
           test -z "$(git ls-files --others --exclude-standard)"
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
+          deploy_sha="${{ steps.target.outputs.deploy_sha }}"
+          git checkout --detach "$deploy_sha"
+          test "$(git rev-parse HEAD)" = "$deploy_sha"
           : "${FLOW_PROVIDER_BOOTSTRAP_API_KEY:?missing FLOW_PROVIDER_BOOTSTRAP_API_KEY secret}"
           : "${FLOW_PROVIDER_EXTENSION_API_KEY:?missing FLOW_PROVIDER_EXTENSION_API_KEY secret}"
           if [ "$FLOW_PROVIDER_BOOTSTRAP_API_KEY" = "$FLOW_PROVIDER_EXTENSION_API_KEY" ]; then
@@ -51,6 +76,7 @@ jobs:
           bash scripts/deploy-production.sh
 
       - name: Verify public API liveness
+        if: steps.target.outputs.should_deploy == 'true'
         run: |
           set -euo pipefail
           curl --fail --silent --show-error \
