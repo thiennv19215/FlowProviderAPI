@@ -210,15 +210,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        if runtime.worker:
-            await runtime.worker.start()
+        from app.process_lease import SingleProcessLease
+        lease = SingleProcessLease(settings.project_store_path) if settings.env == "production" else None
         try:
+            if lease:
+                lease.acquire()
+            if runtime.worker:
+                await runtime.worker.start()
             yield
         finally:
-            if runtime.worker:
-                await runtime.worker.stop()
-            await runtime.bridge.close_background_tasks()
-            runtime.projects.close()
+            try:
+                if runtime.worker:
+                    await runtime.worker.stop()
+                await runtime.bridge.close_background_tasks()
+            finally:
+                try:
+                    runtime.projects.close()
+                finally:
+                    if lease:
+                        lease.release()
 
     app = FastAPI(
         title="Flow Provider API",

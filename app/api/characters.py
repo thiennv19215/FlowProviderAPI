@@ -7,10 +7,10 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 
 from app.api.errors import APIError
-from app.api.generations import (
+from app.api.generations import _job_response
+from app.services.flow import (
     _decode_routing_scope,
     _image_digest,
-    _job_response,
     _validate_project_route,
 )
 from app.api.schemas import (
@@ -78,14 +78,13 @@ def _persist_inline_images(runtime, images) -> list[str]:
         image_base64 = image.image_base64
         digest = _image_digest(image_base64)
         try:
-            stored_digest, _path, size = runtime.projects.asset_store.put_base64(
-                image_base64, image.mime_type,
+            stored_digest, _path, _size = runtime.projects.persist_asset(
+                image_base64, image.mime_type, image.file_name,
             )
         except ValueError as exc:
             raise APIError(422, "INVALID_IMAGE", str(exc), field="input_images") from exc
         if stored_digest != digest:
             raise APIError(422, "INVALID_IMAGE", "Image digest could not be verified.", field="input_images")
-        runtime.projects.record_asset(digest, image.mime_type, size, image.file_name)
         if digest not in hashes:
             hashes.append(digest)
     runtime.projects.touch_assets(hashes)
@@ -118,6 +117,7 @@ def _idempotency_job(runtime, request: Request, payload: dict, *, character_id: 
             or existing.media_type != media_type
             or existing.generation_type != generation_type
             or stored != current
+            or existing.request_payload.get("_routing_scope") != payload.get("_routing_scope")
         ):
             raise APIError(409, "IDEMPOTENCY_KEY_REUSED", "Idempotency-Key was already used with a different request payload.")
         return existing, key
@@ -224,6 +224,8 @@ async def _enqueue_character_job(
         "character_id": character_id,
         "reference_asset_hashes": list(character.reference_asset_hashes),
         "reference_media_ids": list(character.reference_media_ids),
+        "_routing_scope": routing_scope,
+        "_routing_locked": bool(routing_scope or body.get("project_id")),
     }
     scoped_account_key = _decode_routing_scope(runtime.settings, routing_scope) if routing_scope else None
     project_id = body.get("project_id")

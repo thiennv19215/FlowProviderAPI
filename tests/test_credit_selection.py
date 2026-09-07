@@ -97,6 +97,7 @@ def test_worker_auto_failovers_inline_job_when_assigned_account_lacks_credits(mo
             "prompt": "test prompt",
             "duration_seconds": 8,
             "input_image_hashes": [digest],
+            "_routing_locked": False,
         },
         installation_id="install-low",
         google_project_id=None,
@@ -205,6 +206,7 @@ def test_cross_account_media_rehydration_on_worker(monkeypatch):
             "prompt": "animate this image",
             "duration_seconds": 8,
             "start_media_id": "media-on-low-account",
+            "_routing_locked": False,
         },
         installation_id="install-low",
         google_project_id="project-low",
@@ -319,4 +321,3 @@ def test_only_fails_when_all_connected_accounts_lack_credits(monkeypatch):
     assert updated_job.status == "failed"
     assert updated_job.error_code == "INSUFFICIENT_CREDITS"
     assert "All 2 connected accounts have insufficient credits" in updated_job.error_message
-

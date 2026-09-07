@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.services.flow import _encode_routing_scope
 from app.main import create_app
 from app.workers.job_worker import JobWorker
 
@@ -133,6 +134,8 @@ def test_image_is_enqueued_worker_completes_it_and_status_only_reads_db(monkeypa
         assert status.status_code == 200
         assert status.json()["jobs"][0] == {
             "id": job_id,
+            "project_id": "project-1",
+            "routing_scope": _encode_routing_scope(application.state.runtime.settings, "installation-1"),
             "type": "image",
             "generation_type": "image",
             "status": "complete",
@@ -623,8 +626,8 @@ def test_status_batch_preserves_order_and_does_not_require_extension(monkeypatch
         "queued": 2, "running": 0, "complete": 0, "failed": 0,
     }
     assert response.json()["metadata"]["done"] is False
-    assert response.json()["metadata"]["routing_scope"] is None
-    assert "x-provider-routing-scope" not in response.headers
+    assert response.json()["metadata"]["routing_scope"] == _encode_routing_scope(runtime.settings, "installation-1")
+    assert response.headers["x-provider-routing-scope"] == response.json()["metadata"]["routing_scope"]
 
 
 def test_uncertain_paid_dispatch_is_terminal_and_not_retryable(monkeypatch):

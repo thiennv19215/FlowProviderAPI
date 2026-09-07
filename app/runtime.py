@@ -208,7 +208,6 @@ def build_runtime(settings) -> Runtime:
         asset_store_path=settings.asset_store_path,
         dispatch_lease_seconds=getattr(settings, "worker_dispatch_lease_seconds", 900),
     )
-    projects.prune(asset_retention_days=settings.asset_retention_days)
     runtime = Runtime(
         settings,
         bridge,

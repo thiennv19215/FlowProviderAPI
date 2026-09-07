@@ -47,7 +47,7 @@ function publishFlowApiKey(value, targetSocket = socket, force = false) {
 }
 
 async function discoverFlowApiKeyFromOpenTabs() {
-  const tabs = await chrome.tabs.query({ url: ["https://labs.google/*", "https://flow.google/*"] });
+  const tabs = await chrome.tabs.query({ url: ["https://labs.google/*", "https://flow.google/*", "https://flow.google.com/*"] });
   for (const tab of tabs) {
     if (!tab.id) continue;
     try {

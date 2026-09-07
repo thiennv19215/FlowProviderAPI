@@ -144,8 +144,11 @@ def _row_to_job(row: sqlite3.Row) -> ProviderJob:
 class ProjectStore:
     """Small durable mapping between a Chrome installation and its Flow project."""
 
-    def __init__(self, path: str, *, asset_store_path: str | None = None):
+    def __init__(self, path: str, *, asset_store_path: str | None = None, dispatch_lease_seconds: int = 900):
         self.path = path
+        self.dispatch_lease_seconds = max(1, int(dispatch_lease_seconds))
+        self._prune_asset_cursor = ""
+        self._prune_media_cursor = 0
         self._lock = threading.RLock()
         self._connection: sqlite3.Connection | None = None
         self.asset_store = AssetStore(asset_store_path or ".data/assets")
@@ -330,6 +333,10 @@ class ProjectStore:
                 if "claim_token" not in job_columns:
                     self._connection.execute(
                         "ALTER TABLE provider_jobs ADD COLUMN claim_token TEXT"
+                    )
+                if "next_dispatch_at" not in job_columns:
+                    self._connection.execute(
+                        "ALTER TABLE provider_jobs ADD COLUMN next_dispatch_at TEXT"
                     )
                 if "idempotency_key" not in job_columns:
                     self._connection.execute(
@@ -776,30 +783,33 @@ class ProjectStore:
             row["route_kind"], row["poll_name"],
         )
 
-    def prune(self, *, operation_days: int = 30, media_days: int = 90, asset_retention_days: int = 30) -> None:
+    def prune(self, *, operation_days: int = 30, media_days: int = 90, asset_retention_days: int = 30,
+              job_retention_days: int = 0, batch_size: int = 500) -> dict[str, int]:
         """Bound durable cache growth without touching active project ownership."""
-        with self._lock:
-            self._db().execute(
+        batch_size = max(1, min(int(batch_size), 5000))
+        counts = {"operations": 0, "media": 0, "assets": 0, "jobs": 0}
+        with self._lock, self._db():
+            counts["operations"] = self._db().execute(
                 """
                 DELETE FROM provider_operations
-                WHERE status != 'active'
-                   OR last_used_at < datetime('now', ?)
+                WHERE rowid IN (SELECT rowid FROM provider_operations
+                    WHERE status != 'active' OR last_used_at < datetime('now', ?)
+                    LIMIT ?)
                 """,
-                (f"-{operation_days} days",),
-            )
-            self._db().execute(
-                """
-                DELETE FROM provider_media
-                WHERE status != 'active'
-                   OR last_used_at < datetime('now', ?)
-                """,
-                (f"-{media_days} days",),
-            )
+                (f"-{operation_days} days", batch_size),
+            ).rowcount
             # Keep source bytes while any live Character or job still references them.
             rows = self._db().execute(
-                "SELECT content_sha256, orphaned_at FROM provider_assets WHERE status = 'active'"
+                "SELECT content_sha256, orphaned_at FROM provider_assets WHERE status = 'active' "
+                "AND content_sha256 > ? ORDER BY content_sha256 LIMIT ?",
+                (self._prune_asset_cursor, batch_size),
             ).fetchall()
+            if len(rows) < batch_size:
+                next_asset_cursor = ""
+            else:
+                next_asset_cursor = rows[-1]["content_sha256"]
             referenced: set[str] = set()
+            referenced_media_ids: set[str] = set()
             for row in self._db().execute(
                 "SELECT reference_asset_hashes_json, deleted_at FROM provider_characters"
             ).fetchall():
@@ -822,8 +832,33 @@ class ProjectStore:
                     ):
                         values = payload.get(key, [])
                         referenced.update(str(value) for value in values if isinstance(value, str))
+                    media_ids = list(payload.get("reference_media_ids") or [])
+                    media_ids.extend(payload[key] for key in ("start_media_id", "end_media_id") if payload.get(key))
+                    for media_id in media_ids:
+                        if not isinstance(media_id, str):
+                            continue
+                        referenced_media_ids.add(media_id)
+                        media = self._db().execute(
+                            "SELECT content_sha256 FROM provider_media WHERE google_media_id = ?",
+                            (media_id,),
+                        ).fetchall()
+                        referenced.update(item["content_sha256"] for item in media)
                 except (TypeError, ValueError):
                     continue
+            # Resolve active-job media references before removing any mappings.
+            # Rotate candidate batches so protected mappings cannot starve GC.
+            media_candidates = self._db().execute(
+                "SELECT rowid, google_media_id FROM provider_media "
+                "WHERE rowid > ? AND (status != 'active' OR last_used_at < datetime('now', ?)) "
+                "ORDER BY rowid LIMIT ?",
+                (self._prune_media_cursor, f"-{media_days} days", batch_size),
+            ).fetchall()
+            next_media_cursor = media_candidates[-1]["rowid"] if len(media_candidates) == batch_size else 0
+            for candidate in media_candidates:
+                if candidate["google_media_id"] not in referenced_media_ids:
+                    counts["media"] += self._db().execute(
+                        "DELETE FROM provider_media WHERE rowid = ?", (candidate["rowid"],),
+                    ).rowcount
             for row in rows:
                 digest = row["content_sha256"]
                 if digest in referenced:
@@ -836,17 +871,36 @@ class ProjectStore:
                         "UPDATE provider_assets SET orphaned_at = CURRENT_TIMESTAMP WHERE content_sha256 = ?",
                         (digest,),
                     )
+            # Only sweep this batch after rechecking its current references.
+            digests = [row["content_sha256"] for row in rows]
+            placeholders = ",".join("?" for _ in digests)
             old_assets = self._db().execute(
-                "SELECT content_sha256 FROM provider_assets WHERE status = 'active' AND orphaned_at IS NOT NULL AND orphaned_at <= datetime('now', ?)",
-                (f"-{max(1, asset_retention_days)} days",),
-            ).fetchall()
+                "SELECT content_sha256 FROM provider_assets WHERE status = 'active' "
+                f"AND content_sha256 IN ({placeholders}) AND orphaned_at IS NOT NULL "
+                "AND orphaned_at <= datetime('now', ?)",
+                (*digests, f"-{max(1, asset_retention_days)} days"),
+            ).fetchall() if digests else []
             for row in old_assets:
                 self.asset_store.delete(row["content_sha256"])
+                counts["assets"] += 1
                 self._db().execute(
                     "UPDATE provider_assets SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE content_sha256 = ?",
                     (row["content_sha256"],),
                 )
+            if job_retention_days > 0:
+                # Never forget a key or an uncertain paid outcome. Keeping the
+                # original row preserves both replay comparison and job status.
+                counts["jobs"] = self._db().execute(
+                    "DELETE FROM provider_jobs WHERE rowid IN ("
+                    "SELECT rowid FROM provider_jobs WHERE status IN ('completed', 'failed') "
+                    "AND idempotency_key IS NULL AND outcome_unknown = 0 "
+                    "AND completed_at <= datetime('now', ?) ORDER BY completed_at LIMIT ?)",
+                    (f"-{job_retention_days} days", batch_size),
+                ).rowcount
             self._db().commit()
+            self._prune_asset_cursor = next_asset_cursor
+            self._prune_media_cursor = next_media_cursor
+        return counts
 
     def enqueue_job(
         self,
@@ -938,6 +992,18 @@ class ProjectStore:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    def persist_asset(self, image_base64: str, mime_type: str, file_name: str) -> tuple[str, Path, int]:
+        """Write and register source bytes atomically with respect to GC.
+
+        All runtime ingestion must use this method rather than separately
+        calling AssetStore.put_base64 and record_asset. Registration clears the
+        orphan timestamp before a concurrent sweep can inspect the asset.
+        """
+        with self._lock:
+            digest, path, size = self.asset_store.put_base64(image_base64, mime_type)
+            self.record_asset(digest, mime_type, size, file_name)
+            return digest, path, size
 
     def record_asset(self, digest: str, mime_type: str, size_bytes: int, file_name: str) -> None:
         with self._lock:
@@ -1159,71 +1225,19 @@ class ProjectStore:
         video_queue_timeout_seconds: int = 180,
         video_running_timeout_seconds: int = 600,
     ) -> ProviderJob | None:
+        # Status reads and maintenance use the same lifecycle rules. Dispatch
+        # claims are governed only by their lease, never by queue/poll age.
         with self._lock:
-            db = self._db()
-            row = db.execute(
-                "SELECT * FROM provider_jobs WHERE job_id = ?", (job_id,)
+            self.fail_abandoned_dispatches(self.dispatch_lease_seconds)
+            self.fail_expired_jobs(
+                image_timeout_seconds=image_timeout_seconds,
+                video_queue_timeout_seconds=video_queue_timeout_seconds,
+                video_running_timeout_seconds=video_running_timeout_seconds,
+                job_id=job_id,
+            )
+            row = self._db().execute(
+                "SELECT * FROM provider_jobs WHERE job_id = ?", (job_id,),
             ).fetchone()
-            if row is not None and row["status"] in ("queued", "dispatching", "running") and row["created_at"]:
-                status = row["status"]
-                media_type = row["media_type"]
-                created_at = row["created_at"]
-                running_at = row["running_at"]
-                try:
-                    from datetime import datetime, timezone
-                    clean_ts = created_at.replace("Z", "").replace("T", " ")
-                    dt = datetime.fromisoformat(clean_ts).replace(tzinfo=timezone.utc)
-                    total_age = (datetime.now(timezone.utc) - dt).total_seconds()
-                    if running_at:
-                        clean_run_ts = running_at.replace("Z", "").replace("T", " ")
-                        run_dt = datetime.fromisoformat(clean_run_ts).replace(tzinfo=timezone.utc)
-                        run_age = (datetime.now(timezone.utc) - run_dt).total_seconds()
-                    else:
-                        run_age = total_age
-                except Exception:
-                    total_age = 0.0
-                    run_age = 0.0
-
-                timed_out = False
-                err_code = "JOB_TIMEOUT"
-                err_msg = "Job exceeded processing time limit."
-                outcome_unknown = False
-
-                if media_type == "image" and total_age > image_timeout_seconds:
-                    timed_out = True
-                    err_code = "IMAGE_TIMEOUT"
-                    err_msg = f"Image generation timed out after {int(total_age)}s limit."
-                elif media_type == "video":
-                    if status == "queued" and total_age > video_queue_timeout_seconds:
-                        timed_out = True
-                        err_code = "QUEUE_TIMEOUT"
-                        err_msg = f"Video job timed out waiting in queue after {int(total_age)}s limit."
-                    elif status in ("dispatching", "running") and run_age > video_running_timeout_seconds:
-                        timed_out = True
-                        err_code = "VIDEO_POLL_TIMEOUT"
-                        err_msg = f"Video generation timed out after {int(run_age)}s limit."
-                        outcome_unknown = True
-
-                if timed_out:
-                    db.execute(
-                        """
-                        UPDATE provider_jobs
-                        SET status = 'failed',
-                            error_message = ?,
-                            error_code = ?,
-                            error_retryable = 0,
-                            outcome_unknown = ?,
-                            updated_at = CURRENT_TIMESTAMP,
-                            completed_at = CURRENT_TIMESTAMP
-                        WHERE job_id = ? AND status IN ('queued', 'dispatching', 'running')
-                        """,
-                        (err_msg, err_code, int(outcome_unknown), job_id),
-                    )
-                    db.commit()
-                    row = db.execute(
-                        "SELECT * FROM provider_jobs WHERE job_id = ?", (job_id,)
-                    ).fetchone()
-
         return _row_to_job(row) if row is not None else None
 
     def get_job_by_operation(self, operation_name: str) -> ProviderJob | None:
@@ -1273,8 +1287,10 @@ class ProjectStore:
                 """
                 SELECT * FROM provider_jobs
                 WHERE status = 'queued'
-                ORDER BY CASE media_type WHEN 'image' THEN 0 ELSE 1 END,
-                         created_at ASC LIMIT 1
+                  AND (next_dispatch_at IS NULL OR next_dispatch_at <= CURRENT_TIMESTAMP)
+                ORDER BY COALESCE(next_dispatch_at, created_at) ASC,
+                         CASE media_type WHEN 'image' THEN 0 ELSE 1 END,
+                         rowid ASC LIMIT 1
                 """
             ).fetchone()
             if row is None:
@@ -1302,17 +1318,18 @@ class ProjectStore:
             ).fetchone()
             return _row_to_job(claimed_row) if claimed_row is not None else None
 
-    def release_job_claim(self, job_id: str, claim_token: str) -> bool:
+    def release_job_claim(self, job_id: str, claim_token: str, *, delay_seconds: float = 0) -> bool:
         """Return a claimed queued job to the queue when no account was available."""
         with self._lock:
             updated = self._db().execute(
                 """
                 UPDATE provider_jobs
                 SET status = 'queued', claimed_at = NULL, claim_token = NULL,
+                    next_dispatch_at = datetime('now', ?),
                     updated_at = CURRENT_TIMESTAMP
                 WHERE job_id = ? AND status = 'dispatching' AND claim_token = ?
                 """,
-                (job_id, claim_token),
+                (f"+{max(0, delay_seconds)} seconds", job_id, claim_token),
             ).rowcount
             self._db().commit()
         return updated == 1
@@ -1373,12 +1390,13 @@ class ProjectStore:
 
     def update_job_completed(
         self, job_id: str, result_data: dict, claim_token: str | None = None,
+        *, installation_id: str | None = None, google_project_id: str | None = None,
     ) -> bool:
         result_json = json.dumps(result_data, ensure_ascii=False)
         with self._lock:
             db = self._db()
             condition = "job_id = ? AND status IN ('dispatching', 'running')"
-            params: list[object] = [result_json, job_id]
+            params: list[object] = [result_json, installation_id, google_project_id, job_id]
             if claim_token is not None:
                 condition += " AND claim_token = ?"
                 params.append(claim_token)
@@ -1389,6 +1407,8 @@ class ProjectStore:
                     claimed_at = NULL,
                     claim_token = NULL,
                     result_json = ?,
+                    installation_id = COALESCE(?, installation_id),
+                    google_project_id = COALESCE(?, google_project_id),
                     next_poll_at = NULL,
                     updated_at = CURRENT_TIMESTAMP,
                     completed_at = CURRENT_TIMESTAMP
@@ -1467,12 +1487,13 @@ class ProjectStore:
         image_timeout_seconds: int = 120,
         video_queue_timeout_seconds: int = 180,
         video_running_timeout_seconds: int = 600,
+        job_id: str | None = None,
     ) -> int:
-        """Move any stale queued, dispatching, or running jobs to an explicit terminal failure."""
+        """Expire queued/running work; dispatches are governed only by their lease."""
         total = 0
         with self._lock:
             db = self._db()
-            # 1. Expired image jobs (queued, dispatching, running)
+            # Images finish in one dispatch; only queued images expire here.
             img_count = db.execute(
                 """
                 UPDATE provider_jobs
@@ -1484,12 +1505,14 @@ class ProjectStore:
                     updated_at = CURRENT_TIMESTAMP,
                     completed_at = CURRENT_TIMESTAMP
                 WHERE media_type = 'image'
-                  AND status IN ('queued', 'dispatching', 'running')
+                  AND status = 'queued'
                   AND created_at <= datetime('now', ?)
+                  AND (? IS NULL OR job_id = ?)
                 """,
                 (
                     f"Image generation timed out after exceeding {image_timeout_seconds}s limit.",
                     f"-{max(1, image_timeout_seconds)} seconds",
+                    job_id, job_id,
                 ),
             ).rowcount
             total += img_count
@@ -1508,10 +1531,12 @@ class ProjectStore:
                 WHERE media_type = 'video'
                   AND status = 'queued'
                   AND created_at <= datetime('now', ?)
+                  AND (? IS NULL OR job_id = ?)
                 """,
                 (
                     f"Video job timed out waiting in queue after exceeding {video_queue_timeout_seconds}s limit.",
                     f"-{max(1, video_queue_timeout_seconds)} seconds",
+                    job_id, job_id,
                 ),
             ).rowcount
             total += vid_q_count
@@ -1528,12 +1553,14 @@ class ProjectStore:
                     updated_at = CURRENT_TIMESTAMP,
                     completed_at = CURRENT_TIMESTAMP
                 WHERE media_type = 'video'
-                  AND status IN ('dispatching', 'running')
+                  AND status = 'running'
                   AND COALESCE(running_at, created_at) <= datetime('now', ?)
+                  AND (? IS NULL OR job_id = ?)
                 """,
                 (
                     f"Video generation timed out after exceeding {video_running_timeout_seconds}s limit.",
                     f"-{max(1, video_running_timeout_seconds)} seconds",
+                    job_id, job_id,
                 ),
             ).rowcount
             total += vid_r_count
@@ -1616,6 +1643,7 @@ class ProjectStore:
 
     def claim_due_running_jobs(
         self, *, limit: int = 100, lease_seconds: int = 120,
+        exclude_job_ids: tuple[str, ...] = (),
     ) -> list[ProviderJob]:
         """Atomically lease due polling work so multiple workers do not duplicate polls."""
         with self._lock:
@@ -1624,15 +1652,19 @@ class ProjectStore:
                 db.execute("BEGIN IMMEDIATE")
             except sqlite3.OperationalError:
                 pass
+            excluded = ""
+            if exclude_job_ids:
+                excluded = " AND job_id NOT IN (" + ",".join("?" for _ in exclude_job_ids) + ")"
             rows = db.execute(
-                """
+                f"""
                 SELECT job_id FROM provider_jobs
                 WHERE status = 'running' AND media_type = 'video'
                   AND (next_poll_at IS NULL OR next_poll_at <= CURRENT_TIMESTAMP)
+                  {excluded}
                 ORDER BY COALESCE(next_poll_at, running_at, created_at) ASC
                 LIMIT ?
                 """,
-                (max(1, limit),),
+                (*exclude_job_ids, max(1, limit)),
             ).fetchall()
             job_ids = [str(row["job_id"]) for row in rows]
             if not job_ids:

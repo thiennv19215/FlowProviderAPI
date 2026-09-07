@@ -238,6 +238,10 @@ def test_image_jobs_are_distinct_and_claimed_before_video_jobs():
         video = store.enqueue_job("video-job", "omni", {"prompt": "move"})
         image = store.enqueue_job("image-job", "image", {"prompt": "draw"})
 
+        # Image priority is a timestamp tie-breaker, not starvation of old video.
+        store._db().execute("UPDATE provider_jobs SET created_at = CURRENT_TIMESTAMP")
+        store._db().commit()
+
         assert video.media_type == "video"
         assert image.media_type == "image"
         claimed = store.claim_next_queued_job()

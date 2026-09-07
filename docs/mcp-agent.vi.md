@@ -43,7 +43,7 @@ Nếu `FLOW_PROVIDER_MCP_API_KEY` không được đặt, adapter có thể reus
 
 1. Gọi `flow_check_health` nếu chưa biết Provider có account Flow sẵn sàng hay không.
 2. Với image/video reference, ưu tiên `image_paths` nằm trong `FLOW_PROVIDER_MCP_ALLOWED_ROOTS`.
-3. Gọi tool tạo image/video và lưu `jobs[].id` ngay lập tức.
+3. Gọi tool tạo image/video với `idempotency_key` riêng cho mỗi yêu cầu và lưu `jobs[].id` ngay lập tức. Nếu mất response/timeout, gửi lại đúng key, payload và `routing_scope` để lấy lại job cũ; không đổi key để thử lại paid video khi chưa biết kết quả. Key gồm 1-200 ký tự ASCII in được.
 4. Poll `flow_get_job_status` theo nhịp khoảng 10 giây hoặc theo metadata Provider trả về.
 5. Không tạo lại paid video chỉ vì job còn `queued`/`running`.
 6. Khi `failed`, đọc `error.retryable` và `error.outcome_unknown` trước khi quyết định retry.

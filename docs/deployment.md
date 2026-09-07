@@ -1,5 +1,16 @@
 # Production deployment
 
+Run exactly one API process/replica against a local durable volume (`--workers 1`).
+Do not horizontally scale this service: Chrome connections, slots and credit
+reservations are process-local. Production refuses concurrent ownership of the
+same local database using an OS lock; separate volumes/network storage are not
+protected by that lock and are not a supported topology. A stale lock *file* is
+harmless after process exit; do not delete a lock file while the service is running.
+
+Maintenance runs periodically with the worker. Keep job deletion disabled unless
+the retention policy is approved: `FLOW_PROVIDER_JOB_RETENTION_DAYS=0` is the default.
+See the retention policy in `architecture.md` before opting into historical deletion.
+
 Production runs FlowProviderAPI and `cloudflared`. A named Docker volume stores the SQLite project/media/job mapping database and durable source assets used by Character and inline-generation recovery.
 
 ## Configure

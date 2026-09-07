@@ -218,6 +218,9 @@ Nếu `outcome_unknown=true`, không tự tạo lại paid video cho đến khi 
 - Video chờ queue: `QUEUE_TIMEOUT` sau 180 giây.
 - Video đang render/poll: `VIDEO_POLL_TIMEOUT` sau 600 giây theo runtime default.
 - `metadata.poll_after_seconds` hiện là 10 giây khi job chưa terminal.
+- Mỗi phần tử `jobs[]` có `project_id` và `routing_scope` khi Provider đã xác định route. Với ảnh dùng managed project, route được lưu cùng kết quả hoàn tất.
+- Khi tất cả job trong một response có cùng route, Provider cũng trả route ở `metadata` và các header `X-Flow-Project-Id`, `X-Provider-Routing-Scope`, kể cả khi đọc status. Với batch khác route, dùng route của từng job; metadata chung để `null` và không có các header route.
+- HTTP 200 không có danh sách media hợp lệ sau tạo ảnh được đánh dấu `failed` với `outcome_unknown: true`; cần đối soát trước khi tạo lại. Lỗi HTTP khi poll video được tính vào bộ đếm lỗi và backoff, không được coi là tiến độ hợp lệ.
 
 Backend không nên poll nhanh hơn giá trị Provider trả về.
 

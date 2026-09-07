@@ -1,11 +1,11 @@
 const FLOW_PROVIDER_FRAME_SESSION_TYPE = "FLOW_PROVIDER_FRAME_SESSION";
 const FLOW_PROVIDER_KEEPALIVE_TYPE = "FLOW_PROVIDER_KEEPALIVE";
 
-function isTrustedLabsFrameSender(sender) {
+function isTrustedFlowFrameSender(sender) {
   if (!sender || sender.id !== chrome.runtime.id) return false;
   try {
     const url = new URL(sender.url || sender.tab?.url || "");
-    return url.protocol === "https:" && url.hostname === "labs.google";
+    return url.protocol === "https:" && ["labs.google", "flow.google", "flow.google.com"].includes(url.hostname);
   } catch (_) {
     return false;
   }
@@ -43,8 +43,19 @@ function publishCapturedSession(token, email = "") {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg?.type === "FLOW_PROVIDER_REFRESH_SESSION") {
+    if (!isTrustedFlowFrameSender(sender)) {
+      sendResponse({ ok: false, error: "untrusted_frame_sender" });
+      return false;
+    }
+    // syncAuth applies the existing account-generation and single-flight guards.
+    // The response contains no token; credentials stay in the browser runtime.
+    syncAuth().then(() => sendResponse({ ok: true }))
+      .catch(() => sendResponse({ ok: false, error: "session_sync_failed" }));
+    return true;
+  }
   if (msg?.type === FLOW_PROVIDER_FRAME_SESSION_TYPE) {
-    if (!isTrustedLabsFrameSender(sender)) {
+    if (!isTrustedFlowFrameSender(sender)) {
       sendResponse({ ok: false, error: "untrusted_frame_sender" });
       return false;
     }

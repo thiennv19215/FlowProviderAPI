@@ -101,6 +101,23 @@ async function flush() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
+test('browser transport discovers API keys from flow.google.com tabs', async () => {
+  const h = buildHarness({}, { loadBrowserTransport: true });
+  await flush();
+  let inspected;
+  h.context.chrome.tabs.query = async ({ url }) => {
+    assert.ok(url.includes('https://flow.google.com/*'));
+    return [{ id: 42, url: 'https://flow.google.com/project/test' }];
+  };
+  h.context.chrome.scripting.executeScript = async ({ target }) => {
+    inspected = target.tabId;
+    return [{ result: 'test_api_key_12345678901234567890' }];
+  };
+  const key = await vm.runInContext('discoverFlowApiKeyFromOpenTabs()', h.context);
+  assert.equal(inspected, 42);
+  assert.equal(key, 'test_api_key_12345678901234567890');
+});
+
 test('connect uses only the versioned websocket protocol and removes legacy gateway storage', async () => {
   const h = buildHarness({
     'flow-provider-server-url-v1': 'https://provider.example.com',

@@ -170,10 +170,16 @@ class FlowProviderClient:
         body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
         routing_scope: str | None = None,
+        idempotency_key: str | None = None,
     ) -> FlowToolResult:
         headers = {}
         if routing_scope:
             headers["X-Provider-Routing-Scope"] = routing_scope
+        if idempotency_key is not None:
+            key = idempotency_key.strip()
+            if not key or len(key) > 200 or not key.isascii() or any(ord(c) < 32 or ord(c) == 127 for c in key):
+                raise ToolError("Idempotency key must be 1-200 printable ASCII characters.")
+            headers["Idempotency-Key"] = key
         try:
             response = await self._client.request(
                 method,
@@ -185,7 +191,7 @@ class FlowProviderClient:
         except httpx.TimeoutException as exc:
             raise ToolError(
                 f"FlowProviderAPI timed out after {self.settings.timeout_seconds:g} seconds. "
-                "The operation may still have been accepted; check status before retrying a paid video request."
+                "The operation may still have been accepted; retry with the same idempotency_key and payload to recover its job ID. Without a key, reconcile before creating another paid video."
             ) from exc
         except httpx.RequestError as exc:
             raise ToolError(f"Cannot reach FlowProviderAPI: {exc}") from exc
@@ -375,6 +381,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         reference_media_ids: list[str] | None = None,
         project_id: str | None = None,
         routing_scope: str | None = None,
+        idempotency_key: str | None = None,
     ) -> FlowToolResult:
         """Queue image generation and return a Provider job id for status checks. Prefer passing local file paths via image_paths for automatic SHA-256 caching and multi-account balancing."""
 
@@ -396,6 +403,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
             "/v1/images/generations",
             body=body,
             routing_scope=routing_scope,
+            idempotency_key=idempotency_key,
         )
 
     @server.tool(title="Create a Character", annotations=mutating)
@@ -479,6 +487,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         reference_media_ids: list[str] | None = None,
         project_id: str | None = None,
         routing_scope: str | None = None,
+        idempotency_key: str | None = None,
     ) -> FlowToolResult:
         """Queue image generation using Character references plus optional extra images."""
         paths = image_paths or []
@@ -494,6 +503,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
                 "input_images": await _encode_images(paths, provider.settings.allowed_root_paths),
             },
             routing_scope=routing_scope,
+            idempotency_key=idempotency_key,
         )
 
     @server.tool(title="Generate a video with a Character", annotations=paid_mutating)
@@ -505,6 +515,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         dialogue: bool = False,
         project_id: str | None = None,
         routing_scope: str | None = None,
+        idempotency_key: str | None = None,
     ) -> FlowToolResult:
         """Queue a paid R2V video using up to three reference images of one Character."""
         return await provider.request(
@@ -514,6 +525,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
                 "project_id": project_id,
             },
             routing_scope=routing_scope,
+            idempotency_key=idempotency_key,
         )
 
     @server.tool(title="Generate a video with Flow", annotations=paid_mutating)
@@ -529,6 +541,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
         quality: VideoQuality | None = None,
         duration_seconds: Literal[4, 6, 8, 10] = 8,
         routing_scope: str | None = None,
+        idempotency_key: str | None = None,
     ) -> FlowToolResult:
         """Start a video generation job (frames_to_video or reference_to_video) using Gemini Omni Flash. Passing local file paths via image_paths is required for automatic Base64 encoding, SHA-256 caching, and multi-account load balancing."""
 
@@ -574,6 +587,7 @@ def build_mcp_server(client: FlowProviderClient | None = None) -> MCPServer:
             "/v1/videos/generations",
             body=body,
             routing_scope=routing_scope,
+            idempotency_key=idempotency_key,
         )
 
     @server.tool(title="Check Flow video status", annotations=read_only)

@@ -7,6 +7,8 @@ import time
 import uuid
 from typing import Any
 
+from app.services.flow import _account_key
+
 from app.providers.google_flow.client import BoundFlowClient
 from app.providers.google_flow.sdk.constants import (
     CAPTCHA_IMAGE,
@@ -65,11 +67,6 @@ def _image_aspect_ratio(payload: dict) -> str:
     }.get(value, value)
 
 
-def _account_key(connection: Any) -> str:
-    email = str(getattr(connection, "account_email", "") or "").strip().lower()
-    return f"{connection.installation_id}\n{email}" if email else str(connection.installation_id)
-
-
 def _poll_delay(settings: Any, error_count: int = 0) -> float:
     base = float(getattr(settings, "worker_poll_seconds", 10.0))
     if base <= 0:
@@ -86,6 +83,10 @@ class JobWorker:
         self._running = False
         self._task: asyncio.Task | None = None
         self._wake_event = asyncio.Event()
+        self._last_maintenance_at: float | None = None
+        self._maintenance_failures = 0
+        self._maintenance_retry_at = 0.0
+        self._polling_job_ids: set[str] = set()
 
     def wake(self) -> None:
         """Wake up the worker immediately to process queued jobs without waiting for poll_seconds."""
@@ -100,6 +101,8 @@ class JobWorker:
                 pass
 
     async def start(self) -> None:
+        if self._running:
+            return
         if not getattr(self.runtime.settings, "worker_enabled", True):
             logger.info("JobWorker disabled by configuration.")
             return
@@ -122,49 +125,99 @@ class JobWorker:
         logger.info("JobWorker stopped.")
 
     async def _run_loop(self) -> None:
-        poll_interval = float(getattr(self.runtime.settings, "worker_poll_seconds", 10.0))
+        """Supervise independent lanes; cancel and join every lane on shutdown."""
+        poll_workers = max(1, int(getattr(self.runtime.settings, "worker_poll_concurrency", 4)))
+        lanes = [
+            asyncio.create_task(self._run_lane("dispatch", self.process_queued_jobs, wakeable=True)),
+            asyncio.create_task(self._run_lane("maintenance", self._expire_and_maintain)),
+        ]
+        lanes.extend(
+            asyncio.create_task(self._run_lane(f"poll-{index}", self._poll_one_due))
+            for index in range(poll_workers)
+        )
+        try:
+            await asyncio.gather(*lanes)
+        finally:
+            for lane in lanes:
+                lane.cancel()
+            await asyncio.gather(*lanes, return_exceptions=True)
+
+    async def _run_lane(self, name, action, *, wakeable: bool = False) -> None:
+        interval = max(0.05, float(getattr(self.runtime.settings, "worker_poll_seconds", 10.0)))
         while self._running:
             try:
-                self.runtime.projects.fail_abandoned_dispatches(
-                    int(getattr(self.runtime.settings, "worker_dispatch_lease_seconds", 300))
-                )
-                expired = self.runtime.projects.fail_expired_jobs(
-                    image_timeout_seconds=int(getattr(self.runtime.settings, "job_image_timeout_seconds", 120)),
-                    video_queue_timeout_seconds=int(getattr(self.runtime.settings, "job_video_queue_timeout_seconds", 180)),
-                    video_running_timeout_seconds=int(getattr(self.runtime.settings, "job_video_running_timeout_seconds", 600)),
-                )
-                if expired:
-                    logger.warning("Marked %s job(s) failed after timeout limit", expired)
-                await self.process_queued_jobs()
-                await self.poll_running_jobs()
+                await action()
             except asyncio.CancelledError:
-                break
+                raise
             except Exception:
-                logger.exception("Unexpected error in JobWorker loop")
-            try:
-                await asyncio.wait_for(self._wake_event.wait(), timeout=poll_interval)
-                self._wake_event.clear()
-            except asyncio.TimeoutError:
-                pass
-            except asyncio.CancelledError:
-                break
+                logger.exception("Unexpected error in worker lane %s", name)
+            if wakeable:
+                try:
+                    await asyncio.wait_for(self._wake_event.wait(), timeout=interval)
+                    self._wake_event.clear()
+                except asyncio.TimeoutError:
+                    pass
+            else:
+                await asyncio.sleep(interval)
+
+    async def _poll_one_due(self) -> None:
+        await self.poll_running_jobs(limit=1)
+
+    async def _expire_and_maintain(self) -> None:
+        self.runtime.projects.fail_abandoned_dispatches(
+            int(getattr(self.runtime.settings, "worker_dispatch_lease_seconds", 900))
+        )
+        expired = self.runtime.projects.fail_expired_jobs(
+            image_timeout_seconds=int(getattr(self.runtime.settings, "job_image_timeout_seconds", 120)),
+            video_queue_timeout_seconds=int(getattr(self.runtime.settings, "job_video_queue_timeout_seconds", 180)),
+            video_running_timeout_seconds=int(getattr(self.runtime.settings, "job_video_running_timeout_seconds", 600)),
+        )
+        if expired:
+            logger.warning("Marked %s job(s) failed after timeout limit", expired)
+        await self.run_maintenance()
+
+    async def run_maintenance(self) -> None:
+        """Advance the success clock only after GC commits; retry failures with backoff."""
+        now = time.monotonic()
+        interval = getattr(self.runtime.settings, "maintenance_interval_seconds", 3600)
+        if now < self._maintenance_retry_at:
+            return
+        if self._last_maintenance_at is not None and now - self._last_maintenance_at < interval:
+            return
+        task = asyncio.create_task(asyncio.to_thread(
+            self.runtime.projects.prune,
+            asset_retention_days=getattr(self.runtime.settings, "asset_retention_days", 30),
+            job_retention_days=getattr(self.runtime.settings, "job_retention_days", 0),
+            batch_size=getattr(self.runtime.settings, "maintenance_batch_size", 500),
+        ))
+        try:
+            # Cancelling to_thread does not stop its OS thread. Join it before
+            # runtime shutdown closes the store or releases process ownership.
+            counts = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        except Exception:
+            self._maintenance_failures += 1
+            delay = min(300, 5 * 2 ** min(self._maintenance_failures - 1, 6))
+            self._maintenance_retry_at = time.monotonic() + delay
+            raise
+        else:
+            self._last_maintenance_at = time.monotonic()
+            self._maintenance_failures = 0
+            self._maintenance_retry_at = 0.0
+            logger.info("Maintenance removed records/assets: %s", counts)
 
     async def process_queued_jobs(self, max_concurrent: int = 20) -> None:
-        """Pick queued jobs and dispatch them concurrently to available accounts until queue is empty or busy."""
-        while True:
-            tasks = []
-            while len(tasks) < max_concurrent:
-                job = self.runtime.projects.claim_next_queued_job()
-                if not job or job.status != "dispatching":
-                    break
-                tasks.append(asyncio.create_task(self._dispatch_job(job)))
-            if not tasks:
+        """Dispatch one bounded batch, then yield to polling and expiry work."""
+        tasks = []
+        while len(tasks) < max_concurrent:
+            job = self.runtime.projects.claim_next_queued_job()
+            if not job or job.status != "dispatching":
                 break
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            # If any job was released back to the queue because no account slot was available,
-            # stop the loop immediately instead of busy-spinning on the exact same queued jobs.
-            if any(r is False for r in results):
-                break
+            tasks.append(asyncio.create_task(self._dispatch_job(job)))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _dispatch_job(self, job: Any) -> None:
         claim_token = job.claim_token
@@ -178,6 +231,11 @@ class JobWorker:
 
         target_installation_id = job.installation_id
         target_google_project_id = job.google_project_id
+        # Old jobs with a route fail closed; new managed jobs explicitly opt in
+        # to rehydration/failover independently of their inferred media route.
+        routing_locked = payload.get(
+            "_routing_locked", bool(target_installation_id or target_google_project_id)
+        )
 
         has_inline_assets = bool(
             payload.get("input_image_hashes")
@@ -194,7 +252,7 @@ class JobWorker:
             if payload.get("reference_media_ids"):
                 referenced.extend(payload["reference_media_ids"])
             if referenced:
-                from app.api.generations import _stored_media_route
+                from app.services.flow import _stored_media_route
                 try:
                     inferred = _stored_media_route(self.runtime, referenced)
                 except Exception:
@@ -233,7 +291,7 @@ class JobWorker:
             )
             and self.runtime.can_reserve(conn, cost, job_type=job.media_type)
         ]
-        if not available:
+        if not available and not routing_locked:
             fallback_conns = [
                 c for c in ready_conns
                 if self.runtime.can_reserve(c, cost, job_type=job.media_type)
@@ -249,6 +307,9 @@ class JobWorker:
                 available = fallback_conns
 
         if not available:
+            if routing_locked:
+                self.runtime.projects.release_job_claim(job.job_id, claim_token, delay_seconds=1)
+                return False
             from datetime import datetime, timezone
             job_age_seconds = 0.0
             if getattr(job, "created_at", None):
@@ -290,12 +351,12 @@ class JobWorker:
                     )
                     return True
 
-            self.runtime.projects.release_job_claim(job.job_id, claim_token)
+            self.runtime.projects.release_job_claim(job.job_id, claim_token, delay_seconds=1)
             return False
 
         connection = self.runtime.select_connection(available)
         if not self.runtime.reserve_connection(connection, cost, job_type=job.media_type):
-            self.runtime.projects.release_job_claim(job.job_id, claim_token)
+            self.runtime.projects.release_job_claim(job.job_id, claim_token, delay_seconds=1)
             return False
 
         client = BoundFlowClient(self.runtime.bridge, connection.id)
@@ -303,7 +364,7 @@ class JobWorker:
 
         paid_attempted = False
         try:
-            from app.api.generations import (
+            from app.services.flow import (
                 _api,
                 _credit_exhaustion,
                 _managed_project,
@@ -365,7 +426,7 @@ class JobWorker:
                         error_code="CHARACTER_ASSET_MISSING",
                     )
                     return
-                from app.api.generations import _upload_inline_images
+                from app.services.flow import _upload_inline_images
                 uploaded_ids, cached_digests, _hits = await _upload_inline_images(
                     self.runtime, connection, client, resolved_project_id, reference_media_ids,
                 )
@@ -403,7 +464,7 @@ class JobWorker:
                     )
                     return
             if inline_images:
-                from app.api.generations import _upload_inline_images
+                from app.services.flow import _upload_inline_images
                 from app.api.schemas import InlineImageInput
                 raw_images = [
                     InlineImageInput(**img) if isinstance(img, dict) else img
@@ -426,7 +487,7 @@ class JobWorker:
                     if len(uploaded_ids) > 1:
                         payload["end_media_id"] = uploaded_ids[1]
 
-            from app.api.generations import _known_media, _rehydrate_media_ids
+            from app.services.flow import _known_media, _rehydrate_media_ids
 
             all_referenced_mids: list[str] = []
             if payload.get("start_media_id"):
@@ -548,15 +609,31 @@ class JobWorker:
                     )
                     return
                 data = result.get("data") if isinstance(result.get("data"), dict) else {}
+                media = data.get("media")
+                if not isinstance(media, list) or not media or not all(
+                    isinstance(item, dict)
+                    and isinstance(item.get("name"), str)
+                    and item["name"].strip()
+                    for item in media
+                ):
+                    self.runtime.projects.update_job_failed(
+                        job.job_id,
+                        "Flow returned no valid image media after dispatch. Reconcile before retrying.",
+                        claim_token,
+                        error_code="IMAGE_DISPATCH_OUTCOME_UNKNOWN",
+                        outcome_unknown=True,
+                    )
+                    return
                 _remember_project_on_success(
                     self.runtime, connection, resolved_project_id, result
                 )
-                from app.api.generations import _remember_generated_media
+                from app.services.flow import _remember_generated_media
                 _remember_generated_media(
                     self.runtime, connection, resolved_project_id, result
                 )
                 if not self.runtime.projects.update_job_completed(
-                    job.job_id, data, claim_token
+                    job.job_id, data, claim_token,
+                    installation_id=account_key, google_project_id=resolved_project_id,
                 ):
                     logger.warning(
                         "Image job %s claim was superseded before completion", job.job_id
@@ -756,159 +833,199 @@ class JobWorker:
                 # a timeout/error.  Invalidate the captured balance and
                 # refresh it before another queued paid job can use it.
                 try:
-                    from app.api.generations import _refresh_paid_account
+                    from app.services.flow import _refresh_paid_account
                     _refresh_paid_account(self.runtime, connection)
                 except Exception:
                     logger.exception("Failed to schedule credit refresh for job %s", job.job_id)
             self.runtime.release_connection(connection.id, cost, job_type=job.media_type)
 
-    async def poll_running_jobs(self) -> None:
-        """Poll running jobs gently to update status and save completed video URLs."""
+    async def poll_running_jobs(self, *, limit: int | None = None) -> None:
+        """Claim only free poll slots and exclude locally in-flight reads."""
+        capacity = max(1, int(getattr(self.runtime.settings, "worker_poll_concurrency", 4)))
+        free = capacity - len(self._polling_job_ids)
+        if free <= 0:
+            return
+        batch = min(free, capacity if limit is None else max(1, limit))
         running = self.runtime.projects.claim_due_running_jobs(
-            lease_seconds=int(
-                getattr(self.runtime.settings, "worker_poll_claim_lease_seconds", 120)
-            )
+            limit=batch,
+            lease_seconds=int(getattr(self.runtime.settings, "worker_poll_claim_lease_seconds", 120)),
+            exclude_job_ids=tuple(self._polling_job_ids),
         )
-        if not running:
+        self._polling_job_ids.update(job.job_id for job in running)
+
+        async def poll(job):
+            try:
+                await self._poll_job(job)
+            except Exception:
+                logger.exception("Unexpected polling failure for job %s", job.job_id)
+            finally:
+                self._polling_job_ids.discard(job.job_id)
+
+        if running:
+            await asyncio.gather(*(poll(job) for job in running))
+
+    async def _poll_job(self, job: Any) -> None:
+        if not job.installation_id or not job.poll_name:
+            self.runtime.projects.update_job_failed(
+                job.job_id,
+                "Running video job has no owning account or poll identifier.",
+                error_code="VIDEO_POLL_ROUTE_MISSING",
+            )
             return
 
-        for job in running:
-            if not job.installation_id or not job.poll_name:
-                self.runtime.projects.update_job_failed(
-                    job.job_id,
-                    "Running video job has no owning account or poll identifier.",
-                    error_code="VIDEO_POLL_ROUTE_MISSING",
-                )
-                continue
-
-            if getattr(job, "poll_error_count", 0) >= 10:
-                self.runtime.projects.update_job_failed(
-                    job.job_id,
-                    f"Video polling failed after 10 consecutive attempts: {job.last_poll_error or 'Owning extension account is unavailable.'}",
-                    error_code="VIDEO_POLL_MAX_ERRORS",
-                )
-                logger.warning("Job %s marked failed after 10 consecutive poll errors", job.job_id)
-                continue
-
-            # Find connection for this job's account
-            conn = next(
-                (
-                    c
-                    for c in self.runtime.bridge.ready_connections()
-                    if _account_key(c) == job.installation_id
-                    or c.installation_id == job.installation_id
-                    or str(job.installation_id).startswith(f"{c.installation_id}\n")
-                ),
-                None,
+        if getattr(job, "poll_error_count", 0) >= 10:
+            self.runtime.projects.update_job_failed(
+                job.job_id,
+                f"Video polling failed after 10 consecutive attempts: {job.last_poll_error or 'Owning extension account is unavailable.'}",
+                error_code="VIDEO_POLL_MAX_ERRORS",
+                outcome_unknown=True,
             )
-            if not conn:
+            logger.warning("Job %s marked failed after 10 consecutive poll errors", job.job_id)
+            return
+
+        # Find connection for this job's account
+        conn = next(
+            (
+                c
+                for c in self.runtime.bridge.ready_connections()
+                if _account_key(c) == job.installation_id
+                or c.installation_id == job.installation_id
+            ),
+            None,
+        )
+        if not conn:
+            self.runtime.projects.schedule_job_poll(
+                job.job_id,
+                _poll_delay(self.runtime.settings, job.poll_error_count),
+                error_message="Owning extension account is unavailable.",
+                attempted=False,
+            )
+            return
+
+        if not self.runtime.can_reserve(conn, 0):
+            self.runtime.projects.schedule_job_poll(
+                job.job_id,
+                _poll_delay(self.runtime.settings, job.poll_error_count),
+                error_message="Owning extension account is currently busy.",
+                attempted=False,
+            )
+            return
+
+        self.runtime.reserve_connection(conn, 0)
+        try:
+            from app.services.flow import (
+                _api,
+                _attach_video_urls,
+                _completed_video_media,
+                _video_status_failure,
+            )
+
+            client = BoundFlowClient(self.runtime.bridge, conn.id)
+            op_route = (
+                self.runtime.projects.get_operation(job.poll_name)
+                or self.runtime.projects.get_operation(job.operation_name)
+            )
+            if op_route and op_route.route_kind == "media":
+                body: dict[str, Any] = {
+                    "media": [{
+                        "name": op_route.poll_name,
+                        "projectId": op_route.google_project_id or job.google_project_id,
+                    }]
+                }
+            else:
+                body = {
+                    "operations": [{"operation": {"name": job.poll_name}}]
+                }
+            poll_result = await _api(client, url=VIDEO_POLL_URL, body=body)
+
+            status = poll_result.get("status") if isinstance(poll_result, dict) else None
+            if not isinstance(status, int) or status >= 400 or poll_result.get("error"):
                 self.runtime.projects.schedule_job_poll(
                     job.job_id,
                     _poll_delay(self.runtime.settings, job.poll_error_count),
-                    error_message="Owning extension account is unavailable.",
-                    attempted=False,
+                    error_message=f"Google Flow polling failed (HTTP {status}).",
                 )
-                continue
+                return
 
-            if not self.runtime.can_reserve(conn, 0):
-                self.runtime.projects.schedule_job_poll(
-                    job.job_id,
-                    _poll_delay(self.runtime.settings, job.poll_error_count),
-                    error_message="Owning extension account is currently busy.",
-                    attempted=False,
-                )
-                continue
-
-            self.runtime.reserve_connection(conn, 0)
-            try:
-                from app.api.generations import (
-                    _api,
-                    _attach_video_urls,
-                    _completed_video_media,
-                    _video_status_failure,
-                )
-
-                client = BoundFlowClient(self.runtime.bridge, conn.id)
-                op_route = (
-                    self.runtime.projects.get_operation(job.poll_name)
-                    or self.runtime.projects.get_operation(job.operation_name)
-                )
-                if op_route and op_route.route_kind == "media":
-                    body: dict[str, Any] = {
-                        "media": [{
-                            "name": op_route.poll_name,
-                            "projectId": op_route.google_project_id or job.google_project_id,
-                        }]
-                    }
-                else:
-                    body = {
-                        "operations": [{"operation": {"name": job.poll_name}}]
-                    }
+            data = poll_result.get("data") if isinstance(poll_result, dict) else None
+            if not isinstance(data, dict):
+                # Fallback to media poll if operations did not match
+                body = {"media": [{"name": job.poll_name, "projectId": job.google_project_id}]}
                 poll_result = await _api(client, url=VIDEO_POLL_URL, body=body)
-
-                data = poll_result.get("data") if isinstance(poll_result, dict) else None
-                if not isinstance(data, dict):
-                    # Fallback to media poll if operations did not match
-                    body = {"media": [{"name": job.poll_name, "projectId": job.google_project_id}]}
-                    poll_result = await _api(client, url=VIDEO_POLL_URL, body=body)
-                    data = poll_result.get("data") if isinstance(poll_result, dict) else None
-
-                self.runtime.projects.record_job_poll_attempt(job.job_id)
-
-                if isinstance(data, dict):
-                    failure = _video_status_failure(poll_result)
-                    if failure:
-                        self.runtime.projects.update_job_failed(
-                            job.job_id, failure.message, error_code=failure.code,
-                            retryable=failure.retryable,
-                            upstream_code=failure.upstream_code,
-                            upstream_status=failure.upstream_status,
-                        )
-                        logger.warning("Job %s failed: %s", job.job_id, failure.message)
-                        continue
-                    completed = _completed_video_media(data)
-                    if completed:
-                        from app.api.generations import (
-                            _remember_generated_media,
-                            _remember_operations,
-                        )
-                        await _attach_video_urls(client, poll_result)
-                        _remember_operations(self.runtime, conn, job.google_project_id, poll_result)
-                        _remember_generated_media(self.runtime, conn, job.google_project_id, poll_result)
-                        self.runtime.projects.update_job_completed(job.job_id, data)
-                        logger.info("Job %s completed successfully!", job.job_id)
-                        continue
-
-                    # Check for explicit failure
-                    for item in data.get("operations") or []:
-                        op = item.get("operation") if isinstance(item, dict) and isinstance(item.get("operation"), dict) else item
-                        if isinstance(op, dict) and op.get("error"):
-                            err = str(op["error"])
-                            self.runtime.projects.update_job_failed(
-                                job.job_id, err, error_code="VIDEO_OPERATION_FAILED",
-                            )
-                            logger.warning("Job %s failed with operation error: %s", job.job_id, err)
-                            break
-                    else:
-                        self.runtime.projects.schedule_job_poll(
-                            job.job_id,
-                            _poll_delay(self.runtime.settings),
-                            attempted=False,
-                        )
-                else:
-                    error = poll_result.get("error") if isinstance(poll_result, dict) else None
+                status = poll_result.get("status") if isinstance(poll_result, dict) else None
+                if not isinstance(status, int) or status >= 400 or poll_result.get("error"):
                     self.runtime.projects.schedule_job_poll(
                         job.job_id,
                         _poll_delay(self.runtime.settings, job.poll_error_count),
-                        error_message=str(error or "Google Flow returned no polling data."),
+                        error_message=f"Google Flow polling failed (HTTP {status}).",
+                    )
+                    return
+                data = poll_result.get("data") if isinstance(poll_result, dict) else None
+
+            self.runtime.projects.record_job_poll_attempt(job.job_id)
+
+            if isinstance(data, dict):
+                failure = _video_status_failure(poll_result)
+                if failure:
+                    self.runtime.projects.update_job_failed(
+                        job.job_id, failure.message, error_code=failure.code,
+                        retryable=failure.retryable,
+                        upstream_code=failure.upstream_code,
+                        upstream_status=failure.upstream_status,
+                    )
+                    logger.warning("Job %s failed: %s", job.job_id, failure.message)
+                    return
+                completed = _completed_video_media(data)
+                if completed:
+                    from app.services.flow import (
+                        _remember_generated_media,
+                        _remember_operations,
+                    )
+                    available_urls, _ = await _attach_video_urls(client, poll_result)
+                    if available_urls < len(completed):
+                        self.runtime.projects.schedule_job_poll(
+                            job.job_id,
+                            _poll_delay(self.runtime.settings, job.poll_error_count),
+                            error_message="Completed video download URL is not available yet.",
+                            attempted=False,
+                        )
+                        return
+                    _remember_operations(self.runtime, conn, job.google_project_id, poll_result)
+                    _remember_generated_media(self.runtime, conn, job.google_project_id, poll_result)
+                    self.runtime.projects.update_job_completed(job.job_id, data)
+                    logger.info("Job %s completed successfully!", job.job_id)
+                    return
+
+                # Check for explicit failure
+                for item in data.get("operations") or []:
+                    op = item.get("operation") if isinstance(item, dict) and isinstance(item.get("operation"), dict) else item
+                    if isinstance(op, dict) and op.get("error"):
+                        err = str(op["error"])
+                        self.runtime.projects.update_job_failed(
+                            job.job_id, err, error_code="VIDEO_OPERATION_FAILED",
+                        )
+                        logger.warning("Job %s failed with operation error: %s", job.job_id, err)
+                        break
+                else:
+                    self.runtime.projects.schedule_job_poll(
+                        job.job_id,
+                        _poll_delay(self.runtime.settings),
                         attempted=False,
                     )
-            except Exception as exc:  # noqa: BLE001 - isolate one polling job from the worker loop
-                logger.warning("Error polling job %s: %s", job.job_id, exc)
+            else:
+                error = poll_result.get("error") if isinstance(poll_result, dict) else None
                 self.runtime.projects.schedule_job_poll(
                     job.job_id,
                     _poll_delay(self.runtime.settings, job.poll_error_count),
-                    error_message=str(exc),
+                    error_message=str(error or "Google Flow returned no polling data."),
+                    attempted=False,
                 )
-            finally:
-                self.runtime.release_connection(conn.id, 0)
+        except Exception as exc:  # noqa: BLE001 - isolate one polling job from the worker loop
+            logger.warning("Error polling job %s: %s", job.job_id, exc)
+            self.runtime.projects.schedule_job_poll(
+                job.job_id,
+                _poll_delay(self.runtime.settings, job.poll_error_count),
+                error_message=str(exc),
+            )
+        finally:
+            self.runtime.release_connection(conn.id, 0)

@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     project_store_path: str = ".data/projects.db"
     asset_store_path: str = ".data/assets"
     asset_retention_days: int = Field(default=30, ge=1, le=3650)
+    maintenance_interval_seconds: int = Field(default=3600, ge=60, le=86400)
+    maintenance_batch_size: int = Field(default=500, ge=1, le=5000)
+    job_retention_days: int = Field(default=0, ge=0, le=3650)
     job_queue_max_active: int = Field(default=200, ge=1, le=10000)
     account_slot_capacity: int = Field(default=3, ge=1, le=20)
     account_image_slot_capacity: int = Field(default=4, ge=1, le=20)
@@ -35,6 +38,7 @@ class Settings(BaseSettings):
     job_video_queue_timeout_seconds: int = Field(default=180, ge=30, le=1800)
     job_video_running_timeout_seconds: int = Field(default=600, ge=60, le=3600)
     worker_concurrency: int = Field(default=4, ge=1, le=16)
+    worker_poll_concurrency: int = Field(default=4, ge=1, le=16)
 
     @model_validator(mode="after")
     def validate_settings(self):

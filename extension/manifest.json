@@ -37,7 +37,7 @@
   ],
   "content_scripts": [
     {
-      "matches": ["https://labs.google/*"],
+      "matches": ["https://labs.google/*", "https://flow.google/*", "https://flow.google.com/*"],
       "js": ["providers/flow/flow-frame-bridge.js"],
       "all_frames": true,
       "run_at": "document_idle"

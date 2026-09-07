@@ -26,10 +26,56 @@ test('production extension defaults to the public provider hostname', () => {
   assert.ok(manifest.host_permissions.includes('https://api.shopcongngheso5.io.vn/*'));
 });
 
-test('frame session is accepted only from the signed-in labs.google content frame', () => {
-  assert.match(bridge, /sender\.id !== chrome\.runtime\.id/);
-  assert.match(bridge, /url\.hostname === "labs\.google"/);
-  assert.match(bridge, /FLOW_PROVIDER_FRAME_SESSION/);
+test('session refresh accepts only exact HTTPS Flow origins from this extension', async () => {
+  let listener;
+  let refreshes = 0;
+  const context = { URL, chrome: { runtime: {
+    id: 'connector', onMessage: { addListener: (fn) => { listener = fn; } },
+  } }, syncAuth: async () => { refreshes += 1; } };
+  vm.runInNewContext(bridge, context);
+  for (const host of ['labs.google', 'flow.google', 'flow.google.com']) {
+    assert.ok(manifest.content_scripts[0].matches.includes(`https://${host}/*`));
+    const response = await new Promise((resolve) => {
+      assert.equal(listener({ type: 'FLOW_PROVIDER_REFRESH_SESSION' },
+        { id: 'connector', url: `https://${host}/project/test` }, resolve), true);
+    });
+    assert.equal(response.ok, true);
+    assert.equal(response.token, undefined);
+  }
+  for (const sender of [
+    { id: 'other', url: 'https://flow.google.com/' },
+    { id: 'connector', url: 'http://flow.google.com/' },
+    { id: 'connector', url: 'https://flow.google.com.evil.test/' },
+    { id: 'connector', url: 'https://evil.test/', tab: { url: 'https://flow.google.com/' } },
+  ]) {
+    for (const type of ['FLOW_PROVIDER_REFRESH_SESSION', 'FLOW_PROVIDER_FRAME_SESSION']) {
+      let response;
+      assert.equal(listener({ type, token: 'untrusted' }, sender, (r) => { response = r; }), false);
+      assert.equal(response.error, 'untrusted_frame_sender');
+    }
+  }
+  assert.equal(refreshes, 3);
+});
+
+test('Flow top-level pages and frames request browser-owned session refresh', async () => {
+  const source = fs.readFileSync(new URL('../providers/flow/flow-frame-bridge.js', import.meta.url), 'utf8');
+  for (const host of ['flow.google', 'flow.google.com']) {
+    for (const topLevel of [true, false]) {
+      const messages = [];
+      let tick;
+      const window = {};
+      window.top = topLevel ? window : {};
+      vm.runInNewContext(source, {
+        window, location: { protocol: 'https:', hostname: host },
+        chrome: { runtime: { sendMessage: async (m) => messages.push(m) } },
+        fetch: () => { throw new Error('Must not fetch session across origins from a Flow page'); },
+        setInterval: (fn) => { tick = fn; },
+      });
+      assert.equal(messages[0].type, 'FLOW_PROVIDER_REFRESH_SESSION');
+      await tick();
+      assert.equal(messages.length, 2);
+    }
+  }
 });
 
 test('captured frame session updates the bearer cache and pushes auth to the provider socket', () => {

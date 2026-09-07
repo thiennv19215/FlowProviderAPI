@@ -58,11 +58,22 @@ Generation endpoints support `Idempotency-Key`. Repeating the same key with the 
 
 ## Worker and restart recovery
 
+HTTP routers and the worker share upstream routing/media/project operations through
+`app/services/flow.py`; the worker does not import HTTP routers. HTTP response
+normalization stays at the API boundary. `ProjectStore` is the single authority
+for job timeouts; `RuntimeProjectStore` is only a compatibility alias.
+
 `JobWorker` atomically claims queued work. On startup/loop it reconciles abandoned dispatch leases and expires jobs by configured timeout. A paid dispatch whose outcome may be unknown is not blindly recreated.
 
 Image generation is dispatched and completed in one worker execution. Video generation stores upstream poll identifiers and the worker performs durable polling until complete/failed/timeout.
 
 ## Multi-account scheduling
+
+The queue orders by creation time for new work and retry eligibility time for
+deferred work (image preference only breaks timestamp ties).
+Jobs blocked by route/capacity are released with a persisted `next_dispatch_at`,
+so they cannot repeatedly occupy every slot in the next batch. Dispatch claims
+remain atomic and guarded by an ownership token.
 
 Ready Chrome connectors are filtered by health, capacity, cooldown and available credits. The runtime chooses an eligible connection and reserves its slot/estimated credit cost before dispatch.
 
@@ -104,6 +115,36 @@ Character source images are retained content-addressed under the configured asse
 
 ## Deployment topology
 
+Supported topology: **one API process, one replica, one local durable volume**.
+Connector sockets, account slots and credit reservations are process-local.
+SQLite job claims do not make multiple runtimes safe. Production lifespan holds
+an OS file lock beside the database and refuses a second owner of that local
+database; Docker explicitly uses `--workers 1`. This is not a distributed lock:
+replicas with separate volumes or network filesystems are unsupported.
+
 Production Compose contains API + Cloudflare Tunnel and does not publish host port 8000. The tunnel reaches `http://api:8000` inside the Compose network. Remote backends and host-local processes normally call the public HTTPS hostname with Bearer auth.
 
 CI verifies Python tests, extension JavaScript/tests and deployment config. Production deployment smoke verifies OpenAPI, unauthenticated rejection, authenticated `/v1/jobs/status`, and absence of legacy `/admin`. A real signed-in Google Flow E2E remains the final release acceptance gate.
+
+## Retention and maintenance
+
+The enabled worker performs maintenance every `FLOW_PROVIDER_MAINTENANCE_INTERVAL_SECONDS`
+(default 3600), off the event-loop thread. Each sweep mutates at most
+`FLOW_PROVIDER_MAINTENANCE_BATCH_SIZE` records per category (default 500), rotating
+through asset batches and logging counts. Reference checks still scan live
+Character/job references; this is not a hard CPU-time bound for very large catalogs.
+Referenced source assets remain protected, and orphan assets use the existing
+`FLOW_PROVIDER_ASSET_RETENTION_DAYS` grace period. Maintenance does not run when
+the worker is disabled.
+
+Runtime image ingestion uses `ProjectStore.persist_asset` to write and register
+bytes under the same lock as GC. A sweep resolves active-job media references
+before deleting mappings and skips referenced mappings even when their cache age
+has expired. Candidate batches rotate past protected mappings.
+
+Historical job deletion is **off by default** (`FLOW_PROVIDER_JOB_RETENTION_DAYS=0`).
+Setting a positive number of days opts into deletion of old terminal jobs without
+an idempotency key and with a known outcome. Their IDs will no longer resolve.
+Keyed jobs and `outcome_unknown` jobs are retained, including original request
+payloads, so cleanup never allows an old paid request to be silently recreated.
+These safety records can grow and must not be manually purged without reconciliation.

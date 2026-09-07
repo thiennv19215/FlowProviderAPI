@@ -316,6 +316,8 @@ class JobError(BaseModel):
 
 class Job(BaseModel):
     id: str
+    project_id: str | None = None
+    routing_scope: str | None = None
     provider: str = "google_flow"
     type: Literal["image", "video"]
     generation_type: Literal[
